@@ -26,21 +26,21 @@ function MainRouter() {
   const { currentPath } = useApp();
 
   const renderCurrentPage = () => {
-    if (currentPath === '/events') return <EventsPage />;
+    if (currentPath === '/' || currentPath === '/events') return <EventsPage />;
     if (currentPath.startsWith('/events/')) return <EventDetailPage />;
-    if (currentPath.startsWith('/market/')) return <MarketPage />;
-    if (currentPath === '/tickets') return <TicketsPage />;
-    if (currentPath === '/wallet') return <WalletPage />;
-    if (currentPath === '/orders') return <OrdersHistoryPage />;
-    if (currentPath === '/notifications') return <NotificationsPage />;
-    if (currentPath === '/profile') return <ProfilePage />;
+    if (currentPath === '/market' || currentPath.startsWith('/market/')) return <MarketPage />;
+    if (currentPath === '/tickets' || currentPath.startsWith('/tickets/')) return <TicketsPage />;
+    if (currentPath === '/wallet' || currentPath.startsWith('/wallet/')) return <WalletPage />;
+    if (currentPath === '/orders' || currentPath.startsWith('/orders/') || currentPath === '/history' || currentPath.startsWith('/history/')) return <OrdersHistoryPage />;
+    if (currentPath === '/notifications' || currentPath.startsWith('/notifications/')) return <NotificationsPage />;
+    if (currentPath === '/profile' || currentPath.startsWith('/profile/')) return <ProfilePage />;
     if (currentPath === '/organizer/apply') return <OrganizerApplyPage />;
-    if (currentPath === '/organizer') return <OrganizerDashboardPage />;
     if (currentPath === '/organizer/events/new') return <OrganizerCreateEventPage />;
+    if (currentPath === '/organizer' || currentPath.startsWith('/organizer/')) return <OrganizerDashboardPage />;
     if (currentPath.startsWith('/admin')) return <AdminConsolePage />;
     if (currentPath === '/login') return <AuthPage defaultMode="LOGIN" />;
     if (currentPath === '/register') return <AuthPage defaultMode="REGISTER" />;
-    if (currentPath === '/solvency/verify') return <SolvencyVerifyPage />;
+    if (currentPath === '/solvency' || currentPath.startsWith('/solvency/')) return <SolvencyVerifyPage />;
     return <EventsPage />;
   };
 

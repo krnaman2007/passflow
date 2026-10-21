@@ -33,11 +33,27 @@ export default function AdminConsolePage() {
     approveUserKyc,
     regenerateSolvencyProof,
     setActiveModal,
-    navigate
+    navigate,
+    currentPath
   } = useApp();
 
-  const [activeAdminTab, setActiveAdminTab] = useState('CONSOLE'); // 'CONSOLE' | 'USERS' | 'ORGANIZERS' | 'EVENTS' | 'SETTLEMENTS'
+  // Derive active tab from currentPath
+  const getTabFromPath = (path) => {
+    if (path === '/admin/users') return 'USERS';
+    if (path === '/admin/organizers') return 'ORGANIZERS';
+    if (path === '/admin/settlements') return 'SETTLEMENTS';
+    return 'CONSOLE';
+  };
+
+  const activeAdminTab = getTabFromPath(currentPath);
   const [userSearch, setUserSearch] = useState('');
+
+  const handleAdminTabClick = (tabId) => {
+    if (tabId === 'USERS') navigate('/admin/users');
+    else if (tabId === 'ORGANIZERS') navigate('/admin/organizers');
+    else if (tabId === 'SETTLEMENTS') navigate('/admin/settlements');
+    else navigate('/admin');
+  };
 
   return (
     <div className="content-wrap">
@@ -65,7 +81,7 @@ export default function AdminConsolePage() {
               key={t.id}
               className={`nav-item ${activeAdminTab === t.id ? 'active' : ''}`}
               style={{ padding: '6px 12px', fontSize: 12 }}
-              onClick={() => setActiveAdminTab(t.id)}
+              onClick={() => handleAdminTabClick(t.id)}
             >
               {t.label}
             </button>

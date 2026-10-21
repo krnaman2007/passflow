@@ -12,10 +12,55 @@ import {
 
 const AppContext = createContext(null);
 
+// Helper to normalize URL paths
+function normalizePath(rawPath) {
+  if (!rawPath) return '/events';
+  let p = rawPath.trim();
+  if (p.length > 1 && p.endsWith('/')) {
+    p = p.slice(0, -1);
+  }
+  return p === '/' ? '/events' : p;
+}
+
+// Helper to extract route params from path
+function extractRouteParams(path) {
+  const parts = path.split('/').filter(Boolean);
+  if (parts[0] === 'events' && parts[1]) {
+    return { id: parts[1] };
+  }
+  if (parts[0] === 'market') {
+    return {
+      id: parts[1] || 'nightfall',
+      categoryId: parts[2] || 'general'
+    };
+  }
+  return {};
+}
+
 export function AppProvider({ children }) {
-  // Navigation & Routing
-  const [currentPath, setCurrentPath] = useState('/events');
-  const [routeParams, setRouteParams] = useState({ id: 'nightfall', categoryId: 'general' });
+  // Navigation & Routing with full browser address bar sync
+  const initialPath = typeof window !== 'undefined' ? normalizePath(window.location.pathname) : '/events';
+  const [currentPath, setCurrentPath] = useState(initialPath);
+  const [routeParams, setRouteParams] = useState({
+    id: 'nightfall',
+    categoryId: 'general',
+    ...extractRouteParams(initialPath)
+  });
+
+  // Listen for browser Back / Forward buttons and address bar navigation
+  useEffect(() => {
+    const handlePopState = () => {
+      const path = normalizePath(window.location.pathname);
+      setCurrentPath(path);
+      setRouteParams((prev) => ({
+        ...prev,
+        ...extractRouteParams(path)
+      }));
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   // Role: 'PUBLIC' | 'USER' | 'ORGANIZER' | 'ADMIN'
   const [currentRole, setCurrentRole] = useState('USER');
@@ -47,12 +92,18 @@ export function AppProvider({ children }) {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
-  // Navigation handler
+  // Full browser navigation handler (pushes state to address bar and updates page)
   const navigate = (path, params = {}) => {
-    setCurrentPath(path);
-    if (Object.keys(params).length > 0) {
-      setRouteParams((prev) => ({ ...prev, ...params }));
+    const cleanPath = normalizePath(path);
+    if (typeof window !== 'undefined' && window.location.pathname !== cleanPath) {
+      window.history.pushState({}, '', cleanPath);
     }
+    setCurrentPath(cleanPath);
+    setRouteParams((prev) => ({
+      ...prev,
+      ...extractRouteParams(cleanPath),
+      ...params
+    }));
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
