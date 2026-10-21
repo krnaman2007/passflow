@@ -486,20 +486,16 @@ export class PersistentMatchingService {
       totalQty += order.remainingQuantity;
     }
 
-    // Verify snapshot invariants
-    if (newBook.size() !== activeOrders.length) {
+    // Verify snapshot invariants deeply
+    try {
+      this._verifyBookMatchesDatabaseSnapshot(newBook, activeOrders, {
+        eventId,
+        ticketCategoryId,
+        marketKey,
+      });
+    } catch (err) {
       this._quarantineCorruptedMarket(marketKey);
-      throw new MarketReconstructionError(
-        `Reconstructed book size (${newBook.size()}) does not match active orders count (${activeOrders.length}) for "${marketKey}"`,
-        { marketKey, reason: 'SNAPSHOT_SIZE_MISMATCH' }
-      );
-    }
-    if (newBook.totalQuantity() !== totalQty) {
-      this._quarantineCorruptedMarket(marketKey);
-      throw new MarketReconstructionError(
-        `Reconstructed book total quantity (${newBook.totalQuantity()}) does not match expected total (${totalQty}) for "${marketKey}"`,
-        { marketKey, reason: 'SNAPSHOT_QUANTITY_MISMATCH' }
-      );
+      throw err;
     }
 
     // Atomically store the verified book
@@ -508,6 +504,145 @@ export class PersistentMatchingService {
     this._synchronizedMarkets.add(marketKey);
 
     return { newBook, activeOrders, totalQuantity: totalQty };
+  }
+
+  /**
+   * Deeply verifies that an in-memory OrderBook matches an authoritative PostgreSQL snapshot.
+   * Compares:
+   * 1. Exact total order count and total remaining quantity.
+   * 2. Market identifiers (eventId, ticketCategoryId).
+   * 3. Exact order IDs, user IDs, sides, prices, and remaining quantities.
+   * 4. FIFO ordering for orders at the same price and side.
+   * 5. Zero phantom orders in book.
+   *
+   * @param {import('./order-book.js').OrderBook} book
+   * @param {Object[]} activeOrders
+   * @param {Object} context
+   * @param {string} context.eventId
+   * @param {string} context.ticketCategoryId
+   * @param {string} context.marketKey
+   * @throws {MarketReconstructionError} If any mismatch is found.
+   */
+  _verifyBookMatchesDatabaseSnapshot(book, activeOrders, { eventId, ticketCategoryId, marketKey }) {
+    if (!book || typeof book !== 'object') {
+      throw new MarketReconstructionError(
+        `Invalid or missing OrderBook instance for market "${marketKey}"`,
+        { marketKey, reason: 'INVALID_BOOK_INSTANCE' }
+      );
+    }
+
+    if (book.eventId !== eventId || book.ticketCategoryId !== ticketCategoryId) {
+      throw new MarketReconstructionError(
+        `Market identifier mismatch on book: expected (${eventId}, ${ticketCategoryId}), found (${book.eventId}, ${book.ticketCategoryId})`,
+        { marketKey, reason: 'MARKET_IDENTIFIER_MISMATCH' }
+      );
+    }
+
+    let expectedTotalQty = 0;
+    for (const o of activeOrders) {
+      expectedTotalQty += o.remainingQuantity;
+    }
+
+    if (book.size() !== activeOrders.length) {
+      throw new MarketReconstructionError(
+        `Reconstructed book size (${book.size()}) does not match active orders count (${activeOrders.length}) for "${marketKey}"`,
+        { marketKey, reason: 'SNAPSHOT_SIZE_MISMATCH' }
+      );
+    }
+
+    if (book.totalQuantity() !== expectedTotalQty) {
+      throw new MarketReconstructionError(
+        `Reconstructed book total quantity (${book.totalQuantity()}) does not match expected total (${expectedTotalQty}) for "${marketKey}"`,
+        { marketKey, reason: 'SNAPSHOT_QUANTITY_MISMATCH' }
+      );
+    }
+
+    // Verify every active order individually
+    for (const dbOrder of activeOrders) {
+      const lookup = book.getOrder(dbOrder.id);
+      if (!lookup) {
+        throw new MarketReconstructionError(
+          `Order "${dbOrder.id}" exists in database snapshot but is missing from book`,
+          { marketKey, orderId: dbOrder.id, reason: 'ORDER_MISSING_FROM_BOOK' }
+        );
+      }
+      if (lookup.side !== dbOrder.side) {
+        throw new MarketReconstructionError(
+          `Order "${dbOrder.id}" side mismatch: expected ${dbOrder.side}, found ${lookup.side}`,
+          { marketKey, orderId: dbOrder.id, reason: 'ORDER_SIDE_MISMATCH' }
+        );
+      }
+      const bookOrder = lookup.order;
+      if (bookOrder.price !== dbOrder.price) {
+        throw new MarketReconstructionError(
+          `Order "${dbOrder.id}" price mismatch: expected ${dbOrder.price}, found ${bookOrder.price}`,
+          { marketKey, orderId: dbOrder.id, reason: 'ORDER_PRICE_MISMATCH' }
+        );
+      }
+      if (bookOrder.remainingQuantity !== dbOrder.remainingQuantity) {
+        throw new MarketReconstructionError(
+          `Order "${dbOrder.id}" remainingQuantity mismatch: expected ${dbOrder.remainingQuantity}, found ${bookOrder.remainingQuantity}`,
+          { marketKey, orderId: dbOrder.id, reason: 'ORDER_QUANTITY_MISMATCH' }
+        );
+      }
+      if (dbOrder.userId && bookOrder.userId !== dbOrder.userId) {
+        throw new MarketReconstructionError(
+          `Order "${dbOrder.id}" userId mismatch: expected ${dbOrder.userId}, found ${bookOrder.userId}`,
+          { marketKey, orderId: dbOrder.id, reason: 'ORDER_USER_MISMATCH' }
+        );
+      }
+      if (bookOrder.eventId !== eventId || bookOrder.ticketCategoryId !== ticketCategoryId) {
+        throw new MarketReconstructionError(
+          `Order "${dbOrder.id}" market mismatch: expected (${eventId}, ${ticketCategoryId}), found (${bookOrder.eventId}, ${bookOrder.ticketCategoryId})`,
+          { marketKey, orderId: dbOrder.id, reason: 'ORDER_MARKET_MISMATCH' }
+        );
+      }
+    }
+
+    // Verify FIFO ordering within each (side, price) level
+    const dbGroups = new Map();
+    for (const o of activeOrders) {
+      const key = `${o.side}:${o.price}`;
+      if (!dbGroups.has(key)) {
+        dbGroups.set(key, []);
+      }
+      dbGroups.get(key).push(o.id);
+    }
+
+    for (const [groupKey, expectedOrderIds] of dbGroups.entries()) {
+      const [side, priceStr] = groupKey.split(':');
+      const price = parseInt(priceStr, 10);
+      const bookOrders = book.getOrders(side).filter((o) => o.price === price);
+      const actualOrderIds = bookOrders.map((o) => o.id);
+
+      if (actualOrderIds.length !== expectedOrderIds.length) {
+        throw new MarketReconstructionError(
+          `FIFO queue count mismatch on ${side} at price ${price}: expected ${expectedOrderIds.length}, found ${actualOrderIds.length}`,
+          { marketKey, reason: 'FIFO_COUNT_MISMATCH' }
+        );
+      }
+
+      for (let i = 0; i < expectedOrderIds.length; i++) {
+        if (actualOrderIds[i] !== expectedOrderIds[i]) {
+          throw new MarketReconstructionError(
+            `FIFO queue ordering mismatch on ${side} at price ${price} at position ${i}: expected order "${expectedOrderIds[i]}", found "${actualOrderIds[i]}"`,
+            { marketKey, reason: 'FIFO_ORDERING_MISMATCH' }
+          );
+        }
+      }
+    }
+
+    // Check for phantom orders in the book
+    const activeIds = new Set(activeOrders.map((o) => o.id));
+    const allBookOrders = [...book.getOrders('BID'), ...book.getOrders('ASK')];
+    for (const o of allBookOrders) {
+      if (!activeIds.has(o.id)) {
+        throw new MarketReconstructionError(
+          `Phantom order "${o.id}" found in book that is not in database snapshot`,
+          { marketKey, orderId: o.id, reason: 'PHANTOM_ORDER_IN_BOOK' }
+        );
+      }
+    }
   }
 
   /**
@@ -699,10 +834,13 @@ export class PersistentMatchingService {
     }
 
     const activeOrders = await this.repository.findActiveOrdersByMarket(eventId, ticketCategoryId);
-    if (book.size() !== activeOrders.length) {
+    try {
+      this._verifyBookMatchesDatabaseSnapshot(book, activeOrders, { eventId, ticketCategoryId, marketKey });
+    } catch (err) {
+      this._quarantineCorruptedMarket(marketKey);
       throw new MarketNotSynchronizedError(
-        `Cannot mark market "${marketKey}" synchronized: in-memory book size (${book.size()}) does not match PostgreSQL active order count (${activeOrders.length}). Use reconstructMarket() instead.`,
-        { marketKey, bookSize: book.size(), activeOrdersCount: activeOrders.length }
+        `Cannot mark market "${marketKey}" synchronized: snapshot verification failed: ${err.message}`,
+        { marketKey, originalError: err }
       );
     }
 

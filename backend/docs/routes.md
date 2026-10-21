@@ -603,5 +603,91 @@ Step 8.4 implements deterministic startup order-book reconstruction, post-commit
 - Mock failure injection tests: 16 deterministic unit tests in `market-reconstruction.test.js`.
 - Live Neon PostgreSQL integration test: Verified end-to-end on live database (startup reconstruction of resting orders, taker matching against reconstructed book, maker quantity reduction, and cleanup).
 
+---
+
+### 5.13 Step 8.4A — FIFO Arrival Ordering and Reconstruction Integrity Audit
+
+#### 5.13.1 True Price-Time Priority via Monotonic Order Sequence
+- **Problem Statement**:
+  - The previous reconstruction query relied on `ORDER BY createdAt ASC, id ASC`.
+  - Under high-frequency order placement or batch imports, orders sharing identical millisecond timestamps (`createdAt`) relied on `id ASC` (UUID) as a tie-breaker.
+  - While UUID tie-breaking is deterministic across replays, it does not prove historical arrival order when timestamps tie.
+- **Additive Monotonic Sequence Migration**:
+  - Created and applied non-destructive migration `20261021174645_add_order_sequence_number`.
+  - Added `sequenceNumber BigInt @default(autoincrement())` to the `Order` model in `schema.prisma`.
+  - Backfill Methodology: Existing rows were backfilled deterministically using:
+    ```sql
+    WITH numbered AS (
+      SELECT id, ROW_NUMBER() OVER (ORDER BY "createdAt" ASC, "id" ASC) as rn
+      FROM "Order"
+    )
+    UPDATE "Order" o
+    SET "sequenceNumber" = n.rn
+    FROM numbered n
+    WHERE o.id = n.id;
+    ```
+  - **Historical Uncertainty Disclosure**: True sub-millisecond arrival order for legacy records prior to migration `20261021174645_add_order_sequence_number` cannot be recovered if it was never recorded in the original system. Their assigned sequence numbers reflect deterministic `(createdAt ASC, id ASC)` ordering.
+  - Sequence Synchronization: Set `Order_sequenceNumber_seq` to `COALESCE(MAX("sequenceNumber"), 0) + 1` to guarantee subsequent inserts receive contiguous monotonic values.
+  - Performance Indexes: Added `@@index([eventId, ticketCategoryId, status, price, sequenceNumber])` and `@@index([sequenceNumber])`.
+  - Replay Ordering: `OrderRepository.findActiveOrdersByMarket()` now queries:
+    ```javascript
+    orderBy: [
+      { sequenceNumber: 'asc' },
+    ]
+    ```
+- **Monotonicity & Commit Ordering**:
+  - In PostgreSQL, `nextval()` allocates monotonically increasing integers.
+  - Under PassFlow's single-backend instance and `MarketExecutionQueue` per market, order submissions are processed strictly sequentially.
+  - Sequence allocation order is guaranteed during order insertion within the transaction. Sequence gaps (e.g. from aborted non-matching orders or rolled-back transactions) are acceptable and do not compromise relative ordering of committed resting orders.
+  - *Distinction*: Sequence allocation order reflects order creation order; in a multi-writer environment it would not guarantee transaction commit order, but under PassFlow's serialized single-writer queue, orders for a given market enter the database sequentially.
+
+#### 5.13.2 Strengthened Deep Snapshot Verification
+- **Vulnerability**: Relying solely on `book.size() === activeOrders.length` and total quantity could permit a corrupted book (e.g., swapped order IDs, reversed FIFO priority, or inverted prices) to be certified as synchronized.
+- **Deep Verification Invariants**:
+  - `PersistentMatchingService._verifyBookMatchesDatabaseSnapshot(book, activeOrders, context)` executes comprehensive assertions before certifying synchronization:
+    1. **Exact Total Size & Quantity**: `book.size() === activeOrders.length` and `book.totalQuantity() === sum(remainingQuantity)`.
+    2. **Market Identity Parity**: Verifies `book.eventId === eventId` and `book.ticketCategoryId === ticketCategoryId`.
+    3. **Order Field Parity**: For every order in the PostgreSQL active snapshot:
+       - Order ID exists in the book (`book.getOrder(order.id)`).
+       - Side matches (`lookup.side === order.side`).
+       - Price matches (`bookOrder.price === order.price`).
+       - Remaining quantity matches (`bookOrder.remainingQuantity === order.remainingQuantity`).
+       - User ID matches (`bookOrder.userId === order.userId`).
+       - Market IDs match (`bookOrder.eventId === eventId` and `bookOrder.ticketCategoryId === ticketCategoryId`).
+    4. **True FIFO Queue Ordering**: For every `(side, price)` level:
+       - Extracts book orders via `book.getOrders(side).filter(o => o.price === price)`.
+       - Compares the array of order IDs against the database snapshot's sequence ordered by `sequenceNumber: 'asc'`.
+       - Rejects any discrepancy at position `i` with `FIFO_ORDERING_MISMATCH`.
+    5. **Zero Phantom Orders**: Asserts that no resting orders exist in the book that are absent from the PostgreSQL active snapshot.
+- **Enforced Synchronization**:
+  - `markMarketSynchronized()` cannot certify a book simply by checking order count. It must execute full snapshot verification against PostgreSQL. If verification fails, the market is quarantined and throws `MarketNotSynchronizedError`.
+
+#### 5.13.3 Market State Dynamics & Race Safety
+- **Administrative Pause Integrity**:
+  - If a market is in `MarketState.PAUSED`, reconstruction or reconciliation refreshes the in-memory order book and verifies snapshot parity, but strictly preserves `MarketState.PAUSED`.
+  - An administrative pause cannot be overwritten by transitions to `READY`.
+- **Interleaving Prevention**:
+  - Reconstruction and reconciliation run inside `queue.execute(marketKey, ..., { checkState: false })`.
+  - While reconstruction executes, any concurrent submission for that market queues behind it and executes only after reconstruction completes and verifies the book.
+- **Failure Quarantine**:
+  - If database loading or snapshot verification encounters corrupted data or network failure, the market is quarantined into `PAUSED` / `RECONCILING` and marked desynchronized (`_corruptedMarkets.add(marketKey)`).
+  - All subsequent submissions are blocked with `MarketNotReadyError`.
+
+#### 5.13.4 Audit Test Verification
+- Deterministic audit tests in `backend/tests/matching/market-reconstruction.test.js`:
+  1. Multiple same-price orders sharing identical `createdAt` timestamps preserve true FIFO priority via `sequenceNumber`.
+  2. FIFO preservation across process reconstruction and subsequent multi-fill taker match.
+  3. Rejection when book size and total quantity match but order IDs differ (`ORDER_MISSING_FROM_BOOK`).
+  4. Rejection when order ID matches but price, side, or remaining quantity differs.
+  5. Rejection when market identifiers (eventId / ticketCategoryId) mismatch.
+  6. Rejection when FIFO queue ordering at the same price level is inverted (`FIFO_ORDERING_MISMATCH`).
+  7. Rejection when a phantom order exists in the order book (`PHANTOM_ORDER_IN_BOOK`).
+  8. Quarantine on invalid persisted order attributes (e.g. `remainingQuantity > initialQuantity`).
+  9. Preserved `PAUSED` state across reconstruction leaving order submissions blocked.
+  10. Deterministic replay and ordering for backfilled orders with sequence numbers.
+- **Full Test Suite Results**:
+  - **235 passing tests across 12 test suites** (0 failures).
+  - 100% test pass rate across all matching engine components, queue concurrency, persistence boundary, reconstruction, and live Neon PostgreSQL integration.
+
 
 

@@ -25,6 +25,7 @@ model User {
   organizer    Organizer?
   buyerSeller  BuyerSeller?
   orders       Order[]
+  wallet       Wallet?
 }
 
 enum Role {
@@ -69,6 +70,48 @@ enum OrderStatus {
   FILLED
   CANCELLED
   REJECTED
+}
+
+enum HoldStatus {
+  ACTIVE
+  PARTIALLY_SETTLED
+  SETTLED
+  RELEASED
+}
+
+enum HoldReason {
+  ORDER_ESCROW
+  WITHDRAWAL_ESCROW
+  ADMINISTRATIVE_HOLD
+}
+
+enum LedgerEntryType {
+  DEPOSIT
+  WITHDRAWAL_LOCK
+  WITHDRAWAL_SETTLED
+  WITHDRAWAL_REFUNDED
+  ORDER_HOLD
+  ORDER_RELEASE
+  TRADE_SETTLEMENT_DEBIT
+  TRADE_SETTLEMENT_CREDIT
+  FEE_DEBIT
+  COMPENSATING_ADJUSTMENT
+}
+
+enum FinancialOperationType {
+  DEPOSIT
+  WITHDRAWAL
+  ORDER_ESCROW
+  ORDER_RELEASE
+  TRADE_SETTLEMENT
+  REFUND
+  COMPENSATING_ADJUSTMENT
+}
+
+enum FinancialOperationStatus {
+  PENDING
+  COMPLETED
+  FAILED
 }
 
 model Organizer {
@@ -153,15 +196,19 @@ model Order {
   remainingQuantity Int            // Unfilled quantity resting in the market
   idempotencyKey    String?        // Client-provided deduplication token
   stoppedReason     String?        // Recorded reason matching stopped (e.g. 'SELF_TRADE_PREVENTION')
+  sequenceNumber    BigInt         @unique @default(autoincrement())
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
 
   // Relationships
   incomingExecutions Execution[]   @relation("IncomingOrderExecutions")
   restingExecutions  Execution[]   @relation("RestingOrderExecutions")
+  ledgerEntries      WalletLedgerEntry[]
+  holds              WalletHold[]
 
   // Constraints & Indexes
   @@unique([userId, idempotencyKey])
+  @@index([eventId, ticketCategoryId, status, price, sequenceNumber])
   @@index([eventId, ticketCategoryId, status, price, createdAt])
   @@index([userId, createdAt])
 }
@@ -177,9 +224,107 @@ model Execution {
   sequenceNumber  BigInt   @default(autoincrement())
   executedAt      DateTime @default(now())
 
+  // Relationships
+  ledgerEntries   WalletLedgerEntry[]
+
   // Indexes for order history reconstruction and audit
   @@index([incomingOrderId])
   @@index([restingOrderId])
   @@index([sequenceNumber])
+}
+
+model Wallet {
+  id               String              @id @default(uuid())
+  userId           String              @unique
+  user             User                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  currency         String              @default("INR")
+  availableBalance BigInt              @default(0) // Available funds in minor units (paise)
+  reservedBalance  BigInt              @default(0) // Held/escrowed funds in minor units (paise)
+  version          BigInt              @default(0) // Optimistic concurrency control sequence
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  // Relationships
+  ledgerEntries    WalletLedgerEntry[]
+  holds            WalletHold[]
+
+  @@index([userId])
+}
+
+model FinancialOperation {
+  id             String                   @id @default(uuid())
+  idempotencyKey String                   @unique
+  operationType  FinancialOperationType
+  status         FinancialOperationStatus @default(PENDING)
+  referenceType  String?                  // e.g. 'ORDER', 'EXECUTION', 'PAYMENT_INTENT'
+  referenceId    String?                  // ID of referencing domain entity
+  description    String?
+  metadata       Json?
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+
+  // Relationships
+  ledgerEntries  WalletLedgerEntry[]
+  holds          WalletHold[]
+
+  @@index([operationType, status])
+  @@index([referenceType, referenceId])
+}
+
+model WalletHold {
+  id              String              @id @default(uuid())
+  walletId        String
+  wallet          Wallet              @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  operationId     String?
+  operation       FinancialOperation? @relation(fields: [operationId], references: [id], onDelete: Restrict)
+  orderId         String?
+  order           Order?              @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  reason          HoldReason          @default(ORDER_ESCROW)
+  status          HoldStatus          @default(ACTIVE)
+  heldAmount      BigInt              // Total initial reservation in paise
+  remainingAmount BigInt              // Currently active reservation in paise
+  idempotencyKey  String?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  // Relationships
+  ledgerEntries   WalletLedgerEntry[]
+
+  @@unique([walletId, idempotencyKey])
+  @@index([walletId, status])
+  @@index([orderId])
+  @@index([operationId])
+}
+
+model WalletLedgerEntry {
+  id                    String              @id @default(uuid())
+  walletId              String
+  wallet                Wallet              @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  operationId           String?
+  operation             FinancialOperation? @relation(fields: [operationId], references: [id], onDelete: Restrict)
+  sequenceNumber        BigInt              @unique @default(autoincrement())
+  entryType             LedgerEntryType
+  amount                BigInt              // Absolute monetary amount in paise (> 0)
+  availableDelta        BigInt              // Signed change to availableBalance
+  reservedDelta         BigInt              // Signed change to reservedBalance
+  balanceAfterAvailable BigInt              // Snapshot of availableBalance after entry
+  balanceAfterReserved  BigInt              // Snapshot of reservedBalance after entry
+  holdId                String?
+  hold                  WalletHold?         @relation(fields: [holdId], references: [id], onDelete: Restrict)
+  orderId               String?
+  order                 Order?              @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  executionId           String?
+  execution             Execution?          @relation(fields: [executionId], references: [id], onDelete: Restrict)
+  idempotencyKey        String?
+  description           String?
+  createdAt             DateTime            @default(now())
+
+  @@unique([walletId, idempotencyKey])
+  @@index([walletId, sequenceNumber])
+  @@index([walletId, createdAt])
+  @@index([operationId])
+  @@index([holdId])
+  @@index([orderId])
+  @@index([executionId])
 }
 

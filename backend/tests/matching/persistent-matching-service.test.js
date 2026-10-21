@@ -40,6 +40,7 @@ class MockPrismaClient {
     this.orders = new Map(); // id -> record
     this.executions = new Map(); // id -> record
     this.sequenceCounter = 1n;
+    this.orderSequenceCounter = 1n;
     this.failNextTransaction = null; // Error to throw if set
     this.transactionDelayPromise = null;
   }
@@ -64,12 +65,32 @@ class MockPrismaClient {
         }
         return null;
       },
-      findMany: async ({ where } = {}) => {
+      findMany: async ({ where, orderBy } = {}) => {
         let results = Array.from(this.orders.values());
         if (where) {
           if (where.eventId) results = results.filter((o) => o.eventId === where.eventId);
           if (where.ticketCategoryId) results = results.filter((o) => o.ticketCategoryId === where.ticketCategoryId);
           if (where.status?.in) results = results.filter((o) => where.status.in.includes(o.status));
+        }
+        if (orderBy && Array.isArray(orderBy)) {
+          results.sort((a, b) => {
+            for (const clause of orderBy) {
+              const key = Object.keys(clause)[0];
+              const dir = clause[key] === 'desc' ? -1 : 1;
+              let va = a[key];
+              let vb = b[key];
+              if (typeof va === 'bigint' || typeof vb === 'bigint') {
+                va = BigInt(va || 0);
+                vb = BigInt(vb || 0);
+                if (va < vb) return -1 * dir;
+                if (va > vb) return 1 * dir;
+              } else {
+                if (va < vb) return -1 * dir;
+                if (va > vb) return 1 * dir;
+              }
+            }
+            return 0;
+          });
         }
         return results;
       },
@@ -88,7 +109,8 @@ class MockPrismaClient {
         const record = {
           ...data,
           id: data.id || `order-${Math.random().toString(36).substring(2, 9)}`,
-          createdAt: new Date(),
+          sequenceNumber: data.sequenceNumber !== undefined ? BigInt(data.sequenceNumber) : this.orderSequenceCounter++,
+          createdAt: data.createdAt || new Date(),
           updatedAt: new Date(),
         };
         this.orders.set(record.id, record);

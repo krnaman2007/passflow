@@ -54,6 +54,7 @@ class MockPrismaClient {
     this.orders = new Map();
     this.executions = new Map();
     this.sequenceCounter = 1n;
+    this.orderSequenceCounter = 1n;
     this.failNextTransaction = null;
     this.failNextFindMany = null;
     this.failNextFindUnique = null;
@@ -105,8 +106,10 @@ class MockPrismaClient {
             for (const clause of orderBy) {
               const key = Object.keys(clause)[0];
               const dir = clause[key] === 'desc' ? -1 : 1;
-              if (a[key] < b[key]) return -1 * dir;
-              if (a[key] > b[key]) return 1 * dir;
+              const valA = a[key] !== undefined ? a[key] : 0n;
+              const valB = b[key] !== undefined ? b[key] : 0n;
+              if (valA < valB) return -1 * dir;
+              if (valA > valB) return 1 * dir;
             }
             return 0;
           });
@@ -131,6 +134,10 @@ class MockPrismaClient {
         const record = {
           ...data,
           id: data.id || `order-${Math.random().toString(36).substring(2, 9)}`,
+          sequenceNumber:
+            data.sequenceNumber !== undefined
+              ? (typeof data.sequenceNumber === 'bigint' ? data.sequenceNumber : BigInt(data.sequenceNumber))
+              : this.orderSequenceCounter++,
           createdAt: data.createdAt || new Date(),
           updatedAt: new Date(),
         };
@@ -180,6 +187,7 @@ class MockPrismaClient {
     const snapshotOrders = new Map(Array.from(this.orders.entries()).map(([k, v]) => [k, { ...v }]));
     const snapshotExecutions = new Map(Array.from(this.executions.entries()).map(([k, v]) => [k, { ...v }]));
     const snapshotSeq = this.sequenceCounter;
+    const snapshotOrderSeq = this.orderSequenceCounter;
 
     try {
       const result = await fn(this);
@@ -188,6 +196,7 @@ class MockPrismaClient {
       this.orders = snapshotOrders;
       this.executions = snapshotExecutions;
       this.sequenceCounter = snapshotSeq;
+      this.orderSequenceCounter = snapshotOrderSeq;
       throw err;
     }
   }
@@ -829,7 +838,450 @@ describe('Step 8.4 — Startup Order-Book Reconstruction and Reconciliation', ()
     });
   });
 
-  describe('17. Live PostgreSQL Database Integration (Neon)', () => {
+  describe('17. Step 8.4A — FIFO Arrival Ordering and Snapshot Verification Audit', () => {
+    it('preserves true FIFO queue priority when multiple same-price orders share identical createdAt timestamps', async () => {
+      const identicalTime = new Date(1700000000000);
+
+      // Seed 3 ASKs at price 10000 with identical createdAt, but monotonically increasing sequenceNumbers
+      await mockPrisma.order.create({
+        data: {
+          id: 'ask-tied-ts-1',
+          userId: 'seller-1',
+          eventId: MARKET_CONFIG.eventId,
+          ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+          side: 'ASK',
+          status: 'OPEN',
+          price: 10000,
+          initialQuantity: 2,
+          remainingQuantity: 2,
+          sequenceNumber: 101n,
+          createdAt: identicalTime,
+        },
+      });
+
+      await mockPrisma.order.create({
+        data: {
+          id: 'ask-tied-ts-2',
+          userId: 'seller-2',
+          eventId: MARKET_CONFIG.eventId,
+          ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+          side: 'ASK',
+          status: 'OPEN',
+          price: 10000,
+          initialQuantity: 3,
+          remainingQuantity: 3,
+          sequenceNumber: 102n,
+          createdAt: identicalTime,
+        },
+      });
+
+      await mockPrisma.order.create({
+        data: {
+          id: 'ask-tied-ts-3',
+          userId: 'seller-3',
+          eventId: MARKET_CONFIG.eventId,
+          ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+          side: 'ASK',
+          status: 'OPEN',
+          price: 10000,
+          initialQuantity: 5,
+          remainingQuantity: 5,
+          sequenceNumber: 103n,
+          createdAt: identicalTime,
+        },
+      });
+
+      // Reconstruct market
+      const reconResult = await service.initializeAndSynchronizeMarket(MARKET_CONFIG);
+      expect(reconResult.activeOrdersCount).toBe(3);
+      expect(reconResult.totalRemainingQuantity).toBe(10);
+      expect(reconResult.marketState).toBe(MarketState.READY);
+
+      const book = service.getMarketBook(MARKET_KEY);
+      const restingAsks = book.getOrders('ASK');
+      expect(restingAsks.map((o) => o.id)).toEqual(['ask-tied-ts-1', 'ask-tied-ts-2', 'ask-tied-ts-3']);
+
+      // Submit matching incoming BID for 4 units at 10000
+      // Must fill ask-tied-ts-1 completely (2 units), and ask-tied-ts-2 partially (2 units), leaving ask-tied-ts-3 untouched!
+      const takerSub = await service.submitLimitOrder({
+        ...MARKET_CONFIG,
+        userId: 'buyer-taker',
+        side: 'BID',
+        price: 10000,
+        quantity: 4,
+        idempotencyKey: 'taker-tied-ts-match',
+      });
+
+      expect(takerSub.matchedQuantity).toBe(4);
+      expect(takerSub.executions).toHaveLength(2);
+      expect(takerSub.executions[0].restingOrderId).toBe('ask-tied-ts-1');
+      expect(takerSub.executions[0].quantity).toBe(2);
+      expect(takerSub.executions[1].restingOrderId).toBe('ask-tied-ts-2');
+      expect(takerSub.executions[1].quantity).toBe(2);
+    });
+
+    it('preserves FIFO priority across process reconstruction and subsequent match', async () => {
+      // Seed 2 resting bids at 8000: first seq=10n, second seq=20n
+      await mockPrisma.order.create({
+        data: {
+          id: 'bid-first',
+          userId: 'buyer-1',
+          eventId: MARKET_CONFIG.eventId,
+          ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+          side: 'BID',
+          status: 'OPEN',
+          price: 8000,
+          initialQuantity: 5,
+          remainingQuantity: 5,
+          sequenceNumber: 10n,
+        },
+      });
+
+      await mockPrisma.order.create({
+        data: {
+          id: 'bid-second',
+          userId: 'buyer-2',
+          eventId: MARKET_CONFIG.eventId,
+          ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+          side: 'BID',
+          status: 'OPEN',
+          price: 8000,
+          initialQuantity: 5,
+          remainingQuantity: 5,
+          sequenceNumber: 20n,
+        },
+      });
+
+      // Simulate crash and restart
+      const restartedService = new PersistentMatchingService({
+        repository,
+        queue: new MarketExecutionQueue(),
+        coordinator: new MatchingCoordinator(),
+      });
+
+      await restartedService.initializeAndSynchronizeMarket(MARKET_CONFIG);
+
+      // Match 3 units with incoming ASK at 8000
+      const sub = await restartedService.submitLimitOrder({
+        ...MARKET_CONFIG,
+        userId: 'seller-taker',
+        side: 'ASK',
+        price: 8000,
+        quantity: 3,
+        idempotencyKey: 'taker-ask-fifo',
+      });
+
+      expect(sub.matchedQuantity).toBe(3);
+      expect(sub.executions).toHaveLength(1);
+      expect(sub.executions[0].restingOrderId).toBe('bid-first');
+    });
+
+    it('rejects book synchronization if total size and quantity match but order IDs differ', async () => {
+      // DB has order-A (qty: 5, price: 9000, side: BID)
+      await mockPrisma.order.create({
+        data: {
+          id: 'db-order-A',
+          userId: 'user-a',
+          eventId: MARKET_CONFIG.eventId,
+          ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+          side: 'BID',
+          status: 'OPEN',
+          price: 9000,
+          initialQuantity: 5,
+          remainingQuantity: 5,
+          sequenceNumber: 1n,
+        },
+      });
+
+      // Register an order book with a different order ID (different-order-B) but identical price, side, and quantity
+      const corruptedBook = new OrderBook(MARKET_CONFIG);
+      corruptedBook.addOrder('BID', {
+        id: 'different-order-B',
+        userId: 'user-a',
+        eventId: MARKET_CONFIG.eventId,
+        ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+        side: 'BID',
+        price: 9000,
+        initialQuantity: 5,
+        remainingQuantity: 5,
+      });
+
+      service.registerMarketBook(MARKET_CONFIG, corruptedBook);
+
+      await expect(service.markMarketSynchronized(MARKET_CONFIG)).rejects.toThrow(
+        MarketNotSynchronizedError
+      );
+      expect(service.isMarketSynchronized(MARKET_KEY)).toBe(false);
+    });
+
+    it('rejects book synchronization if order ID matches but price, side, or remainingQuantity differs', async () => {
+      await mockPrisma.order.create({
+        data: {
+          id: 'order-diff-fields',
+          userId: 'user-diff',
+          eventId: MARKET_CONFIG.eventId,
+          ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+          side: 'ASK',
+          status: 'OPEN',
+          price: 15000,
+          initialQuantity: 10,
+          remainingQuantity: 10,
+          sequenceNumber: 1n,
+        },
+      });
+
+      // 1. Wrong price
+      const bookWrongPrice = new OrderBook(MARKET_CONFIG);
+      bookWrongPrice.addOrder('ASK', {
+        id: 'order-diff-fields',
+        userId: 'user-diff',
+        eventId: MARKET_CONFIG.eventId,
+        ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+        side: 'ASK',
+        price: 16000, // wrong price
+        initialQuantity: 10,
+        remainingQuantity: 10,
+      });
+      service.registerMarketBook(MARKET_CONFIG, bookWrongPrice);
+      await expect(service.markMarketSynchronized(MARKET_CONFIG)).rejects.toThrow(
+        MarketNotSynchronizedError
+      );
+
+      // 2. Wrong side
+      const bookWrongSide = new OrderBook(MARKET_CONFIG);
+      bookWrongSide.addOrder('BID', {
+        id: 'order-diff-fields',
+        userId: 'user-diff',
+        eventId: MARKET_CONFIG.eventId,
+        ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+        side: 'BID', // wrong side
+        price: 15000,
+        initialQuantity: 10,
+        remainingQuantity: 10,
+      });
+      service.registerMarketBook(MARKET_CONFIG, bookWrongSide);
+      await expect(service.markMarketSynchronized(MARKET_CONFIG)).rejects.toThrow(
+        MarketNotSynchronizedError
+      );
+
+      // 3. Wrong remainingQuantity
+      const bookWrongQty = new OrderBook(MARKET_CONFIG);
+      bookWrongQty.addOrder('ASK', {
+        id: 'order-diff-fields',
+        userId: 'user-diff',
+        eventId: MARKET_CONFIG.eventId,
+        ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+        side: 'ASK',
+        price: 15000,
+        initialQuantity: 10,
+        remainingQuantity: 8, // wrong quantity
+      });
+      service.registerMarketBook(MARKET_CONFIG, bookWrongQty);
+      await expect(service.markMarketSynchronized(MARKET_CONFIG)).rejects.toThrow(
+        MarketNotSynchronizedError
+      );
+    });
+
+    it('rejects book synchronization if book contains market identifier mismatch', async () => {
+      const wrongMarketBook = new OrderBook({
+        eventId: 'different-event-id',
+        ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+      });
+
+      service.registerMarketBook(MARKET_CONFIG, wrongMarketBook);
+
+      await expect(service.markMarketSynchronized(MARKET_CONFIG)).rejects.toThrow(
+        MarketNotSynchronizedError
+      );
+    });
+
+    it('rejects book synchronization if FIFO queue order at the same price level is inverted', async () => {
+      // In DB: order-1 (seq 1) then order-2 (seq 2)
+      await mockPrisma.order.create({
+        data: {
+          id: 'fifo-order-1',
+          userId: 'user-1',
+          eventId: MARKET_CONFIG.eventId,
+          ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+          side: 'BID',
+          status: 'OPEN',
+          price: 5000,
+          initialQuantity: 2,
+          remainingQuantity: 2,
+          sequenceNumber: 1n,
+        },
+      });
+
+      await mockPrisma.order.create({
+        data: {
+          id: 'fifo-order-2',
+          userId: 'user-2',
+          eventId: MARKET_CONFIG.eventId,
+          ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+          side: 'BID',
+          status: 'OPEN',
+          price: 5000,
+          initialQuantity: 2,
+          remainingQuantity: 2,
+          sequenceNumber: 2n,
+        },
+      });
+
+      // Book has them added in inverted order (order-2 first, then order-1)
+      const invertedBook = new OrderBook(MARKET_CONFIG);
+      invertedBook.addOrder('BID', {
+        id: 'fifo-order-2',
+        userId: 'user-2',
+        eventId: MARKET_CONFIG.eventId,
+        ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+        side: 'BID',
+        price: 5000,
+        initialQuantity: 2,
+        remainingQuantity: 2,
+      });
+      invertedBook.addOrder('BID', {
+        id: 'fifo-order-1',
+        userId: 'user-1',
+        eventId: MARKET_CONFIG.eventId,
+        ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+        side: 'BID',
+        price: 5000,
+        initialQuantity: 2,
+        remainingQuantity: 2,
+      });
+
+      service.registerMarketBook(MARKET_CONFIG, invertedBook);
+
+      await expect(service.markMarketSynchronized(MARKET_CONFIG)).rejects.toThrow(
+        MarketNotSynchronizedError
+      );
+    });
+
+    it('rejects book synchronization if a phantom order exists in the order book', async () => {
+      // DB is empty, but book has an order
+      const phantomBook = new OrderBook(MARKET_CONFIG);
+      phantomBook.addOrder('ASK', {
+        id: 'phantom-order-x',
+        userId: 'ghost-user',
+        eventId: MARKET_CONFIG.eventId,
+        ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+        side: 'ASK',
+        price: 20000,
+        initialQuantity: 1,
+        remainingQuantity: 1,
+      });
+
+      service.registerMarketBook(MARKET_CONFIG, phantomBook);
+
+      await expect(service.markMarketSynchronized(MARKET_CONFIG)).rejects.toThrow(
+        MarketNotSynchronizedError
+      );
+    });
+
+    it('quarantines market and prevents READY transition when persisted order has invalid attributes', async () => {
+      // Persisted active order where remainingQuantity exceeds initialQuantity
+      await mockPrisma.order.create({
+        data: {
+          id: 'invalid-qty-order',
+          userId: 'user-inv',
+          eventId: MARKET_CONFIG.eventId,
+          ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+          side: 'BID',
+          status: 'OPEN',
+          price: 5000,
+          initialQuantity: 2,
+          remainingQuantity: 5, // invalid: exceeds initialQuantity
+          sequenceNumber: 1n,
+        },
+      });
+
+      await expect(service.initializeAndSynchronizeMarket(MARKET_CONFIG)).rejects.toThrow(
+        MarketReconstructionError
+      );
+      expect(service.isMarketSynchronized(MARKET_KEY)).toBe(false);
+    });
+
+    it('preserves PAUSED state during reconstruction and leaves submissions blocked', async () => {
+      await mockPrisma.order.create({
+        data: {
+          id: 'paused-market-order',
+          userId: 'seller-p',
+          eventId: MARKET_CONFIG.eventId,
+          ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+          side: 'ASK',
+          status: 'OPEN',
+          price: 11000,
+          initialQuantity: 2,
+          remainingQuantity: 2,
+          sequenceNumber: 1n,
+        },
+      });
+
+      // Register market and set to PAUSED
+      stateManager.registerMarket(MARKET_KEY, MarketState.PAUSED);
+
+      const result = await service.reconstructMarket(MARKET_CONFIG);
+      expect(result.marketState).toBe(MarketState.PAUSED);
+      expect(stateManager.getState(MARKET_KEY)).toBe(MarketState.PAUSED);
+
+      // Submissions must remain rejected
+      await expect(
+        service.submitLimitOrder({
+          ...MARKET_CONFIG,
+          userId: 'buyer-during-pause',
+          side: 'BID',
+          price: 11000,
+          quantity: 1,
+          idempotencyKey: 'blocked-pause-sub',
+        })
+      ).rejects.toThrow(MarketNotReadyError);
+    });
+
+    it('handles deterministic ordering for backfilled orders with sequence numbers', async () => {
+      // Seed backfilled orders with consecutive sequence numbers
+      await mockPrisma.order.create({
+        data: {
+          id: 'backfill-order-1',
+          userId: 'user-b1',
+          eventId: MARKET_CONFIG.eventId,
+          ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+          side: 'BID',
+          status: 'OPEN',
+          price: 7000,
+          initialQuantity: 1,
+          remainingQuantity: 1,
+          sequenceNumber: 1n,
+          createdAt: new Date(1600000000000),
+        },
+      });
+
+      await mockPrisma.order.create({
+        data: {
+          id: 'backfill-order-2',
+          userId: 'user-b2',
+          eventId: MARKET_CONFIG.eventId,
+          ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+          side: 'BID',
+          status: 'OPEN',
+          price: 7000,
+          initialQuantity: 2,
+          remainingQuantity: 2,
+          sequenceNumber: 2n,
+          createdAt: new Date(1600000001000),
+        },
+      });
+
+      const res = await service.initializeAndSynchronizeMarket(MARKET_CONFIG);
+      expect(res.marketState).toBe(MarketState.READY);
+
+      const book = service.getMarketBook(MARKET_KEY);
+      const orders = book.getOrders('BID');
+      expect(orders[0].id).toBe('backfill-order-1');
+      expect(orders[1].id).toBe('backfill-order-2');
+    });
+  });
+
+  describe('18. Live PostgreSQL Database Integration (Neon)', () => {
     it('performs live startup reconstruction, matching, and reconciliation on real Neon database', async () => {
       if (!process.env.DATABASE_URL) {
         console.warn('DATABASE_URL not set; skipping live Neon integration test');

@@ -101,8 +101,7 @@ export class OrderRepository {
         status: { in: ['OPEN', 'PARTIALLY_FILLED'] },
       },
       orderBy: [
-        { createdAt: 'asc' },
-        { id: 'asc' },
+        { sequenceNumber: 'asc' },
       ],
     });
   }
