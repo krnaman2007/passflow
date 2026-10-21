@@ -792,6 +792,99 @@ Step 8.4 implements deterministic startup order-book reconstruction, post-commit
 - **Full Backend Test Suite Results**:
   - **247 passing tests across 13 test suites** (0 failures).
 
+---
+
+### 5.14A Step 9.1A — Wallet Schema Integrity and Ledger Immutability Audit
+
+#### 5.14A.1 Database-Enforced Ledger Immutability (PostgreSQL Triggers)
+- **Problem Statement**:
+  - While Step 9.1 established `onDelete: Restrict` on foreign keys, foreign key constraints only protect parent rows from deletion.
+  - Foreign keys do **not** prevent direct `UPDATE` or `DELETE` statements on `WalletLedgerEntry` rows.
+- **Trigger-Level Immutability Enforcement**:
+  - Created and applied migration `20261021184500_enforce_ledger_immutability_and_balance_checks`.
+  - Added PL/pgSQL function `prevent_wallet_ledger_mutation()`:
+    ```sql
+    CREATE OR REPLACE FUNCTION prevent_wallet_ledger_mutation()
+    RETURNS TRIGGER AS $$
+    BEGIN
+      IF TG_OP = 'UPDATE' THEN
+        RAISE EXCEPTION 'WalletLedgerEntry records are immutable: UPDATE operations are strictly prohibited. Use COMPENSATING_ADJUSTMENT entries instead.';
+      ELSIF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'WalletLedgerEntry records are immutable: DELETE operations are strictly prohibited.';
+      END IF;
+      RETURN NULL;
+    END;
+    $$ LANGUAGE plpgsql;
+    ```
+  - Attached row-level trigger `wallet_ledger_immutability_trigger` (`BEFORE UPDATE OR DELETE ON "WalletLedgerEntry" FOR EACH ROW`).
+  - Attached statement-level trigger `wallet_ledger_truncate_trigger` (`BEFORE TRUNCATE ON "WalletLedgerEntry" FOR EACH STATEMENT`).
+  - **Compensating Entries Allowed**: Normal `INSERT` operations remain fully permitted. Legitimate accounting corrections are strictly recorded as new `COMPENSATING_ADJUSTMENT` entries referencing prior sequences.
+- **Database Role & Privileged-Administrator Limitations**:
+  - The triggers enforce immutability for all DML operations executed by the application database role.
+  - *Limitation*: PostgreSQL triggers can be bypassed by users with `SUPERUSER` or table ownership privileges (`ALTER TABLE "WalletLedgerEntry" DISABLE TRIGGER ...` or `DROP TRIGGER ...`). In production deployments, application connections must use an unprivileged role without table DDL or trigger modification rights. Zero-trust tamper-proofing against root database administrators requires external append-only audit replication (e.g. AWS QLDB or WORM storage).
+
+#### 5.14A.2 Database-Enforced Balance CHECK Constraints
+- **CHECK Constraints Added**:
+  1. `Wallet`:
+     - `"wallet_available_balance_non_negative"`: `CHECK ("availableBalance" >= 0)`
+     - `"wallet_reserved_balance_non_negative"`: `CHECK ("reservedBalance" >= 0)`
+     - `"wallet_version_non_negative"`: `CHECK ("version" >= 0)`
+  2. `WalletHold`:
+     - `"wallet_hold_held_amount_positive"`: `CHECK ("heldAmount" > 0)`
+     - `"wallet_hold_remaining_amount_non_negative"`: `CHECK ("remainingAmount" >= 0)`
+     - `"wallet_hold_remaining_lte_held"`: `CHECK ("remainingAmount" <= "heldAmount")`
+  3. `WalletLedgerEntry`:
+     - `"wallet_ledger_amount_positive"`: `CHECK ("amount" > 0)`
+     - `"wallet_ledger_snapshot_available_non_negative"`: `CHECK ("balanceAfterAvailable" >= 0)`
+     - `"wallet_ledger_snapshot_reserved_non_negative"`: `CHECK ("balanceAfterReserved" >= 0)`
+- **Locally Enforceable vs. Cross-Row Invariants**:
+  - *Locally Enforceable*: Single-row invariants (non-negative balances, positive amounts, remaining $\le$ held) are verified atomically by PostgreSQL upon every insert and update.
+  - *Cross-Row Invariants*: PostgreSQL CHECK constraints cannot evaluate aggregate sums across multiple rows (e.g. `Wallet.availableBalance == SUM(WalletLedgerEntry.availableDelta)` or `Wallet.reservedBalance == SUM(WalletHold.remainingAmount)`). These invariants require transactional service boundaries and reconciliation audits.
+
+#### 5.14A.3 Transactional Boundary for Future Wallet Operations
+- All future balance-mutating operations in Step 9.2 must execute within a strict, single PostgreSQL transaction (`prisma.$transaction`):
+  1. Acquire pessimistic row lock (`SELECT ... FOR UPDATE`) or verify optimistic version lock (`version = version + 1`).
+  2. Update `Wallet` balance projection (`availableBalance`, `reservedBalance`).
+  3. Insert corresponding `WalletLedgerEntry` recording signed deltas and post-mutation balance snapshots.
+  4. Update or insert relevant `WalletHold` or `FinancialOperation`.
+  5. Commit all changes atomically.
+- A failure at any step rolls back the transaction, guaranteeing zero partial writes or orphaned ledger entries.
+
+#### 5.14A.4 Idempotency & Sequence Semantics
+- **Uniqueness Semantics on Nullable Keys**:
+  - In PostgreSQL standard btree indexing, `NULL` values are treated as distinct (`NULL != NULL`).
+  - Therefore, `WalletLedgerEntry` and `WalletHold` allow multiple rows with `idempotencyKey = NULL` for internal or system-generated transactions.
+  - When an `idempotencyKey` is non-null, `@@unique([walletId, idempotencyKey])` strictly rejects duplicate submissions for that wallet.
+- **Payload Mismatch Invariant**:
+  - Database uniqueness prevents duplicate inserts on retries.
+  - The future wallet service must verify that a matching idempotency key shares identical parameters (amount, operation type, wallet ID). If payloads mismatch, the service must throw `IdempotencyPayloadMismatchError`.
+- **Sequence Semantics**:
+  - `WalletLedgerEntry.sequenceNumber` and `Order.sequenceNumber` are allocated monotonically via `nextval()`.
+  - Monotonic sequence allocation order does not guarantee transaction commit order if concurrent transactions commit out of order.
+  - Sequence gaps (from aborted transactions) are expected and acceptable.
+
+#### 5.14A.5 Migration Details & Status
+- **Migration**: `20261021184500_enforce_ledger_immutability_and_balance_checks`
+- **Application**: Applied cleanly to Neon PostgreSQL (`neondb` on AWS us-east-2).
+- **Status**: `6 migrations found in prisma/migrations. Database schema is up to date!`
+
+#### 5.14A.6 Integration Test Results
+- **Suite**: `backend/tests/wallet/wallet-ledger-schema.test.js`
+  - **25 integration tests** executed against live Neon PostgreSQL (100% pass):
+    - Immutability trigger rejects `UPDATE` with exact trigger error message.
+    - Immutability trigger rejects `DELETE` with exact trigger error message.
+    - Immutability trigger rejects `TRUNCATE` with exact trigger error message.
+    - Normal `INSERT` on `WalletLedgerEntry` continues to succeed.
+    - CHECK constraint rejects negative `availableBalance` on `Wallet`.
+    - CHECK constraint rejects negative `reservedBalance` on `Wallet`.
+    - CHECK constraint rejects negative `version` on `Wallet`.
+    - CHECK constraint rejects `heldAmount <= 0` on `WalletHold`.
+    - CHECK constraint rejects `remainingAmount < 0` on `WalletHold`.
+    - CHECK constraint rejects `remainingAmount > heldAmount` on `WalletHold`.
+    - CHECK constraint rejects `amount <= 0` on `WalletLedgerEntry`.
+    - Multiple `NULL` idempotency keys permitted; duplicate non-null keys rejected.
+- **Full Backend Suite**: **260 passing tests across 13 test suites** (0 failures).
+
 
 
 

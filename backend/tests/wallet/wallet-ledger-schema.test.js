@@ -113,6 +113,10 @@ describe('Step 9.1 — Wallet and Immutable Ledger Schema (Live PostgreSQL)', ()
   afterAll(async () => {
     // Clean up created entities in reverse order of foreign keys
     try {
+      // Temporarily disable immutability triggers under table owner role for test teardown
+      await livePrisma.$executeRawUnsafe(`ALTER TABLE "WalletLedgerEntry" DISABLE TRIGGER wallet_ledger_immutability_trigger`);
+      await livePrisma.$executeRawUnsafe(`ALTER TABLE "WalletLedgerEntry" DISABLE TRIGGER wallet_ledger_truncate_trigger`);
+
       await livePrisma.walletLedgerEntry.deleteMany({
         where: { wallet: { userId: { in: [testUser.id, secondUser.id] } } },
       });
@@ -151,6 +155,10 @@ describe('Step 9.1 — Wallet and Immutable Ledger Schema (Live PostgreSQL)', ()
           },
         },
       });
+
+      // Re-enable immutability triggers
+      await livePrisma.$executeRawUnsafe(`ALTER TABLE "WalletLedgerEntry" ENABLE TRIGGER wallet_ledger_immutability_trigger`);
+      await livePrisma.$executeRawUnsafe(`ALTER TABLE "WalletLedgerEntry" ENABLE TRIGGER wallet_ledger_truncate_trigger`);
     } catch (err) {
       console.warn('Cleanup error in wallet schema test:', err.message);
     }
@@ -425,6 +433,257 @@ describe('Step 9.1 — Wallet and Immutable Ledger Schema (Live PostgreSQL)', ()
             remainingQuantity: 1,
             sequenceNumber: existingOrder.sequenceNumber,
             idempotencyKey: `seq-collision-test-${suffix}`,
+          },
+        })
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('7. PostgreSQL Immutability Trigger Enforcement', () => {
+    it('rejects direct UPDATE attempts on existing WalletLedgerEntry records with trigger exception', async () => {
+      const wallet = await livePrisma.wallet.findUnique({ where: { userId: testUser.id } });
+      const entry = await livePrisma.walletLedgerEntry.findFirst({
+        where: { walletId: wallet.id },
+      });
+
+      expect(entry).toBeDefined();
+
+      // Direct SQL UPDATE must be rejected by wallet_ledger_immutability_trigger
+      await expect(
+        livePrisma.$executeRaw`
+          UPDATE "WalletLedgerEntry"
+          SET description = 'tampered description'
+          WHERE id = ${entry.id}
+        `
+      ).rejects.toThrow(/WalletLedgerEntry records are immutable: UPDATE operations are strictly prohibited/);
+    });
+
+    it('rejects direct DELETE attempts on existing WalletLedgerEntry records with trigger exception', async () => {
+      const wallet = await livePrisma.wallet.findUnique({ where: { userId: testUser.id } });
+      const entry = await livePrisma.walletLedgerEntry.findFirst({
+        where: { walletId: wallet.id },
+      });
+
+      expect(entry).toBeDefined();
+
+      // Direct SQL DELETE must be rejected by wallet_ledger_immutability_trigger
+      await expect(
+        livePrisma.$executeRaw`
+          DELETE FROM "WalletLedgerEntry"
+          WHERE id = ${entry.id}
+        `
+      ).rejects.toThrow(/WalletLedgerEntry records are immutable: DELETE operations are strictly prohibited/);
+    });
+
+    it('rejects TRUNCATE attempts on WalletLedgerEntry table with trigger exception', async () => {
+      await expect(
+        livePrisma.$executeRaw`TRUNCATE TABLE "WalletLedgerEntry"`
+      ).rejects.toThrow(/WalletLedgerEntry records are immutable: TRUNCATE operations are strictly prohibited/);
+    });
+
+    it('permits normal insertion of new ledger entries', async () => {
+      const wallet = await livePrisma.wallet.findUnique({ where: { userId: testUser.id } });
+
+      const newEntry = await livePrisma.walletLedgerEntry.create({
+        data: {
+          walletId: wallet.id,
+          entryType: 'COMPENSATING_ADJUSTMENT',
+          amount: 5000n,
+          availableDelta: 5000n,
+          reservedDelta: 0n,
+          balanceAfterAvailable: 35000n,
+          balanceAfterReserved: 10000n,
+          description: 'Compensating customer credit',
+        },
+      });
+
+      expect(newEntry.id).toBeDefined();
+      expect(newEntry.entryType).toBe('COMPENSATING_ADJUSTMENT');
+    });
+  });
+
+  describe('8. Database-Enforced Balance CHECK Constraints', () => {
+    it('rejects negative availableBalance on Wallet via CHECK constraint', async () => {
+      const thirdUser = await livePrisma.user.create({
+        data: {
+          email: `check-user-1-${suffix}@test.passflow.com`,
+          passwordHash: 'dummy',
+        },
+      });
+
+      await expect(
+        livePrisma.wallet.create({
+          data: {
+            userId: thirdUser.id,
+            availableBalance: -100n, // Violates wallet_available_balance_non_negative
+            reservedBalance: 0n,
+          },
+        })
+      ).rejects.toThrow();
+    });
+
+    it('rejects negative reservedBalance on Wallet via CHECK constraint', async () => {
+      const fourthUser = await livePrisma.user.create({
+        data: {
+          email: `check-user-2-${suffix}@test.passflow.com`,
+          passwordHash: 'dummy',
+        },
+      });
+
+      await expect(
+        livePrisma.wallet.create({
+          data: {
+            userId: fourthUser.id,
+            availableBalance: 1000n,
+            reservedBalance: -50n, // Violates wallet_reserved_balance_non_negative
+          },
+        })
+      ).rejects.toThrow();
+    });
+
+    it('rejects negative version on Wallet via CHECK constraint', async () => {
+      const fifthUser = await livePrisma.user.create({
+        data: {
+          email: `check-user-3-${suffix}@test.passflow.com`,
+          passwordHash: 'dummy',
+        },
+      });
+
+      await expect(
+        livePrisma.wallet.create({
+          data: {
+            userId: fifthUser.id,
+            version: -1n, // Violates wallet_version_non_negative
+          },
+        })
+      ).rejects.toThrow();
+    });
+
+    it('rejects non-positive heldAmount (<= 0) on WalletHold via CHECK constraint', async () => {
+      const wallet = await livePrisma.wallet.findUnique({ where: { userId: testUser.id } });
+
+      await expect(
+        livePrisma.walletHold.create({
+          data: {
+            walletId: wallet.id,
+            heldAmount: 0n, // Violates wallet_hold_held_amount_positive
+            remainingAmount: 0n,
+          },
+        })
+      ).rejects.toThrow();
+    });
+
+    it('rejects negative remainingAmount (< 0) on WalletHold via CHECK constraint', async () => {
+      const wallet = await livePrisma.wallet.findUnique({ where: { userId: testUser.id } });
+
+      await expect(
+        livePrisma.walletHold.create({
+          data: {
+            walletId: wallet.id,
+            heldAmount: 10000n,
+            remainingAmount: -10n, // Violates wallet_hold_remaining_amount_non_negative
+          },
+        })
+      ).rejects.toThrow();
+    });
+
+    it('rejects remainingAmount > heldAmount on WalletHold via CHECK constraint', async () => {
+      const wallet = await livePrisma.wallet.findUnique({ where: { userId: testUser.id } });
+
+      await expect(
+        livePrisma.walletHold.create({
+          data: {
+            walletId: wallet.id,
+            heldAmount: 5000n,
+            remainingAmount: 6000n, // Violates wallet_hold_remaining_lte_held
+          },
+        })
+      ).rejects.toThrow();
+    });
+
+    it('rejects non-positive amount (<= 0) on WalletLedgerEntry via CHECK constraint', async () => {
+      const wallet = await livePrisma.wallet.findUnique({ where: { userId: testUser.id } });
+
+      await expect(
+        livePrisma.walletLedgerEntry.create({
+          data: {
+            walletId: wallet.id,
+            entryType: 'DEPOSIT',
+            amount: 0n, // Violates wallet_ledger_amount_positive
+            availableDelta: 0n,
+            reservedDelta: 0n,
+            balanceAfterAvailable: 30000n,
+            balanceAfterReserved: 10000n,
+          },
+        })
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('9. Nullable Idempotency Key Semantics', () => {
+    it('allows multiple ledger entries with NULL idempotencyKey for the same wallet', async () => {
+      const wallet = await livePrisma.wallet.findUnique({ where: { userId: testUser.id } });
+
+      const nullEntry1 = await livePrisma.walletLedgerEntry.create({
+        data: {
+          walletId: wallet.id,
+          entryType: 'FEE_DEBIT',
+          amount: 250n,
+          availableDelta: -250n,
+          reservedDelta: 0n,
+          balanceAfterAvailable: 34750n,
+          balanceAfterReserved: 10000n,
+          idempotencyKey: null, // Nullable key 1
+        },
+      });
+
+      const nullEntry2 = await livePrisma.walletLedgerEntry.create({
+        data: {
+          walletId: wallet.id,
+          entryType: 'FEE_DEBIT',
+          amount: 250n,
+          availableDelta: -250n,
+          reservedDelta: 0n,
+          balanceAfterAvailable: 34500n,
+          balanceAfterReserved: 10000n,
+          idempotencyKey: null, // Nullable key 2
+        },
+      });
+
+      expect(nullEntry1.id).toBeDefined();
+      expect(nullEntry2.id).toBeDefined();
+      expect(nullEntry1.id).not.toBe(nullEntry2.id);
+    });
+
+    it('rejects duplicate non-null idempotencyKey on the same wallet', async () => {
+      const wallet = await livePrisma.wallet.findUnique({ where: { userId: testUser.id } });
+      const duplicateKey = `idem-key-duplicate-${suffix}`;
+
+      await livePrisma.walletLedgerEntry.create({
+        data: {
+          walletId: wallet.id,
+          entryType: 'DEPOSIT',
+          amount: 1000n,
+          availableDelta: 1000n,
+          reservedDelta: 0n,
+          balanceAfterAvailable: 35500n,
+          balanceAfterReserved: 10000n,
+          idempotencyKey: duplicateKey,
+        },
+      });
+
+      // Second attempt with exact same non-null key must fail
+      await expect(
+        livePrisma.walletLedgerEntry.create({
+          data: {
+            walletId: wallet.id,
+            entryType: 'DEPOSIT',
+            amount: 1000n,
+            availableDelta: 1000n,
+            reservedDelta: 0n,
+            balanceAfterAvailable: 36500n,
+            balanceAfterReserved: 10000n,
+            idempotencyKey: duplicateKey,
           },
         })
       ).rejects.toThrow();
