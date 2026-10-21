@@ -12,6 +12,22 @@ This document tracks active API routes and planned route additions as the PassFl
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `GET` | `/api/health` | Backend server health check and uptime ping | No | None | `{"status": "ok", "message": "Backend server is running", "timestamp": "..."}` | Active |
 
+### Event, Category & Inventory Management
+
+| Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `POST` | `/api/v1/events` | Create a new event in DRAFT status | Organizer / Admin | `{"name": "...", "description": "...", "dateTime": "ISO8601", "location": "...", "originalPrice": 100}` | `{"success": true, "data": {"id": "...", "status": "DRAFT", ...}}` | Active |
+| `GET` | `/api/v1/events` | List events with filters (search, date, location, status) and pagination | Public | None (Query: `search`, `date`, `location`, `status`, `page`, `limit`) | `{"success": true, "data": {"events": [...], "pagination": {...}}}` | Active |
+| `GET` | `/api/v1/events/:id` | Retrieve event details with categories and live availability | Public | None | `{"success": true, "data": {"id": "...", "name": "...", "categories": [...]}}` | Active |
+| `PUT` | `/api/v1/events/:id` | Edit event details (name, description, dateTime, location, originalPrice) | Organizer (Owner) / Admin | `{"name": "...", "description": "...", "dateTime": "ISO8601", "location": "...", "originalPrice": 100}` | `{"success": true, "data": {"id": "...", ...}}` | Active |
+| `PATCH` | `/api/v1/events/:id/status` | Transition event status to PUBLISHED, CANCELLED, or COMPLETED | Organizer (Owner) / Admin | `{"status": "PUBLISHED" \| "CANCELLED" \| "COMPLETED"}` | `{"success": true, "data": {"id": "...", "status": "PUBLISHED"}}` | Active |
+| `POST` | `/api/v1/events/:id/categories` | Add a ticket category and atomically initialize its inventory | Organizer (Owner) / Admin | `{"name": "VIP", "originalPrice": 150, "totalQuantity": 100}` | `{"success": true, "data": {"id": "...", "name": "VIP", "inventory": {...}}}` | Active |
+| `GET` | `/api/v1/events/:id/categories` | List ticket tiers for an event with availableQuantity | Public | None | `{"success": true, "data": [{"id": "...", "name": "VIP", "availableQuantity": 100, ...}]}` | Active |
+| `PUT` | `/api/v1/categories/:id` | Update ticket category pricing or name | Organizer (Owner) / Admin | `{"name": "VIP Gold", "originalPrice": 175}` | `{"success": true, "data": {"id": "...", "name": "VIP Gold", ...}}` | Active |
+| `GET` | `/api/v1/categories/:id/inventory` | Inspect total, available, reserved, and sold ticket counts | Organizer (Owner) / Admin | None | `{"success": true, "data": {"categoryId": "...", "totalQuantity": 100, "availableQuantity": 80, "reservedQuantity": 5, "soldCount": 15}}` | Active |
+| `PUT` | `/api/v1/categories/:id/inventory` | Adjust total inventory (strictly blocked below sold count) | Organizer (Owner) / Admin | `{"totalQuantity": 150}` | `{"success": true, "data": {"categoryId": "...", "totalQuantity": 150, "availableQuantity": 130, "reservedQuantity": 5, "soldCount": 15}}` | Active |
+
+
 ---
 
 ## 2. Active Real-Time / WebSocket Events
