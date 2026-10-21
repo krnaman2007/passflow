@@ -12,6 +12,25 @@ This document tracks active API routes and planned route additions as the PassFl
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `GET` | `/api/health` | Backend server health check and uptime ping | No | None | `{"status": "ok", "message": "Backend server is running", "timestamp": "..."}` | Active |
 
+### Authentication & Session Management
+
+| Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `POST` | `/auth/register` *(also `/api/v1/auth/register`)* | Create user (+ wallet). Body: name, email, password, phone | Public | `{"name": "...", "email": "...", "password": "...", "phone": "..."}` | `{"success": true, "data": {"user": {...}, "tokens": {"accessToken": "...", "refreshToken": "...", "tokenType": "Bearer", "expiresIn": "15m"}}}` | Active |
+| `POST` | `/auth/login` *(also `/api/v1/auth/login`)* | Return access + refresh token | Public | `{"email": "...", "password": "..."}` | `{"success": true, "data": {"user": {...}, "tokens": {"accessToken": "...", "refreshToken": "...", "tokenType": "Bearer", "expiresIn": "15m"}}}` | Active |
+| `POST` | `/auth/refresh` *(also `/api/v1/auth/refresh`)* | Issue new access token from refresh token | Public | `{"refreshToken": "..."}` | `{"success": true, "data": {"accessToken": "...", "refreshToken": "...", "tokenType": "Bearer", "expiresIn": "15m"}}` | Active |
+| `POST` | `/auth/logout` *(also `/api/v1/auth/logout`)* | Revoke refresh token | User | `{"refreshToken": "..."}` *(optional)* | `{"success": true, "data": {"message": "Logged out successfully; refresh token revoked"}}` | Active |
+
+### User Profile & KYC Management
+
+| Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `GET` | `/users/me` *(also `/api/v1/users/me`)* | Current profile with role and wallet summary | User | None | `{"success": true, "data": {"id": "...", "name": "...", "email": "...", "role": "USER", "wallet": {"availableBalance": "0", "reservedBalance": "0", "currency": "INR"}, "buyerSeller": {...}}}` | Active |
+| `PUT` | `/users/me` *(also `/api/v1/users/me`)* | Update profile (name, phone, profile) | User | `{"name": "...", "phone": "...", "profile": "..."}` | `{"success": true, "data": {"id": "...", "name": "...", "phone": "...", "profile": "...", "wallet": {...}}}` | Active |
+| `PUT` | `/users/me/password` *(also `/api/v1/users/me/password`)* | Change password | User | `{"oldPassword": "...", "newPassword": "..."}` | `{"success": true, "data": {"message": "Password changed successfully. Please log in again with your new credentials."}}` | Active |
+| `POST` | `/users/me/kyc` *(also `/api/v1/users/me/kyc`)* | Submit KYC details; sets kycStatus | User | `{"documentType": "...", "documentNumber": "..."}` | `{"success": true, "data": {"message": "KYC details submitted successfully; status set to PENDING verification", "buyerSeller": {"kycStatus": "PENDING", ...}}}` | Active |
+
+
 ### Event, Category & Inventory Management
 
 | Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
