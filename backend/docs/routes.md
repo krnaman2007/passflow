@@ -462,5 +462,74 @@ Step 8.3 strictly records order and execution data only:
 - Deterministic mock failure injection tests: 13 tests in [`tests/matching/persistent-matching-service.test.js`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/tests/matching/persistent-matching-service.test.js).
 - Live PostgreSQL integration test: Connected to live Neon database, seeded User/Event/Category parent records, executed limit order persistence, matching trade creation, `BIGSERIAL` sequence verification, idempotent outcome recovery, and cascade cleanup.
 
+---
+
+### 5.11 Step 8.3A Audit: Post-Commit Safety and Market Readiness
+
+#### 5.11.1 Market Readiness & Synchronization Verification
+- **Problem**: In Step 8.3, registering an empty `OrderBook` immediately placed the market into `INITIALIZING`, allowing transition to `READY`. If PostgreSQL already held resting orders from previous runs or crashes, matching incoming orders against an empty book would cross trades incorrectly or skip valid fills.
+- **Solution & Invariants**:
+  - `registerMarketBook(marketKey, book, { synchronized = false })`: By default, newly registered markets are marked unsynchronized.
+  - `PersistentMatchingService._assertMarketSynchronized()`: Before matching any submission, the service verifies synchronization. If the book is empty, it queries PostgreSQL via `OrderRepository.findActiveOrdersByMarket(eventId, ticketCategoryId)`. If active resting orders exist in PostgreSQL that are missing from memory, it immediately rejects the submission with `MarketNotSynchronizedError`.
+  - **Prerequisites for enabling a market to `READY`**:
+    1. An `OrderBook` instance must be registered with `registerMarketBook`.
+    2. Active resting orders in PostgreSQL must be replayed/reconstructed into the in-memory book in sequence (to be implemented in Step 8.4 reconstruction worker).
+    3. The market book must be explicitly certified via `markMarketSynchronized(marketKey)`.
+    4. Only then may `stateManager.transition(marketKey, MarketState.READY)` be invoked.
+
+#### 5.11.2 Post-Commit `applyPlan()` Failure Isolation & Quarantine
+- **Problem**: If `coordinator.applyPlan()` throws an unhandled error *after* `persistMatchingTransaction()` has already committed to PostgreSQL:
+  - The transaction cannot be rolled back (it is committed in PostgreSQL).
+  - The in-memory book could be in a partially mutated or inconsistent state.
+- **Solution & Invariants**:
+  - The committed transaction is **never** treated as rolled back or automatically resubmitted.
+  - The market is marked corrupted (`_corruptedMarkets.add(marketKey)`) and desynchronized.
+  - The market state is transitioned immediately to `RECONCILING`.
+  - The per-market queue remains held until quarantine handling completes.
+  - Throws `PostCommitMutationError`, attaching `{ originalError, marketKey, orderId, persistedOrder, persistedExecutions }` so the exact committed state can be recovered without financial data loss.
+  - All subsequent submissions to this market are rejected by the queue's `READY` gate (or by `_assertMarketSynchronized` with `MarketStateDivergenceError`).
+
+#### 5.11.3 Matching Result Contract & Stop Reason Audit
+- **Contract Clarification**: Final order `status` and matching strategy `stoppedReason` are distinct domain concepts:
+  - `status`: Lifecycle state of the order entity (`OPEN`, `PARTIALLY_FILLED`, `FILLED`, `CANCELLED`).
+  - `stoppedReason`: The operational rule that terminated the matching loop (`FILLED`, `LIMIT_PRICE_REACHED`, `NO_MORE_LIQUIDITY`, `SELF_TRADE_PREVENTION`).
+- **Contract Guarantee**:
+  - `FILLED` is strictly returned as `stoppedReason` only when the incoming order's remaining quantity is zero.
+  - When an order rests with no opposing liquidity, `stoppedReason` is `NO_MORE_LIQUIDITY` and `status` is `OPEN` (or `PARTIALLY_FILLED` if prior fills occurred).
+  - When an order halts due to price limits, `stoppedReason` is `LIMIT_PRICE_REACHED`.
+  - When self-trade prevention triggers, `status` is `CANCELLED` and `stoppedReason` is `SELF_TRADE_PREVENTION`.
+  - First-time submissions and idempotent retries produce 100% identical `status` and `stoppedReason` across all outcome paths.
+
+#### 5.11.4 Idempotency Uniqueness Conflicts & Payload Mismatch Protection
+- **Constraint Target Inspection**:
+  - Prisma error `P2002` metadata is inspected specifically for `target = ['userId', 'idempotencyKey']`.
+  - Unrelated unique violations (e.g. primary key collisions on `Order.id`) are immediately rethrown rather than mistaken for successful idempotent retries.
+- **Payload Mismatch Detection**:
+  - When an existing order matches `(userId, idempotencyKey)`, the service validates that the incoming request payload matches the stored order parameters (`eventId`, `ticketCategoryId`, `side`, `price`, `initialQuantity`).
+  - If any parameter differs (including attempts to submit across different markets with the same idempotency key), the request is rejected with `IdempotencyPayloadMismatchError`.
+
+#### 5.11.5 Execution-History Deletion Integrity & Foreign Key Audit
+- **Audit Finding**: In `backend/prisma/schema.prisma` (lines 172 & 174), relations on `Execution` define:
+  ```prisma
+  incomingOrder Order @relation("IncomingOrderExecutions", fields: [incomingOrderId], references: [id], onDelete: Cascade)
+  restingOrder  Order @relation("RestingOrderExecutions", fields: [restingOrderId], references: [id], onDelete: Cascade)
+  ```
+  If an `Order` record were physically deleted (`DELETE FROM "Order"`), PostgreSQL would cascade-delete associated `Execution` records, destroying immutable financial audit history.
+- **Mitigation & Policy**:
+  1. *Application-Level Prohibition*: Physical deletion of orders is strictly prohibited. `OrderRepository` provides no delete methods. Order cancellations must only update `status = 'CANCELLED'`.
+  2. *Proposed Non-Destructive Migration*: In a scheduled migration window, execute:
+     ```sql
+     ALTER TABLE "Execution" DROP CONSTRAINT "Execution_incomingOrderId_fkey";
+     ALTER TABLE "Execution" ADD CONSTRAINT "Execution_incomingOrderId_fkey" FOREIGN KEY ("incomingOrderId") REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+     ALTER TABLE "Execution" DROP CONSTRAINT "Execution_restingOrderId_fkey";
+     ALTER TABLE "Execution" ADD CONSTRAINT "Execution_restingOrderId_fkey" FOREIGN KEY ("restingOrderId") REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+     ```
+     This will be bundled safely in an upcoming migration without data loss or reset.
+
+#### 5.11.6 Test Suite Results
+- Full Jest test suite: **193 passing tests across 10 test suites** (0 failures).
+- Mock failure injection tests: 22 unit tests covering all edge cases and failure modes.
+- Live Neon PostgreSQL integration test: Verified against real database tables.
+
 
 

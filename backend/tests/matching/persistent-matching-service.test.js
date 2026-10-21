@@ -5,6 +5,8 @@ import {
   AmbiguousCommitError,
   PostCommitMutationError,
   MarketStateDivergenceError,
+  MarketNotSynchronizedError,
+  IdempotencyPayloadMismatchError,
 } from '../../src/services/matching/persistent-matching-service.js';
 import { OrderRepository } from '../../src/services/matching/order-repository.js';
 import { OrderBook } from '../../src/services/matching/order-book.js';
@@ -62,8 +64,14 @@ class MockPrismaClient {
         }
         return null;
       },
-      findMany: async () => {
-        return Array.from(this.orders.values());
+      findMany: async ({ where } = {}) => {
+        let results = Array.from(this.orders.values());
+        if (where) {
+          if (where.eventId) results = results.filter((o) => o.eventId === where.eventId);
+          if (where.ticketCategoryId) results = results.filter((o) => o.ticketCategoryId === where.ticketCategoryId);
+          if (where.status?.in) results = results.filter((o) => where.status.in.includes(o.status));
+        }
+        return results;
       },
       create: async ({ data }) => {
         // Enforce unique (userId, idempotencyKey)
@@ -72,6 +80,7 @@ class MockPrismaClient {
             if (existing.userId === data.userId && existing.idempotencyKey === data.idempotencyKey) {
               const err = new Error('Unique constraint failed on the fields: (`userId`,`idempotencyKey`)');
               err.code = 'P2002';
+              err.meta = { target: ['userId', 'idempotencyKey'] };
               throw err;
             }
           }
@@ -286,6 +295,49 @@ describe('PersistentMatchingService and Atomic Transaction Bridge (Step 8.3)', (
 
       // BigInt sequenceNumber serialization safety check
       expect(() => JSON.stringify(result)).not.toThrow();
+    });
+
+    it('rejects submission when registered market book is empty but PostgreSQL has active resting orders', async () => {
+      // Seed resting order in mock DB for this market
+      await mockPrisma.order.create({
+        data: {
+          id: 'pre-existing-db-ask',
+          eventId: MARKET_CONFIG.eventId,
+          ticketCategoryId: MARKET_CONFIG.ticketCategoryId,
+          userId: 'seller-pre-existing',
+          side: 'ASK',
+          price: 10000,
+          initialQuantity: 5,
+          remainingQuantity: 5,
+          status: 'OPEN',
+          idempotencyKey: 'pre-existing-key',
+        },
+      });
+
+      const freshState = new MarketStateManager();
+      const freshQueue = new MarketExecutionQueue({ stateManager: freshState });
+      const freshService = new PersistentMatchingService({
+        repository,
+        queue: freshQueue,
+        stateManager: freshState,
+      });
+      const emptyBook = new OrderBook(MARKET_CONFIG);
+      freshService.registerMarketBook(MARKET_CONFIG, emptyBook);
+      freshState.transition(MARKET_KEY, MarketState.READY);
+
+      // Attempting to submit must reject with MarketNotSynchronizedError!
+      await expect(
+        freshService.submitLimitOrder({
+          ...MARKET_CONFIG,
+          userId: 'buyer-fresh',
+          side: 'BID',
+          price: 10000,
+          quantity: 2,
+          idempotencyKey: 'buyer-fresh-key',
+        })
+      ).rejects.toThrow(MarketNotSynchronizedError);
+
+      expect(emptyBook.isEmpty()).toBe(true);
     });
   });
 
@@ -513,6 +565,75 @@ describe('PersistentMatchingService and Atomic Transaction Bridge (Step 8.3)', (
       expect(mockPrisma.orders.size).toBe(1);
       expect(book.size()).toBe(1);
     });
+
+    it('rejects duplicate idempotency key when submitted with mismatched parameters', async () => {
+      const originalInput = {
+        ...MARKET_CONFIG,
+        userId: 'alice-mismatch',
+        side: 'BID',
+        price: 10000,
+        quantity: 2,
+        idempotencyKey: 'mismatch-key-1',
+      };
+
+      await service.submitLimitOrder(originalInput);
+
+      // Same user, same key, but different price (12000 vs 10000)
+      await expect(
+        service.submitLimitOrder({
+          ...originalInput,
+          price: 12000,
+        })
+      ).rejects.toThrow(IdempotencyPayloadMismatchError);
+
+      // Same user, same key, but different quantity (5 vs 2)
+      await expect(
+        service.submitLimitOrder({
+          ...originalInput,
+          quantity: 5,
+        })
+      ).rejects.toThrow(IdempotencyPayloadMismatchError);
+
+      // Same user, same key, but different side ('ASK' vs 'BID')
+      await expect(
+        service.submitLimitOrder({
+          ...originalInput,
+          side: 'ASK',
+        })
+      ).rejects.toThrow(IdempotencyPayloadMismatchError);
+
+      // Register and set secondary market to READY so queue gating admits the cross-market collision attempt
+      const diffConfig = { eventId: 'different-event-id', ticketCategoryId: originalInput.ticketCategoryId };
+      service.registerMarketBook(diffConfig, new OrderBook(diffConfig), { synchronized: true });
+      stateManager.transition(formatMarketKey(diffConfig), MarketState.READY);
+
+      // Same user, same key, but different event
+      await expect(
+        service.submitLimitOrder({
+          ...originalInput,
+          eventId: 'different-event-id',
+        })
+      ).rejects.toThrow(IdempotencyPayloadMismatchError);
+    });
+
+    it('rethrows P2002 error if the constraint violation is unrelated to userId_idempotencyKey', async () => {
+      // Simulate an unrelated P2002 error (e.g. primary key collision on Order.id)
+      const unrelatedP2002 = new Error('Unique constraint failed on the fields: (`id`)');
+      unrelatedP2002.code = 'P2002';
+      unrelatedP2002.meta = { target: ['id'] };
+      mockPrisma.failNextTransaction = unrelatedP2002;
+
+      await expect(
+        service.submitLimitOrder({
+          ...MARKET_CONFIG,
+          userId: 'user-unrelated-p2002',
+          side: 'BID',
+          price: 10000,
+          quantity: 1,
+          idempotencyKey: 'unrelated-key-1',
+        })
+      ).rejects.toThrow('Unique constraint failed on the fields: (`id`)');
+    });
   });
 
   describe('7. Transaction Rollback & Immutability Guarantees', () => {
@@ -571,6 +692,48 @@ describe('PersistentMatchingService and Atomic Transaction Bridge (Step 8.3)', (
 
       // Now book is mutated post-commit
       expect(book.size()).toBe(1);
+    });
+
+    it('quarantines market into RECONCILING, marks book corrupted, and preserves committed DB order if applyPlan throws post-commit', async () => {
+      // Spy on coordinator.applyPlan to simulate post-commit failure
+      const applyPlanSpy = jest.spyOn(coordinator, 'applyPlan').mockImplementation(() => {
+        throw new Error('Simulated memory corruption / heap error in applyPlan');
+      });
+
+      const orderInput = {
+        ...MARKET_CONFIG,
+        userId: 'user-post-fail',
+        side: 'BID',
+        price: 15000,
+        quantity: 2,
+        idempotencyKey: 'post-commit-fail-key',
+      };
+
+      await expect(service.submitLimitOrder(orderInput)).rejects.toThrow(PostCommitMutationError);
+
+      // 1. Transaction was NOT rolled back: order exists in DB
+      expect(mockPrisma.orders.size).toBe(1);
+      const committedOrder = Array.from(mockPrisma.orders.values())[0];
+      expect(committedOrder.userId).toBe('user-post-fail');
+      expect(committedOrder.status).toBe('OPEN');
+
+      // 2. Market must be quarantined into RECONCILING
+      expect(stateManager.getState(MARKET_KEY)).toBe(MarketState.RECONCILING);
+      expect(service.isMarketSynchronized(MARKET_KEY)).toBe(false);
+
+      // 3. Subsequent submissions must be rejected immediately
+      await expect(
+        service.submitLimitOrder({
+          ...MARKET_CONFIG,
+          userId: 'user-2',
+          side: 'BID',
+          price: 15000,
+          quantity: 1,
+          idempotencyKey: 'user-2-key',
+        })
+      ).rejects.toThrow(MarketNotReadyError);
+
+      applyPlanSpy.mockRestore();
     });
   });
 
@@ -728,7 +891,178 @@ describe('PersistentMatchingService and Atomic Transaction Bridge (Step 8.3)', (
     });
   });
 
-  describe('11. Live PostgreSQL Database Integration (Neon)', () => {
+  describe('11. Matching Result Contract & Stop Reason Audit', () => {
+    it('Case A: Resting order on empty book produces status OPEN and stoppedReason NO_MORE_LIQUIDITY consistently across retries', async () => {
+      const input = {
+        ...MARKET_CONFIG,
+        userId: 'contract-user-a',
+        side: 'BID',
+        price: 10000,
+        quantity: 5,
+        idempotencyKey: 'contract-idem-a',
+      };
+
+      const res = await service.submitLimitOrder(input);
+      expect(res.status).toBe('OPEN');
+      expect(res.stoppedReason).toBe('NO_MORE_LIQUIDITY');
+      expect(res.remainingQuantity).toBe(5);
+      expect(res.restedQuantity).toBe(5);
+      expect(res.matchedQuantity).toBe(0);
+
+      const retry = await service.submitLimitOrder(input);
+      expect(retry.status).toBe('OPEN');
+      expect(retry.stoppedReason).toBe('NO_MORE_LIQUIDITY');
+      expect(retry.remainingQuantity).toBe(5);
+      expect(retry.restedQuantity).toBe(5);
+      expect(retry.matchedQuantity).toBe(0);
+      expect(retry.isDuplicate).toBe(true);
+    });
+
+    it('Case B: Resting order with no price overlap produces status OPEN and stoppedReason LIMIT_PRICE_REACHED consistently', async () => {
+      // Seed resting ASK at 20000
+      await service.submitLimitOrder({
+        ...MARKET_CONFIG,
+        userId: 'seller-high',
+        side: 'ASK',
+        price: 20000,
+        quantity: 2,
+        idempotencyKey: 'seller-high-key',
+      });
+
+      // Submit BID at 15000 (below 20000, so cannot match)
+      const input = {
+        ...MARKET_CONFIG,
+        userId: 'contract-user-b',
+        side: 'BID',
+        price: 15000,
+        quantity: 1,
+        idempotencyKey: 'contract-idem-b',
+      };
+
+      const res = await service.submitLimitOrder(input);
+      expect(res.status).toBe('OPEN');
+      expect(res.stoppedReason).toBe('LIMIT_PRICE_REACHED');
+      expect(res.remainingQuantity).toBe(1);
+      expect(res.matchedQuantity).toBe(0);
+
+      const retry = await service.submitLimitOrder(input);
+      expect(retry.status).toBe('OPEN');
+      expect(retry.stoppedReason).toBe('LIMIT_PRICE_REACHED');
+      expect(retry.isDuplicate).toBe(true);
+    });
+
+    it('Case C: Fully filled order produces status FILLED and stoppedReason FILLED consistently', async () => {
+      // Seed resting ASK at 10000 of 3 units
+      await service.submitLimitOrder({
+        ...MARKET_CONFIG,
+        userId: 'seller-c',
+        side: 'ASK',
+        price: 10000,
+        quantity: 3,
+        idempotencyKey: 'seller-c-key',
+      });
+
+      // Submit BID at 10000 of 3 units (exact fill)
+      const input = {
+        ...MARKET_CONFIG,
+        userId: 'buyer-c',
+        side: 'BID',
+        price: 10000,
+        quantity: 3,
+        idempotencyKey: 'buyer-c-key',
+      };
+
+      const res = await service.submitLimitOrder(input);
+      expect(res.status).toBe('FILLED');
+      expect(res.stoppedReason).toBe('FILLED');
+      expect(res.matchedQuantity).toBe(3);
+      expect(res.remainingQuantity).toBe(0);
+      expect(res.restedQuantity).toBe(0);
+
+      const retry = await service.submitLimitOrder(input);
+      expect(retry.status).toBe('FILLED');
+      expect(retry.stoppedReason).toBe('FILLED');
+      expect(retry.matchedQuantity).toBe(3);
+      expect(retry.remainingQuantity).toBe(0);
+      expect(retry.isDuplicate).toBe(true);
+    });
+
+    it('Case D: Partially filled order produces status PARTIALLY_FILLED with strategy stoppedReason consistently', async () => {
+      // Seed resting ASK at 10000 of 2 units
+      await service.submitLimitOrder({
+        ...MARKET_CONFIG,
+        userId: 'seller-d',
+        side: 'ASK',
+        price: 10000,
+        quantity: 2,
+        idempotencyKey: 'seller-d-key',
+      });
+
+      // Submit BID at 10000 of 5 units (partial fill 2, remaining 3 rests)
+      const input = {
+        ...MARKET_CONFIG,
+        userId: 'buyer-d',
+        side: 'BID',
+        price: 10000,
+        quantity: 5,
+        idempotencyKey: 'buyer-d-key',
+      };
+
+      const res = await service.submitLimitOrder(input);
+      expect(res.status).toBe('PARTIALLY_FILLED');
+      expect(res.stoppedReason).toBe('NO_MORE_LIQUIDITY');
+      expect(res.matchedQuantity).toBe(2);
+      expect(res.remainingQuantity).toBe(3);
+      expect(res.restedQuantity).toBe(3);
+
+      const retry = await service.submitLimitOrder(input);
+      expect(retry.status).toBe('PARTIALLY_FILLED');
+      expect(retry.stoppedReason).toBe('NO_MORE_LIQUIDITY');
+      expect(retry.matchedQuantity).toBe(2);
+      expect(retry.remainingQuantity).toBe(3);
+      expect(retry.restedQuantity).toBe(3);
+      expect(retry.isDuplicate).toBe(true);
+    });
+
+    it('Case E: Self-trade prevented order produces status CANCELLED and stoppedReason SELF_TRADE_PREVENTION consistently', async () => {
+      // Alice places resting ASK of 2 units at 10000
+      await service.submitLimitOrder({
+        ...MARKET_CONFIG,
+        userId: 'alice-stp-audit',
+        side: 'ASK',
+        price: 10000,
+        quantity: 2,
+        idempotencyKey: 'alice-stp-ask-key',
+      });
+
+      // Alice places matching BID of 2 units at 10000
+      const input = {
+        ...MARKET_CONFIG,
+        userId: 'alice-stp-audit',
+        side: 'BID',
+        price: 10000,
+        quantity: 2,
+        idempotencyKey: 'alice-stp-bid-key',
+      };
+
+      const res = await service.submitLimitOrder(input);
+      expect(res.status).toBe('CANCELLED');
+      expect(res.stoppedReason).toBe('SELF_TRADE_PREVENTION');
+      expect(res.matchedQuantity).toBe(0);
+      expect(res.remainingQuantity).toBe(2);
+      expect(res.restedQuantity).toBe(0);
+
+      const retry = await service.submitLimitOrder(input);
+      expect(retry.status).toBe('CANCELLED');
+      expect(retry.stoppedReason).toBe('SELF_TRADE_PREVENTION');
+      expect(retry.matchedQuantity).toBe(0);
+      expect(retry.remainingQuantity).toBe(2);
+      expect(retry.restedQuantity).toBe(0);
+      expect(retry.isDuplicate).toBe(true);
+    });
+  });
+
+  describe('12. Live PostgreSQL Database Integration (Neon)', () => {
     let livePrisma;
     let liveRepository;
     let liveQueue;
