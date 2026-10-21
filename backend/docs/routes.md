@@ -27,13 +27,14 @@ Server: Socket.IO mounted on the Express HTTP server (`server.js`).
 
 ---
 
-## 3. Matching Engine Service Status (Steps 1, 2, 3 & 4: FIFO Queue, PriceLevel, OrderBookSide & OrderBook)
+## 3. Matching Engine Service Status (Steps 1, 2, 3, 4 & 5: FIFO Queue, PriceLevel, OrderBookSide, OrderBook & PriceTimePriority)
 
 - **Step 1 Implementation:** `src/services/matching/fifo-queue.js` (Doubly linked FIFO queue)
 - **Step 2 Implementation:** `src/services/matching/price-level.js` (Price level aggregation & time priority)
 - **Step 3 Implementation:** `src/services/matching/order-book-side.js` (Side-level price-time priority & depth)
 - **Step 4 Implementation:** `src/services/matching/order-book.js` (Complete two-sided market order book)
-- **Route Additions in Steps 1, 2, 3 & 4:** **None** (per architectural scope control, these are isolated in-memory matching engine data structures without external REST dependencies).
+- **Step 5 Implementation:** `src/services/matching/price-time-priority.js` (Pure price-time matching strategy & execution plan calculation)
+- **Route Additions in Steps 1, 2, 3, 4 & 5:** **None** (per architectural scope control, these are isolated in-memory matching engine data structures without external REST dependencies).
 
 ---
 
