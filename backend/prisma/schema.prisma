@@ -392,3 +392,25 @@ model Reconciliation {
   @@index([status])
 }
 
+enum MonitoringStatus {
+  HEALTHY
+  DEGRADED
+  DOWN
+  INFO
+  WARNING
+  ERROR
+}
+
+model Monitoring {
+  id        String           @id @default(uuid())
+  type      String
+  details   Json?
+  status    MonitoringStatus @default(HEALTHY)
+  createdAt DateTime         @default(now())
+
+  @@index([type])
+  @@index([status])
+  @@index([createdAt])
+}
+
+
