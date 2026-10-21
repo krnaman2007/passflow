@@ -1,0 +1,43 @@
+# Dependencies (any folder)
+node_modules/
+*/node_modules/
+
+# Production build outputs
+dist/
+dist-ssr/
+build/
+
+# Environment Variables & Secrets
+.env
+.env.*
+.env.local
+.env.*.local
+!.env.example
+!*/.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# OS specific files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE & Editor settings
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temporary / Scratch files
+tmp/
+temp/
