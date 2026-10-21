@@ -65,7 +65,7 @@ export const requireOrganizer = (req, res, next) => {
     return next();
   }
 
-  if (req.user.role !== 'ORGANIZER' || !req.user.organizer) {
+  if (!req.user.organizer) {
     return next(new AppError('Organizer profile required for this action', 403, 'FORBIDDEN'));
   }
 
