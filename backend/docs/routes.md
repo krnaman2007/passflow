@@ -689,5 +689,109 @@ Step 8.4 implements deterministic startup order-book reconstruction, post-commit
   - **235 passing tests across 12 test suites** (0 failures).
   - 100% test pass rate across all matching engine components, queue concurrency, persistence boundary, reconstruction, and live Neon PostgreSQL integration.
 
+---
+
+### 5.14 Step 9.1 — Wallet and Immutable Ledger Schema
+
+#### 5.14.1 Financial Invariants & Currency Representation
+- **Monetary Unit**:
+  - All monetary values are strictly represented in integer minor currency units: **paise** (1 INR = 100 paise) using PostgreSQL `BIGINT` / JavaScript `BigInt`.
+  - Floating-point representations for money are strictly prohibited to prevent decimal rounding discrepancies.
+- **Available vs. Reserved Balance**:
+  - A wallet maintains two distinct balance buckets:
+    1. `availableBalance`: Funds immediately available for new order commitments, withdrawals, or transfers.
+    2. `reservedBalance`: Funds held in escrow for open limit buy orders or pending withdrawal requests.
+  - *Core Invariant*: Reserving funds is **not** spending them. A reservation transitions funds between buckets without creating or destroying money:
+    $$\text{availableDelta} = -\text{amount}, \quad \text{reservedDelta} = +\text{amount}$$
+    $$\text{availableDelta} + \text{reservedDelta} = 0$$
+- **Materialized Projection & Ledger Invariant**:
+  - `Wallet.availableBalance` and `Wallet.reservedBalance` are transactionally maintained materialized projections backed by the immutable ledger. They are not independently authoritative:
+    $$\text{Wallet.availableBalance} = \sum_{\text{all ledger entries}} \text{availableDelta}$$
+    $$\text{Wallet.reservedBalance} = \sum_{\text{all ledger entries}} \text{reservedDelta}$$
+    $$\text{Wallet.totalBalance} = \text{availableBalance} + \text{reservedBalance}$$
+- **Hold Reconciliation Invariant**:
+  - Active reservation integrity requires that the reserved balance matches the aggregate unconsumed amount of all active holds:
+    $$\text{Wallet.reservedBalance} = \sum_{\text{active / partially\_settled holds}} \text{WalletHold.remainingAmount}$$
+- **Non-Negativity Constraint**:
+  - Invariant: $\text{availableBalance} \ge 0$ and $\text{reservedBalance} \ge 0$ at all times. Negative balances are rejected at the persistence boundary.
+- **Append-Only Immutability**:
+  - Ledger entries are strictly append-only. Existing entries cannot be updated (`UPDATE`) or deleted (`DELETE`).
+  - Accounting corrections must be posted as new `COMPENSATING_ADJUSTMENT` entries referencing the prior sequence and operational context.
+
+#### 5.14.2 Schema Models Added
+1. **`Wallet`**:
+   - Represents the account balance state for a user (`1 User : 1 Wallet`).
+   - Fields: `id` (UUID PK), `userId` (`String @unique`), `currency` (`String @default("INR")`), `availableBalance` (`BigInt @default(0)`), `reservedBalance` (`BigInt @default(0)`), `version` (`BigInt @default(0)`), `createdAt`, `updatedAt`.
+   - Relation: `user User @relation(fields: [userId], references: [id], onDelete: Restrict)`.
+2. **`FinancialOperation`**:
+   - Idempotent business operation registry grouping financial movements.
+   - Fields: `id` (UUID PK), `idempotencyKey` (`String @unique`), `operationType` (`FinancialOperationType`), `status` (`FinancialOperationStatus @default(PENDING)`), `referenceType` (`String?`), `referenceId` (`String?`), `description` (`String?`), `metadata` (`Json?`), `createdAt`, `updatedAt`.
+   - Prevents duplicate posting of financial actions upon client retries.
+3. **`WalletHold`**:
+   - Explicit tracking of ongoing fund reservations for orders or withdrawal escrows.
+   - Fields: `id` (UUID PK), `walletId` (`String`), `operationId` (`String?`), `orderId` (`String?`), `reason` (`HoldReason @default(ORDER_ESCROW)`), `status` (`HoldStatus @default(ACTIVE)`), `heldAmount` (`BigInt`), `remainingAmount` (`BigInt`), `idempotencyKey` (`String?`), `createdAt`, `updatedAt`.
+   - Uniqueness: `@@unique([walletId, idempotencyKey])`.
+4. **`WalletLedgerEntry`**:
+   - Immutable audit trail of every balance mutation.
+   - Fields: `id` (UUID PK), `walletId` (`String`), `operationId` (`String?`), `sequenceNumber` (`BigInt @unique @default(autoincrement())`), `entryType` (`LedgerEntryType`), `amount` (`BigInt > 0`), `availableDelta` (`BigInt`), `reservedDelta` (`BigInt`), `balanceAfterAvailable` (`BigInt`), `balanceAfterReserved` (`BigInt`), `holdId` (`String?`), `orderId` (`String?`), `executionId` (`String?`), `idempotencyKey` (`String?`), `description` (`String?`), `createdAt`.
+   - Uniqueness: `@@unique([walletId, idempotencyKey])` and `@@unique([sequenceNumber])`.
+
+#### 5.14.3 Database-Level Uniqueness on Order.sequenceNumber
+- Verified that `Order.sequenceNumber` had zero duplicate values in the database.
+- Upgraded `Order.sequenceNumber` from a standard non-unique index to a database-level unique constraint (`CREATE UNIQUE INDEX "Order_sequenceNumber_key" ON "Order"("sequenceNumber")`).
+- Updated `schema.prisma` to declare `sequenceNumber BigInt @unique @default(autoincrement())`.
+
+#### 5.14.4 Referential Integrity & Anti-Cascade Deletion
+- Financial history cannot be silently erased through cascading deletions. `onDelete: Restrict` is strictly enforced:
+  - `User -> Wallet`: Cannot delete a User if an associated Wallet exists.
+  - `Wallet -> WalletLedgerEntry`: Cannot delete a Wallet if ledger records exist.
+  - `Wallet -> WalletHold`: Cannot delete a Wallet if holds exist.
+  - `Order -> WalletHold`: Cannot delete an Order if financial holds reference it.
+  - `Order -> WalletLedgerEntry`: Cannot delete an Order if financial ledger entries reference it.
+  - `Execution -> WalletLedgerEntry`: Cannot delete an Execution if ledger entries reference it.
+  - `FinancialOperation -> WalletLedgerEntry`: Cannot delete a financial operation if ledger entries reference it.
+
+#### 5.14.5 Migration Details & Status
+- **Migration Name**: `20261021181500_add_wallet_and_ledger_schema`
+- **Type**: Additive, non-destructive migration.
+- **Application**: Applied successfully to live Neon PostgreSQL database (`neondb` on AWS us-east-2).
+- **Prisma Status**: `npx prisma migrate status` confirms:
+  ```
+  5 migrations found in prisma/migrations
+  Database schema is up to date!
+  ```
+- **Prisma Client**: Re-generated (`v6.19.3`).
+
+#### 5.14.6 Scope Boundaries & Unimplemented Systems
+- Step 9.1 strictly implements the database schema foundation.
+- The following systems remain **unimplemented** per scope boundaries:
+  - Wallet service methods, balance modification endpoints, deposit/withdrawal controllers.
+  - Payment gateway webhooks or external integrations.
+  - Order-entry wallet reservations or pre-trade checks.
+  - Automatic balance debits or credits from matching-engine events.
+  - Trade settlement or seller payout pipelines.
+  - Ticket inventory ownership assignment or transfers.
+  - Redis or distributed locks.
+- The matching engine continues to run as a pure matching coordinator without asserting that funds have been transferred or settled.
+
+#### 5.14.7 Test Coverage
+- **New Integration Test Suite**: `backend/tests/wallet/wallet-ledger-schema.test.js`
+  - 12 integration tests run against live Neon PostgreSQL:
+    1. Wallet creation with 0 paise available and reserved balances.
+    2. 1:1 `User` <-> `Wallet` uniqueness constraint (`P2002`).
+    3. `FinancialOperation.idempotencyKey` uniqueness constraint.
+    4. `WalletHold` creation and `walletId_idempotencyKey` uniqueness.
+    5. `WalletLedgerEntry` auto-incrementing monotonic sequence number (`entry3 > entry2 > entry1`).
+    6. Conservation of funds invariant on reservation (`availableDelta + reservedDelta === 0`).
+    7. Mathematical balance reconstruction invariant from sum of ledger deltas.
+    8. `WalletLedgerEntry.walletId_idempotencyKey` uniqueness.
+    9. Referential integrity preventing User deletion when Wallet exists (`onDelete: Restrict`).
+    10. Referential integrity preventing Wallet deletion when LedgerEntries exist.
+    11. Referential integrity preventing Order deletion when referenced by Hold or LedgerEntry.
+    12. Database-level uniqueness enforcement on `Order.sequenceNumber`.
+- **Full Backend Test Suite Results**:
+  - **247 passing tests across 13 test suites** (0 failures).
+
+
 
 
