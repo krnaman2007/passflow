@@ -27,7 +27,7 @@ Server: Socket.IO mounted on the Express HTTP server (`server.js`).
 
 ---
 
-## 3. Matching Engine Service Status (Steps 1–8: FIFO Queue, PriceLevel, OrderBookSide, OrderBook, PriceTimePriority, MatchingCoordinator, Market Isolation Audit & Persistence Boundary Design)
+## 3. Matching Engine Service Status (Steps 1–8A: FIFO Queue, PriceLevel, OrderBookSide, OrderBook, PriceTimePriority, MatchingCoordinator, Market Isolation Audit & Corrected Persistence Architecture)
 
 - **Step 1 Implementation:** `src/services/matching/fifo-queue.js` (Doubly linked FIFO queue)
 - **Step 2 Implementation:** `src/services/matching/price-level.js` (Price level aggregation & time priority)
@@ -36,8 +36,8 @@ Server: Socket.IO mounted on the Express HTTP server (`server.js`).
 - **Step 5 Implementation:** `src/services/matching/price-time-priority.js` (Pure price-time matching strategy & execution plan calculation)
 - **Step 6 Implementation:** `src/services/matching/matching-coordinator.js` (In-memory matching coordinator & order lifecycle management)
 - **Step 7 Audit & Tests:** `docs/MARKET_ISOLATION_AND_CONCURRENCY.md` & `tests/matching/market-isolation.test.js` (Market isolation and single-writer concurrency audit)
-- **Step 8 Design:** `docs/routes.md` Section 5 (Persistence & Transactional Boundary Architecture Design)
-- **Route Additions in Steps 1–8:** **None** (per architectural scope control, these are isolated in-memory matching engine data structures, domain coordinators, and design audits without external REST dependencies).
+- **Step 8A Review & Corrections:** `docs/routes.md` Section 5 (Corrected Persistence Architecture, Serialization Boundaries, Ambiguous Outcomes & Fenced Market Ownership)
+- **Route Additions in Steps 1–8A:** **None** (per architectural scope control, these are isolated in-memory matching engine data structures, domain coordinators, and design audits without external REST dependencies).
 
 ---
 
@@ -63,7 +63,7 @@ As outlined in the implementation plan (`docs/Om.md`), the following REST endpoi
 
 ---
 
-## 5. Step 8 Architecture Design: Persistence & Transactional Boundaries
+## 5. Step 8A Architecture Review: Persistence, Serialization & Transactional Boundaries
 
 ### 5.1 Existing Database Architecture Findings
 - **Prisma Schema (`prisma/schema.prisma`)**: Currently defines `User`, `Organizer`, `Event`, `TicketCategory`, and `TicketInventory`.
@@ -72,7 +72,7 @@ As outlined in the implementation plan (`docs/Om.md`), the following REST endpoi
 - **Client & Runtime Usage**: Prisma is initialized in `src/db/prisma.js` as a global singleton. Only `src/db/index.js` (health check) and `src/middleware/auth.js` (JWT user lookup) currently access the database. The matching engine is 100% in-memory and decoupled from Prisma.
 - **Monetary Types**: Existing event prices use `Decimal(12, 2)`. Persistent order and trade tables must use integer minor units (cents / ticks) to prevent floating-point discrepancies.
 
-### 5.2 Recommended Persistence Architecture & Order/Trade Lifecycle
+### 5.2 Persistent Order and Trade Lifecycle
 - **Market Identity**: Composite foreign keys `(eventId, ticketCategoryId)` referencing `Event.id` and `TicketCategory.id`.
 - **Order Model (`Order`)**:
   - `id String @id`: Unique identifier (UUID/CUID).
@@ -101,36 +101,100 @@ As outlined in the implementation plan (`docs/Om.md`), the following REST endpoi
   - `FILLED`: Fully executed, `remainingQuantity: 0`, does not rest.
   - `CANCELLED`: User-requested cancellation OR remainder cancelled by Self-Trade Prevention (`stoppedReason: 'SELF_TRADE_PREVENTION'`).
 
-### 5.3 Transaction Boundaries, Approaches & Failure Handling
-- **Approach Evaluation**:
-  - *Approach A (Database-Authoritative Matching)*: Serializes matching inside PostgreSQL transactions with row locks (`SELECT ... FOR UPDATE`). Guarantee: ACID atomicity. Trade-off: Severe latency penalty (20–100ms cloud DB round-trip per order) destroying high-throughput matching performance.
-  - *Approach B (Durable Event Journal / CQRS)*: Append-only command log before in-memory dispatch with async ledger persistence. Guarantee: Strict crash safety and replayability. Trade-off: High operational complexity (event sourcing, dual-write management).
-  - *Approach C (Recommended: Authoritative In-Memory Matching + Atomic DB Flush with Cache Eviction)*:
-    1. Filter idempotency via `Order.findUnique({ where: { userId_idempotencyKey } })`.
-    2. Execute match synchronously in memory via `MatchingCoordinator.submitLimitOrder(book, incomingOrder)` ($< 10\ \mu\text{s}$).
-    3. Commit the resulting `SubmissionResult` atomically inside `prisma.$transaction([ ... ])`: insert `Order`, create `Execution` records, update resting orders' `remainingQuantity` and `status`.
-    4. If DB transaction succeeds: Return HTTP response to client.
-    5. If DB transaction fails: The in-memory book state has diverged. **Evict the market `OrderBook` from RAM and trigger a deterministic rehydration from the database.**
-- **Failure Scenario Handling**:
-  1. *Crash before DB transaction*: Zero records written; client retry with same idempotency key is processed cleanly.
-  2. *DB transaction fails (e.g. constraint/timeout)*: Postgres rolls back completely. RAM cache is evicted and rehydrated from DB. Client receives error.
-  3. *DB commits, but crash before HTTP return*: DB has committed truth. On restart, book rehydrates from DB. Client retry with idempotency key returns committed order without re-matching.
-  4. *RAM mutated, DB fails*: Evict RAM book immediately and reload from DB ledger.
-  5. *Client retry after timeout*: Idempotency filter detects existing record and returns saved result.
-  6. *Cancellation races with limit order*: Processed sequentially on single-writer event loop. If match occurs first, cancellation finds order filled; if cancellation occurs first, match cannot pair against it.
+### 5.3 Concurrent Matching & The Serialization Boundary (Issue 1 Correction)
+- **The Core Fallacy of Naive In-Memory Matching with Async DB Persistence**:
+  In a Node.js event-loop environment, synchronous execution guarantees atomicity **only until the first `await` keyword**. If an order matches in RAM and then awaits `prisma.$transaction(...)`, the event loop yields control. During that network I/O window:
+  - If the in-memory book was already mutated, a concurrent request for the same market calculates matches against uncommitted RAM state. If the first request's DB transaction subsequently fails, the second request has matched against *phantom state*.
+  - If the in-memory book was *not* mutated, a concurrent request calculates matches against the *same resting orders*, leading to double-matching and database constraint conflicts.
+  - **Cache eviction alone does NOT solve this race**: evicting the cache after a failed DB transaction cannot undo matches that concurrent requests already executed against the corrupted cache while the transaction was in flight.
+- **The Strict Serialization Boundary per Market (`MarketExecutionQueue`)**:
+  To guarantee serial execution across asynchronous persistence boundaries, all mutating operations for a given market `(eventId, ticketCategoryId)` must be queued and executed sequentially through an explicit per-market serialization pipeline.
+- **Scope of the Serialization Boundary**:
+  Each operation queued for a market encompasses the entire 6-step lifecycle without interleaving:
+  1. *Command Acceptance & Deduplication*: Check `idempotencyKey` against committed database records. If already committed, return the existing result.
+  2. *Market State Gate*: Verify market is in `READY` status (not `RECOVERING`, `RECONCILING`, or `PAUSED`).
+  3. *Plan Calculation*: Calculate pure matching plan using `PriceTimePriority.calculate(book, incomingOrder)`.
+  4. *Atomic Database Transaction*: Execute `prisma.$transaction([ ... ])` writing incoming `Order`, updating resting `Order` records, and inserting `Execution` records.
+  5. *Confirmed Commit*: Await successful commit confirmation from PostgreSQL.
+  6. *Post-Commit In-Memory Book Mutation*: Apply resting order reductions and add the unfilled remainder to the in-memory `OrderBook` **only after the DB transaction has committed**. If the DB transaction fails, the in-memory book is completely untouched.
+  7. *Queue Release*: Advance to the next queued operation for this market. Operations for different markets execute concurrently without blocking each other.
 
-### 5.4 Recovery and Concurrency Requirements (Single-Writer Model)
-- **Authoritative Source of Truth**: The PostgreSQL database is the permanent source of truth; in-memory `OrderBook` instances are ephemeral matching caches.
-- **Reconstruction on Restart / Eviction**:
-  - Query: `SELECT * FROM "Order" WHERE "eventId" = :eventId AND "ticketCategoryId" = :catId AND "status" IN ('OPEN', 'PARTIALLY_FILLED') AND "remainingQuantity" > 0 ORDER BY "price" ASC, "createdAt" ASC`.
-  - Rebuild `OrderBook` by sequentially calling `book.addOrder(side, { id, price, remainingQuantity, userId })`.
-  - Historical `Execution` records are trade receipts and are **not** re-executed during restart.
-- **Market Readiness Gate**: Market status is flagged `RECOVERING` during rebuild; incoming requests receive `503 Service Unavailable` until the book is fully populated and transitions to `READY`.
-- **Single-Writer Enforcement**: Until multi-instance horizontal scaling is introduced, a single Node.js instance serves as the exclusive authoritative writer for all markets. For future multi-instance deployments, partition market ownership via consistent hashing at the API gateway so that only one worker process holds the in-memory book for a given `(eventId, ticketCategoryId)`.
+### 5.4 Comparison of Practical Transaction Strategies (Issue 2 Correction)
+- **Strategy A: Database-Authoritative Matching with Market-Level Locks**:
+  - *Mechanism*: Acquire an exclusive row or advisory transaction lock (`SELECT id FROM "TicketCategory" WHERE id = :catId FOR UPDATE` or `pg_advisory_xact_lock(...)`), fetch active resting orders from PostgreSQL, calculate matches, write updates, and commit within a single database transaction.
+  - *Guarantees*: ACID atomicity at the database engine level. Works across multiple processes natively without custom routing.
+  - *Trade-offs*: Substantial latency penalty (15–50ms network round-trip to Neon per order) and serialized database contention limiting peak throughput per market to ~20–50 orders/sec.
+- **Strategy B: In-Memory Matching with Durable Command Logging (Event Journal / WAL)**:
+  - *Mechanism*: Commands are appended to a durable WAL table with sequence numbers before dispatch. A single-writer worker matches orders in RAM and emits executions asynchronously. Restarts replay the WAL.
+  - *Guarantees*: Maximum matching throughput (<10 µs in RAM), deterministic replayability.
+  - *Trade-offs*: High architectural complexity (event sourcing, CQRS read-model synchronization, log compaction).
+- **Strategy C: Market-Queued In-Memory Matching with Post-Commit State Mutation (Recommended)**:
+  - *Mechanism*: Combines in-memory matching calculation with per-market serialization queues and atomic PostgreSQL persistence. Crucially, in-memory order book mutations are deferred until **after** the PostgreSQL transaction confirms commit.
+  - *Guarantees*:
+    - Eliminates the Async Yield Gap: the per-market queue prevents concurrent requests from calculating against in-flight state.
+    - Zero phantom state in RAM: if the DB transaction aborts, the in-memory book was never modified.
+    - Eliminates row-level query latency during plan calculation (performed against memory data structures).
+  - *Recommendation*: **Strategy C is recommended** for the current architecture. It preserves the clean in-memory engine from Steps 1–7, avoids complex CQRS/WAL event streaming, and eliminates the data corruption hazards of un-serialized async matching.
 
-### 5.5 Proposed Implementation Sequence
-1. **Phase 8.1 — Prisma Schema & Migrations**: Add `Order`, `Execution`, `OrderSide`, and `OrderStatus` to `schema.prisma`. Generate clean migration.
-2. **Phase 8.2 — Repository Layer (`order-repository.js`, `execution-repository.js`)**: Encapsulate Prisma queries, idempotency checks, and batch updates.
-3. **Phase 8.3 — Persistent Matching Bridge (`persistent-matching-service.js`)**: Connect synchronous `MatchingCoordinator` with atomic Prisma transaction and failure cache eviction.
-4. **Phase 8.4 — Order Book Recovery Service (`order-book-recovery-service.js`)**: Implement market startup rehydration and readiness state gating.
-5. **Phase 8.5 — Failure Injection & Concurrency Tests**: Test idempotency deduplication, simulated DB disconnect recovery, and concurrent race resolution.
+### 5.5 Ambiguous Database Outcomes & Reconciliation Protocol (Issue 3 Correction)
+- **The Problem of Ambiguous DB Outcomes**:
+  When a database connection drops, resets (`ECONNRESET`), or times out during the `COMMIT` phase of `prisma.$transaction`, the client and application cannot determine whether PostgreSQL committed the transaction before disconnecting or rolled it back.
+- **Strict Rule: Never Blindly Re-Execute**:
+  Blindly resubmitting or calculating a new match risks double-execution, duplicate trade records, and corrupted quantities.
+- **Market Quarantine Protocol (`RECONCILING` State)**:
+  1. If an ambiguous database error occurs during commit, the market execution queue is **immediately paused**.
+  2. The market status transitions from `READY` to `RECONCILING`.
+  3. Inbound requests for this market are rejected with `503 Service Unavailable (Market Reconciling)`.
+- **Deterministic Reconciliation via Idempotency Key**:
+  4. The background reconciliation routine queries PostgreSQL using the unique `(userId, idempotencyKey)` of the ambiguous command:
+     - *Case A (Order Exists in DB)*: The transaction committed prior to the network drop. The reconciliation routine reads the committed `Order` and its `Execution` records, applies the corresponding mutations to the in-memory `OrderBook`, records the cached response for client retry, and transitions the market back to `READY`.
+     - *Case B (Order Absent in DB)*: The transaction was aborted by PostgreSQL. Because the engine follows post-commit mutation, the in-memory `OrderBook` was never modified. The market status transitions back to `READY`, and the client is returned a `504 Gateway Timeout` indicating the order was not committed.
+     - *Case C (Database Unreachable)*: The market remains in `RECONCILING` / `UNAVAILABLE` state until database connectivity is restored.
+
+### 5.6 Enforceable Single-Writer Market Ownership (Issue 4 Correction)
+- **Why API Gateway Routing Alone Fails**:
+  Consistent hashing at the load balancer routes requests by market key, but **cannot guarantee safety during failover, deployments, or network partitions**. If Instance A experiences a garbage collection pause or network glitch, the gateway may deem Instance A dead and route Market 1 to Instance B. Once Instance A recovers, it processes its in-flight backlog. If both Instance A and Instance B believe they own Market 1, they both execute orders against independent memory state, resulting in catastrophic **dual-master split-brain and ticket double-selling**.
+- **Enforcing Single-Writer Ownership via Database Fencing**:
+  To guarantee mutual exclusion across instances without relying on unverified external clustering tools, single-writer ownership must be enforced at the database level:
+  1. *PostgreSQL Advisory Lock / Market Lease*:
+     Before an instance initializes an in-memory `OrderBook` for a market, it must acquire an exclusive database-level lease:
+     ```sql
+     SELECT pg_try_advisory_lock(hashtext(:marketKey));
+     ```
+     Alternatively, an explicit `MarketLease` table storing `(marketKey, ownerInstanceId, leaseExpiresAt, fencingToken)`.
+  2. *Fencing on Commit*:
+     Every database transaction modifying a market must include a fencing check:
+     ```sql
+     UPDATE "MarketLease" SET fencingToken = fencingToken + 1 
+     WHERE marketKey = :marketKey AND ownerInstanceId = :instanceId;
+     ```
+     If an instance lost its lease (e.g. during a partition or pause), PostgreSQL aborts the transaction immediately. The stale instance is prevented from writing corrupt trades.
+- **Current Single-Instance Requirement**:
+  Until database-backed lease fencing is implemented, PassFlow must strictly run as a **single-instance service**. Horizontal scaling across multiple processes without database fencing is explicitly unsafe.
+
+### 5.7 Corrected Implementation Sequence (Issue 5 Correction)
+The implementation roadmap is restructured so serialization, transactions, and failure handling are established before integrating `MatchingCoordinator` with Prisma:
+
+1. **Phase 8.1 — Prisma Schema & Migrations**:
+   - Add `Order` and `Execution` models, `OrderSide`, and `OrderStatus` enums to `prisma/schema.prisma`.
+   - Add composite unique index `@@unique([userId, idempotencyKey])`.
+   - Align price fields to integer minor units (cents / ticks).
+   - Generate and apply a clean Prisma migration.
+2. **Phase 8.2 — Per-Market Serialization Queue (`MarketExecutionQueue`) & State Gating**:
+   - Implement in-process queue ensuring strictly serialized, non-interleaving execution per market across `await` boundaries.
+   - Implement market state transitions (`INITIALIZING`, `READY`, `RECONCILING`, `PAUSED`).
+   - Add unit tests verifying sequential execution and state gating under concurrent async load.
+3. **Phase 8.3 — Repository Layer & Atomic Transaction Bridge**:
+   - Implement `OrderRepository` and `ExecutionRepository` encapsulating idempotent creation and batch status updates.
+   - Implement `PersistentMatchingService` connecting `MatchingCoordinator` with `prisma.$transaction`.
+   - Enforce **post-commit in-memory mutation**: calculate match -> commit DB transaction -> mutate in-memory book only upon confirmed commit.
+4. **Phase 8.4 — Ambiguous Outcome Reconciliation & Order Book Recovery**:
+   - Implement reconciliation routine resolving ambiguous commit timeouts via `(userId, idempotencyKey)` lookup and market quarantine.
+   - Implement startup recovery querying active resting orders (`status IN ('OPEN', 'PARTIALLY_FILLED')`) and deterministically rebuilding the in-memory `OrderBook`.
+5. **Phase 8.5 — Failure Injection & Concurrency Verification Test Suite**:
+   - Comprehensive test suite validating:
+     - Concurrent submissions to the same market running in strict serial order without stale matches.
+     - Cancellation racing against limit order execution.
+     - Simulated database transaction rollback leaving in-memory book unmutated.
+     - Simulated commit timeout triggering market quarantine and idempotency reconciliation.
+     - Restart recovery verifying identical order book depth and queue priority.
