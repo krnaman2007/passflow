@@ -27,7 +27,7 @@ Server: Socket.IO mounted on the Express HTTP server (`server.js`).
 
 ---
 
-## 3. Matching Engine Service Status (Steps 1–8.1: FIFO Queue, PriceLevel, OrderBookSide, OrderBook, PriceTimePriority, MatchingCoordinator, Market Isolation Audit, Corrected Persistence Architecture & Schema Foundation)
+## 3. Matching Engine Service Status (Steps 1–8.3: FIFO Queue, PriceLevel, OrderBookSide, OrderBook, PriceTimePriority, MatchingCoordinator, Market Isolation Audit, Corrected Persistence Architecture, Schema Foundation, Market Execution Queue & Persistent Matching Service)
 
 - **Step 1 Implementation:** `src/services/matching/fifo-queue.js` (Doubly linked FIFO queue)
 - **Step 2 Implementation:** `src/services/matching/price-level.js` (Price level aggregation & time priority)
@@ -38,7 +38,9 @@ Server: Socket.IO mounted on the Express HTTP server (`server.js`).
 - **Step 7 Audit & Tests:** `docs/MARKET_ISOLATION_AND_CONCURRENCY.md` & `tests/matching/market-isolation.test.js` (Market isolation and single-writer concurrency audit)
 - **Step 8A Review & Corrections:** `docs/routes.md` Section 5 (Corrected Persistence Architecture, Serialization Boundaries, Ambiguous Outcomes & Fenced Market Ownership)
 - **Step 8.1 Implementation:** `prisma/schema.prisma` and `prisma/migrations/20261021161148_add_order_and_execution_models` (Persistent Order and Execution models, integer types, indexes, and applied migration)
-- **Route Additions in Steps 1–8.1:** **None** (per architectural scope control, these are isolated in-memory matching engine data structures, domain coordinators, design audits, and database schema foundations without external REST dependencies).
+- **Step 8.2 Implementation:** `src/services/matching/market-state.js` & `src/services/matching/market-execution-queue.js` (Per-market async FIFO serialization queue, market lifecycle state gating, and deterministic barrier tests)
+- **Step 8.3 Implementation:** `src/services/matching/order-repository.js` & `src/services/matching/persistent-matching-service.js` (Persistent limit order matching, atomic Prisma transaction bridge, post-commit mutation, and idempotency recovery)
+- **Route Additions in Steps 1–8.3:** **None** (per architectural scope control, these are isolated in-memory matching engine data structures, domain coordinators, design audits, database schema foundations, process-local serialization queues, and atomic transaction bridges without external REST dependencies).
 
 ---
 
@@ -294,4 +296,155 @@ In Step 8.1, the persistence foundation was added to `backend/prisma/schema.pris
 - **Known Limitations & Scope Boundaries**:
   - *No matching engine coupling*: As required by Step 8.1, `src/services/matching/` was not touched. `MatchingCoordinator` remains pure and in-memory.
   - *Prerequisites before DB integration*: `MarketExecutionQueue` (Step 8.2) and `PersistentMatchingService` (Step 8.3) must be implemented before any live orders can be routed through this schema.
+
+---
+
+### 5.9 Step 8.2 Implementation: MarketExecutionQueue & Market State Gating
+
+#### 5.9.1 Overview & Architecture
+Step 8.2 implements an in-process, asynchronous FIFO execution queue and market lifecycle state manager under `backend/src/services/matching/`:
+- [`market-state.js`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/src/services/matching/market-state.js): Market lifecycle states, state transitions, collision-free key encoding, and typed error hierarchy.
+- [`market-execution-queue.js`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/src/services/matching/market-execution-queue.js): Per-market async serialization queue, state gating, and diagnostics.
+- [`tests/matching/market-execution-queue.test.js`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/tests/matching/market-execution-queue.test.js): 17 deterministic promise/barrier-based concurrency and failure tests (totaling 170 passing tests across 9 suites).
+
+#### 5.9.2 Collision-Proof Market Key Encoding
+Markets are identified by the tuple `(eventId, ticketCategoryId)`. To prevent accidental collisions between different ID pairs (e.g., `eventId: "evt:1", catId: "cat"` vs `eventId: "evt", catId: "1:cat"`):
+- **Encoding**: Length-prefixed string `${eventId.length}:${eventId}:${ticketCategoryId.length}:${ticketCategoryId}` via `formatMarketKey(eventId, ticketCategoryId)`.
+- **Properties**: Strictly injective (1-to-1 bijection), preserves full fidelity of arbitrary UTF-8 characters, colons, slashes, or whitespace without ambiguity.
+- **Decoding**: `parseMarketKey(marketKey)` validates length prefixes and reconstructs `{ eventId, ticketCategoryId }`.
+- **Polymorphism**: Accepts separate strings, `{ eventId, ticketCategoryId }` objects, or [`OrderBook`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/src/services/matching/order-book.js) instances directly.
+
+#### 5.9.3 Market Lifecycle States & Transition Table
+Markets are governed by explicit lifecycle states (`MarketState`):
+- `INITIALIZING`: Default state upon startup or registration. Unavailable for mutations.
+- `READY`: Market is active, healthy, and accepting mutations/matching commands.
+- `RECONCILING`: Ambiguous database commit outcome or network disruption detected. Inbound mutations are quarantined and rejected.
+- `PAUSED`: Market temporarily suspended by administrative action, circuit breaker, or event maintenance. Mutations rejected.
+
+##### Permitted State Transitions Table
+| Current State | Permitted Target States | Description / Trigger |
+| :--- | :--- | :--- |
+| `INITIALIZING` | `READY`, `PAUSED` | Startup recovery completed, or initialized into suspended state |
+| `READY` | `PAUSED`, `RECONCILING` | Admin halt / circuit breaker, or ambiguous DB outcome detected |
+| `PAUSED` | `READY`, `RECONCILING` | Admin resume, or background reconciliation initiated while paused |
+| `RECONCILING` | `READY`, `PAUSED` | Reconciliation verified and completed, or failed requiring manual inspection |
+
+*Rules*: Self-transitions (e.g., `READY` -> `READY`) and transitions back to `INITIALIZING` are disallowed and throw `InvalidMarketStateTransitionError` (`code: 'INVALID_MARKET_STATE_TRANSITION'`).
+
+#### 5.9.4 Two-Phase State Gating
+To eliminate race windows between readiness inspection and mutation execution:
+1. **Front Gate (Enqueue Time)**:
+   When `queue.execute(marketKey, taskFn)` is invoked with `{ checkState: true }` (default), the queue asserts that the market is in `READY` state. If not, it rejects immediately with `MarketNotReadyError` (`code: MARKET_${currentState}`) without adding the task to memory.
+2. **Execution Gate (Head of Queue)**:
+   When a task reaches the front of the queue, the queue re-checks `isReady(marketKey)` right before invoking `taskFn`. If the market transitioned to `PAUSED` or `RECONCILING` while the task was waiting behind an in-flight operation, the task is rejected with `MarketNotReadyError` and `taskFn` is **never executed**.
+
+#### 5.9.5 FIFO Ordering, Concurrency & Failure Guarantees
+- **Strict FIFO Serialization**: Tasks queued for the same market execute in the exact order enqueued. No two asynchronous operations on the same market ever run concurrently, even when operations await promises or database I/O.
+- **Cross-Market Concurrency**: Queues for different markets are completely isolated. Tasks for Market A and Market B execute concurrently without contention.
+- **Fault Isolation**: If a task throws an exception or rejects, that error is forwarded strictly to that task's caller. The queue runner catches the error, marks diagnostic failure counters, and immediately advances to the next pending item in the queue.
+- **Memory Hygiene**: As soon as a market queue finishes its last task and has no pending tasks, it is safely deleted from internal maps. Idle markets consume zero memory.
+
+#### 5.9.6 State Transition Ordering Semantics
+Two complementary coordination modes are supported:
+1. **Immediate State Transition (`transitionMarket`)**:
+   Immediately transitions the state manager. In-flight operations finish, but any currently waiting tasks in the queue are rejected at the head-of-queue gate without executing.
+2. **Queued State Transition (`enqueueTransition`)**:
+   Enqueues the state transition as an administrative task (`{ checkState: false }`). Prior queued tasks complete while the market is `READY`. Once the transition executes, subsequent tasks encounter the new state.
+
+#### 5.9.7 Diagnostic & Inspection API
+`MarketExecutionQueue` exposes non-intrusive diagnostic methods:
+- `getPendingCount(marketKey)`: Number of queued tasks waiting to run.
+- `isProcessing(marketKey)`: Boolean indicating whether an async task is actively executing.
+- `getActiveMarketKeys()`: Array of market keys currently holding active or pending tasks.
+- `getStats(marketKey)`: `{ totalEnqueued, totalProcessed, totalFailed, pendingCount, isProcessing }`.
+- `size()`: Number of currently active market queues.
+
+#### 5.9.8 Known Limitations & Boundaries
+- **Process-Local Only**: `MarketExecutionQueue` enforces mutual exclusion within a single Node.js process. It does not provide distributed locking across multiple cluster nodes or containers. Distributed safety across multiple instances requires database-level advisory locking / lease fencing (as designed in Section 5.6).
+- **Decoupled from Persistence**: In accordance with the Step 8.2 boundary, `MarketExecutionQueue` was initially implemented decoupled from database persistence; Step 8.3 integrates it with `PersistentMatchingService`.
+
+---
+
+### 5.10 Step 8.3 Implementation: Persistent Matching Service & Atomic Transaction Bridge
+
+#### 5.10.1 Overview & Architecture
+Step 8.3 establishes the persistence boundary and transactional bridge between the in-memory matching engine and PostgreSQL via Prisma:
+- [`order-repository.js`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/src/services/matching/order-repository.js): Database read and write operations, optimistic resting order quantity verification, and atomic `prisma.$transaction` persistence.
+- [`persistent-matching-service.js`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/src/services/matching/persistent-matching-service.js): Orchestrates the 10-step submission lifecycle under per-market `MarketExecutionQueue` serialization, post-commit state mutation, and deterministic outcome recovery.
+- [`matching-coordinator.js`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/src/services/matching/matching-coordinator.js): Refactored to expose `calculatePlan(book, incomingOrder)` (pure plan calculation without mutation) and `applyPlan(book, incomingOrder, plan)` (post-commit book mutation), while preserving existing `submitLimitOrder` API.
+- [`tests/matching/persistent-matching-service.test.js`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/tests/matching/persistent-matching-service.test.js): 14 deterministic tests with mock failure injection plus live Neon PostgreSQL end-to-end integration tests (184 total passed tests across 10 suites).
+
+#### 5.10.2 The 10-Step Submission Lifecycle
+Every limit order submission follows a strict, non-interleaved 10-step pipeline:
+1. **Contract Validation**: Validates `eventId`, `ticketCategoryId`, `userId`, `side`, integer `price > 0`, integer `quantity > 0`, and non-empty `idempotencyKey` before touching the queue or database.
+2. **Queue Entry**: Enters `MarketExecutionQueue` for the relevant `(eventId, ticketCategoryId)` market key, ensuring strict single-writer FIFO serialization.
+3. **Serialized Readiness Gate**: Asserts that the market is in `READY` state and has an initialized in-memory `OrderBook`.
+4. **Idempotency Lookup**: Queries PostgreSQL for an existing `(userId, idempotencyKey)` submission. If found, returns the stored outcome without calculating matches again.
+5. **Synchronization Verification**: Asserts that the market book is valid and matches the incoming market parameters.
+6. **Pure Plan Calculation**: Computes the matching plan via `coordinator.calculatePlan(book, incomingOrder)` without mutating the live in-memory order book.
+7. **Atomic Prisma Transaction**: In a single `prisma.$transaction`:
+   - Persists the incoming `Order` record with appropriate initial status (`OPEN`, `PARTIALLY_FILLED`, `FILLED`, or `CANCELLED` on STP).
+   - Optimistically updates each resting `Order` record with `WHERE id = :id AND remainingQuantity = :expectedRemaining`.
+   - Persists all `Execution` records linking the taker and maker orders.
+8. **Post-Commit In-Memory Mutation**: Calls `coordinator.applyPlan(book, incomingOrder, plan)` to mutate the live `OrderBook` **only after** PostgreSQL confirms successful commit.
+9. **Queue Release**: The market queue remains held through the entire lifecycle until post-commit in-memory mutation completes.
+10. **Result Dispatch**: Returns a detached, JSON-serializable `SubmissionResult` consistent with persisted database records.
+
+#### 5.10.3 Transaction Boundary & Optimistic Concurrency Protection
+To prevent stale matching calculations from silently overwriting newer database state:
+- When updating resting orders inside `prisma.$transaction`, `OrderRepository` uses:
+  ```javascript
+  const updateResult = await tx.order.updateMany({
+    where: { id: restingId, remainingQuantity: expectedRemaining },
+    data: { remainingQuantity: newRemaining, status: newStatus },
+  });
+  if (updateResult.count === 0) {
+    throw new MarketStateDivergenceError(...);
+  }
+  ```
+- If the remaining quantity in PostgreSQL diverges from the in-memory book state, the transaction immediately rolls back and throws `MarketStateDivergenceError`.
+- The service catches this divergence, quarantines the market by transitioning it into `RECONCILING`, and rejects subsequent operations until reconciled.
+
+#### 5.10.4 Post-Commit Mutation & Zero Phantom State Invariant
+- **The Invariant**: In-memory `OrderBook` state is **never modified before confirmed database commit**.
+- If a database transaction aborts or rolls back (due to constraint violations, disk errors, or rollbacks), the live `OrderBook` remains 100% unmutated.
+- Concurrent requests waiting in queue will never calculate matches against phantom or uncommitted state.
+
+#### 5.10.5 Idempotency Scope, Outcome Reconstruction & BigInt Safety
+- **Scope**: `@@unique([userId, idempotencyKey])` strictly enforces per-user idempotency.
+- **Outcome Recovery**: When an idempotent retry arrives:
+  1. The existing `Order` and its related `incomingExecutions` are read from PostgreSQL (ordered by `sequenceNumber ASC`).
+  2. The exact `SubmissionResult` object (order ID, status, filled quantity, remaining quantity, stopped reason, and executions) is deterministically reconstructed.
+  3. `isDuplicate: true` is set on the response to inform the client.
+- **`BigInt` Serialization Safety**: `Execution.sequenceNumber` is cast via `.toString()` before returning. All returned payloads are guaranteed to serialize cleanly via `JSON.stringify()`.
+
+#### 5.10.6 Failure Classification & Ambiguous Commit Quarantine
+The service distinguishes definitive rollbacks from ambiguous commit timeouts:
+- **Definitive Rollbacks** (e.g. `P2003` foreign key violation, validation error):
+  - Database was rolled back; book was never touched.
+  - Market remains in `READY` state. Error is rethrown.
+- **Ambiguous Outcomes** (`ECONNRESET`, `ETIMEDOUT`, `P2024`, `P2028` during commit):
+  - Impossible to determine whether PostgreSQL committed the transaction before disconnecting.
+  - In-memory book is **not mutated**.
+  - Market is immediately quarantined: transitioned into `RECONCILING`.
+  - Throws `AmbiguousCommitError`. Subsequent mutating operations are rejected by `MarketExecutionQueue`.
+
+#### 5.10.7 Pause Behavior & Asynchronous Coordination
+- If an administrative pause (`queue.transitionMarket(key, MarketState.PAUSED)`) occurs while a database transaction is in flight:
+  - The in-flight transaction completes and commits, and its post-commit in-memory update is applied. A committed financial order is never falsely labeled as aborted.
+  - Any subsequent tasks waiting in queue behind it reach the head-of-queue gate, detect `PAUSED`, and are cleanly rejected with `MarketNotReadyError` without ever entering the database.
+
+#### 5.10.8 Financial and Ownership Boundaries
+Step 8.3 strictly records order and execution data only:
+- **No Wallets**: No user balances or wallet funds are debited or credited.
+- **No Ledger / Escrow**: Ledger entries and trade escrow are not implemented.
+- **No Ticket Transfers**: Ticket inventory ownership is not transferred.
+- **No Distributed Locks**: Multi-instance clustering is not supported; PassFlow must run as a single backend instance until database lease fencing is implemented.
+
+#### 5.10.9 Validation & Test Results
+- Full Jest test suite: **184 passing tests across 10 test suites** (0 failures).
+- Deterministic mock failure injection tests: 13 tests in [`tests/matching/persistent-matching-service.test.js`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/tests/matching/persistent-matching-service.test.js).
+- Live PostgreSQL integration test: Connected to live Neon database, seeded User/Event/Category parent records, executed limit order persistence, matching trade creation, `BIGSERIAL` sequence verification, idempotent outcome recovery, and cascade cleanup.
+
+
 

@@ -327,8 +327,16 @@ export class MatchingCoordinator {
    * @param {Order} incomingOrder - Incoming limit order to execute and/or rest.
    * @returns {SubmissionResult} Detached result describing execution and lifecycle status.
    * @throws {TypeError|RangeError|Error} If inputs or plan validation fail.
+  /**
+   * Calculates and validates a matching plan for an incoming limit order
+   * without mutating the live OrderBook.
+   *
+   * @param {OrderBook} book - Target OrderBook.
+   * @param {Order} incomingOrder - Incoming limit order to plan matching for.
+   * @returns {Object} Validated matching plan.
+   * @throws {TypeError|RangeError|Error} If inputs or plan validation fail.
    */
-  submitLimitOrder(book, incomingOrder) {
+  calculatePlan(book, incomingOrder) {
     this._validateBook(book);
     this._validateIncomingOrder(book, incomingOrder);
 
@@ -338,7 +346,23 @@ export class MatchingCoordinator {
     // 2. Validate plan integrity before mutating book state
     this._validatePlan(book, incomingOrder, plan);
 
-    // 3. Apply executions sequentially to the live OrderBook
+    return plan;
+  }
+
+  /**
+   * Applies a pre-calculated, validated matching plan to the live OrderBook.
+   *
+   * @param {OrderBook} book - Target OrderBook.
+   * @param {Order} incomingOrder - The incoming order.
+   * @param {Object} plan - Pre-calculated matching plan.
+   * @returns {SubmissionResult} Detached result describing execution and lifecycle status.
+   * @throws {TypeError|RangeError|Error} If inputs or plan application fail.
+   */
+  applyPlan(book, incomingOrder, plan) {
+    this._validateBook(book);
+    this._validateIncomingOrder(book, incomingOrder);
+    this._validatePlan(book, incomingOrder, plan);
+
     /** @type {ExecutionResult[]} */
     const appliedExecutions = [];
 
@@ -363,7 +387,6 @@ export class MatchingCoordinator {
       });
     }
 
-    // 4. Determine lifecycle status and resting remainder
     /** @type {OrderLifecycleStatus} */
     let status;
     let restedQuantity = 0;
@@ -412,6 +435,22 @@ export class MatchingCoordinator {
       restedQuantity,
       stoppedReason: plan.stoppedReason,
     };
+  }
+
+  /**
+   * Submits an incoming limit order to the OrderBook.
+   *
+   * Calculates plan, validates against live book, executes matches sequentially,
+   * handles remainder lifecycle (resting vs cancelled on STP), and returns a detached result.
+   *
+   * @param {OrderBook} book - Target OrderBook.
+   * @param {Order} incomingOrder - Incoming limit order to execute and/or rest.
+   * @returns {SubmissionResult} Detached result describing execution and lifecycle status.
+   * @throws {TypeError|RangeError|Error} If inputs or plan validation fail.
+   */
+  submitLimitOrder(book, incomingOrder) {
+    const plan = this.calculatePlan(book, incomingOrder);
+    return this.applyPlan(book, incomingOrder, plan);
   }
 }
 
