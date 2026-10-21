@@ -61,7 +61,7 @@ export default function AdminConsolePage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <h1 style={{ fontSize: 28, margin: 0 }}>Darkhold Platform Admin</h1>
+            <h1 style={{ fontSize: 28, margin: 0 }}>PassFlow Platform Admin</h1>
             <span className="badge badge-red font-mono">SUPERADMIN ACCESS</span>
           </div>
           <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>

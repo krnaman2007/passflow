@@ -70,7 +70,7 @@ export default function SolvencyVerifyPage() {
             </strong>
           </div>
           <p style={{ fontSize: 12, color: 'var(--text-sub)', lineHeight: 1.5 }}>
-            Darkhold Exchange operates with full backing. All buyer funds deposited into the exchange are matched 1:1 with escrow liquidity. No re-hypothecation or algorithmic fractioning.
+            PassFlow Exchange operates with full backing. All buyer funds deposited into the exchange are matched 1:1 with escrow liquidity. No re-hypothecation or algorithmic fractioning.
           </p>
         </div>
 

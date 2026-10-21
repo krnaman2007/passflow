@@ -69,7 +69,7 @@ function MainRouter() {
         <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ color: 'var(--accent-orange)' }}>◆</span>
-            <span style={{ fontWeight: 600, color: 'var(--text-sub)' }}>Darkhold Exchange</span>
+            <span style={{ fontWeight: 600, color: 'var(--text-sub)' }}>PassFlow Exchange</span>
             <span>· High-Concurrence Ticket Market Engine</span>
           </div>
 

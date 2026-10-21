@@ -1,5 +1,5 @@
-// Darkhold Exchange Mock Database & Static Reference
-// Aligned with Darkhold Exchange Frontend Preview & Navigation Flow Guide
+// PassFlow Exchange Mock Database & Static Reference
+// Aligned with PassFlow Exchange Frontend Preview & Navigation Flow Guide
 
 export const INITIAL_USERS = [
   {
@@ -25,7 +25,7 @@ export const INITIAL_USERS = [
   {
     id: 'usr_admin',
     name: 'admin_01',
-    email: 'admin01@darkhold.app',
+    email: 'admin01@passflow.io',
     phone: '+1 800 555 0100',
     role: 'ADMIN',
     kycStatus: 'VERIFIED',

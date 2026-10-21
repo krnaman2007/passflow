@@ -54,7 +54,7 @@ export default function Navbar() {
       <div className="nav-left">
         <div className="brand-badge" onClick={() => navigate('/events')}>
           <span className="brand-diamond">◆</span>
-          <span>Darkhold</span>
+          <span>PassFlow</span>
         </div>
 
         <nav className="nav-links">

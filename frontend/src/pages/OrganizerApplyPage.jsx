@@ -108,7 +108,7 @@ export default function OrganizerApplyPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-sub)', fontSize: 12 }}>
               <ShieldCheck size={16} color="#10b981" />
               <span>
-                Applications are reviewed by the Darkhold compliance board within 24 hours. Once verified, the Organizer Console tab will automatically unlock in your navbar.
+                Applications are reviewed by the PassFlow compliance board within 24 hours. Once verified, the Organizer Console tab will automatically unlock in your navbar.
               </span>
             </div>
           </div>

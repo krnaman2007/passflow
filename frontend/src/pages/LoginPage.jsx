@@ -28,7 +28,7 @@ export default function LoginPage() {
       <div style={{ textAlign: 'center', marginBottom: 28 }}>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 24, fontWeight: 700, marginBottom: 6 }}>
           <span className="brand-diamond" style={{ fontSize: 26 }}>◆</span>
-          <span>Darkhold Exchange</span>
+          <span>PassFlow Exchange</span>
         </div>
         <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
           Fair-price secondary order book & primary event tickets
