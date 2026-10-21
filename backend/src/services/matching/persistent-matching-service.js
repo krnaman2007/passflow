@@ -9,9 +9,11 @@
  * 1. Mutual Exclusion: All operations for a market run sequentially via MarketExecutionQueue.
  * 2. Pre-Commit Immutability: In-memory OrderBook is never modified before confirmed DB commit.
  * 3. Idempotent Deduplication: Retries scoped by (userId, idempotencyKey) return the stored outcome.
- * 4. Optimistic Concurrency: Resting order updates verify expected remaining quantities.
- * 5. Failure Quarantine: Ambiguous commit outcomes or state divergences transition the market into RECONCILING.
- * 6. BigInt Safety: sequenceNumber fields are formatted as strings for JSON/API compatibility.
+ * 4. Idempotency Payload Protection: Reusing an idempotency key with different parameters is rejected.
+ * 5. Optimistic Concurrency: Resting order updates verify expected remaining quantities.
+ * 6. Market Readiness & Sync Gate: Markets with unsynchronized books reject mutations until reconciled.
+ * 7. Failure Quarantine: Ambiguous commit outcomes or state divergences transition the market into RECONCILING.
+ * 8. BigInt Safety: sequenceNumber fields are formatted as strings for JSON/API compatibility.
  */
 
 import crypto from 'node:crypto';
@@ -22,6 +24,7 @@ import {
   MarketStateManager,
   MarketNotReadyError,
   formatMarketKey,
+  parseMarketKey,
 } from './market-execution-queue.js';
 import { OrderRepository, MarketStateDivergenceError } from './order-repository.js';
 
@@ -40,6 +43,41 @@ export class OrderValidationError extends Error {
     this.name = 'OrderValidationError';
     this.code = 'ORDER_VALIDATION_ERROR';
     this.field = field;
+  }
+}
+
+/**
+ * Error thrown when an idempotency key is reused with mismatched order parameters.
+ */
+export class IdempotencyPayloadMismatchError extends Error {
+  /**
+   * @param {string} message
+   * @param {Object} [details]
+   */
+  constructor(message, { idempotencyKey, expected, actual } = {}) {
+    super(message);
+    this.name = 'IdempotencyPayloadMismatchError';
+    this.code = 'IDEMPOTENCY_PAYLOAD_MISMATCH';
+    this.idempotencyKey = idempotencyKey;
+    this.expected = expected;
+    this.actual = actual;
+  }
+}
+
+/**
+ * Error thrown when an in-memory OrderBook is not verified as synchronized with PostgreSQL.
+ */
+export class MarketNotSynchronizedError extends Error {
+  /**
+   * @param {string} message
+   * @param {Object} [details]
+   */
+  constructor(message, { marketKey, activeOrdersCount } = {}) {
+    super(message);
+    this.name = 'MarketNotSynchronizedError';
+    this.code = 'MARKET_NOT_SYNCHRONIZED';
+    this.marketKey = marketKey;
+    this.activeOrdersCount = activeOrdersCount;
   }
 }
 
@@ -71,13 +109,15 @@ export class PostCommitMutationError extends Error {
    * @param {string} message
    * @param {Object} [details]
    */
-  constructor(message, { originalError, marketKey, orderId } = {}) {
+  constructor(message, { originalError, marketKey, orderId, persistedOrder, persistedExecutions } = {}) {
     super(message);
     this.name = 'PostCommitMutationError';
     this.code = 'POST_COMMIT_MUTATION_ERROR';
     this.marketKey = marketKey;
     this.orderId = orderId;
     this.originalError = originalError;
+    this.persistedOrder = persistedOrder;
+    this.persistedExecutions = persistedExecutions;
   }
 }
 
@@ -118,6 +158,75 @@ export function isAmbiguousCommitError(err) {
   return false;
 }
 
+/**
+ * Inspects a Prisma P2002 error to verify whether it specifically targets the (userId, idempotencyKey) constraint.
+ *
+ * @param {*} err
+ * @returns {boolean}
+ */
+export function isIdempotencyKeyConstraintViolation(err) {
+  if (!err || err.code !== 'P2002') {
+    return false;
+  }
+  const target = err.meta?.target;
+  if (Array.isArray(target)) {
+    return target.includes('idempotencyKey') || (target.includes('userId') && target.includes('idempotencyKey'));
+  }
+  if (typeof target === 'string') {
+    return target.includes('idempotencyKey') || target.includes('userId_idempotencyKey');
+  }
+  return false;
+}
+
+/**
+ * Asserts that an existing order matching an idempotency key matches the incoming order's parameters.
+ *
+ * @param {Object} existingOrder
+ * @param {Object} incomingOrder
+ * @throws {IdempotencyPayloadMismatchError}
+ */
+export function assertIdempotentPayloadMatches(existingOrder, incomingOrder) {
+  const mismatches = [];
+  if (existingOrder.eventId !== incomingOrder.eventId) {
+    mismatches.push(`eventId: expected "${existingOrder.eventId}", got "${incomingOrder.eventId}"`);
+  }
+  if (existingOrder.ticketCategoryId !== incomingOrder.ticketCategoryId) {
+    mismatches.push(`ticketCategoryId: expected "${existingOrder.ticketCategoryId}", got "${incomingOrder.ticketCategoryId}"`);
+  }
+  if (existingOrder.side !== incomingOrder.side) {
+    mismatches.push(`side: expected "${existingOrder.side}", got "${incomingOrder.side}"`);
+  }
+  if (existingOrder.price !== incomingOrder.price) {
+    mismatches.push(`price: expected ${existingOrder.price}, got ${incomingOrder.price}`);
+  }
+  if (existingOrder.initialQuantity !== incomingOrder.initialQuantity) {
+    mismatches.push(`quantity: expected ${existingOrder.initialQuantity}, got ${incomingOrder.initialQuantity}`);
+  }
+
+  if (mismatches.length > 0) {
+    throw new IdempotencyPayloadMismatchError(
+      `Idempotency key "${incomingOrder.idempotencyKey}" was previously used with different order parameters: ${mismatches.join('; ')}`,
+      {
+        idempotencyKey: incomingOrder.idempotencyKey,
+        expected: {
+          eventId: existingOrder.eventId,
+          ticketCategoryId: existingOrder.ticketCategoryId,
+          side: existingOrder.side,
+          price: existingOrder.price,
+          initialQuantity: existingOrder.initialQuantity,
+        },
+        actual: {
+          eventId: incomingOrder.eventId,
+          ticketCategoryId: incomingOrder.ticketCategoryId,
+          side: incomingOrder.side,
+          price: incomingOrder.price,
+          initialQuantity: incomingOrder.initialQuantity,
+        },
+      }
+    );
+  }
+}
+
 export class PersistentMatchingService {
   /**
    * @param {Object} [options]
@@ -142,25 +251,89 @@ export class PersistentMatchingService {
      * @type {Map<string, import('./order-book.js').OrderBook>}
      */
     this._marketBooks = new Map();
+
+    /**
+     * Set of market keys verified as synchronized with PostgreSQL.
+     * @type {Set<string>}
+     */
+    this._synchronizedMarkets = new Set();
+
+    /**
+     * Set of market keys marked corrupted (e.g., post-commit mutation failed).
+     * @type {Set<string>}
+     */
+    this._corruptedMarkets = new Set();
+  }
+
+  /**
+   * Resolves a canonical market key from a formatted key string, config object, or separate IDs.
+   *
+   * @param {string|Object} marketKeyOrConfig
+   * @param {string} [maybeTicketCategoryId]
+   * @returns {string}
+   */
+  _resolveKey(marketKeyOrConfig, maybeTicketCategoryId) {
+    if (typeof marketKeyOrConfig === 'string' && maybeTicketCategoryId === undefined) {
+      try {
+        parseMarketKey(marketKeyOrConfig);
+        return marketKeyOrConfig;
+      } catch {
+        // Fall through to formatMarketKey
+      }
+    }
+    return formatMarketKey(marketKeyOrConfig, maybeTicketCategoryId);
   }
 
   /**
    * Registers an in-memory OrderBook for a specific market.
+   * By default, a newly registered market is NOT considered synchronized until verified against PostgreSQL.
    *
    * @param {string|Object} marketKeyOrConfig
    * @param {import('./order-book.js').OrderBook} book
+   * @param {Object} [options]
+   * @param {boolean} [options.synchronized=false]
    * @returns {string} The canonical market key.
    * @throws {TypeError} If book is invalid.
    */
-  registerMarketBook(marketKeyOrConfig, book) {
+  registerMarketBook(marketKeyOrConfig, book, { synchronized = false } = {}) {
     if (!book || typeof book !== 'object' || typeof book.reduceOrderQuantity !== 'function') {
       throw new TypeError('book must be a valid OrderBook instance');
     }
 
-    const marketKey = formatMarketKey(marketKeyOrConfig);
+    const marketKey = this._resolveKey(marketKeyOrConfig);
     this._marketBooks.set(marketKey, book);
+    this._corruptedMarkets.delete(marketKey);
+
+    if (synchronized) {
+      this._synchronizedMarkets.add(marketKey);
+    } else {
+      this._synchronizedMarkets.delete(marketKey);
+    }
+
     this.stateManager.registerMarket(marketKey, MarketState.INITIALIZING);
     return marketKey;
+  }
+
+  /**
+   * Manually marks a market's book as synchronized (e.g. after full recovery in Step 8.4).
+   *
+   * @param {string|Object} marketKeyOrConfig
+   */
+  markMarketSynchronized(marketKeyOrConfig) {
+    const marketKey = this._resolveKey(marketKeyOrConfig);
+    this._corruptedMarkets.delete(marketKey);
+    this._synchronizedMarkets.add(marketKey);
+  }
+
+  /**
+   * Checks whether a market is marked synchronized.
+   *
+   * @param {string|Object} marketKeyOrConfig
+   * @returns {boolean}
+   */
+  isMarketSynchronized(marketKeyOrConfig) {
+    const marketKey = this._resolveKey(marketKeyOrConfig);
+    return this._synchronizedMarkets.has(marketKey) && !this._corruptedMarkets.has(marketKey);
   }
 
   /**
@@ -170,8 +343,61 @@ export class PersistentMatchingService {
    * @returns {import('./order-book.js').OrderBook|null}
    */
   getMarketBook(marketKeyOrConfig) {
-    const marketKey = formatMarketKey(marketKeyOrConfig);
+    const marketKey = this._resolveKey(marketKeyOrConfig);
     return this._marketBooks.get(marketKey) || null;
+  }
+
+  /**
+   * Asserts that a market is synchronized with PostgreSQL before matching.
+   * Rejects if active resting orders exist in PostgreSQL that are missing from memory.
+   *
+   * @private
+   * @param {string} marketKey
+   * @param {string} eventId
+   * @param {string} ticketCategoryId
+   * @param {import('./order-book.js').OrderBook} book
+   * @throws {MarketNotSynchronizedError|MarketStateDivergenceError}
+   */
+  async _assertMarketSynchronized(marketKey, eventId, ticketCategoryId, book) {
+    if (this._corruptedMarkets.has(marketKey)) {
+      throw new MarketStateDivergenceError(
+        `Market "${marketKey}" in-memory book is corrupted due to prior post-commit mutation failure`,
+        { marketKey }
+      );
+    }
+
+    if (this._synchronizedMarkets.has(marketKey)) {
+      return;
+    }
+
+    // Check database state to verify synchronization
+    const activeOrders = await this.repository.findActiveOrdersByMarket(eventId, ticketCategoryId);
+
+    if (activeOrders.length === 0) {
+      if (book.isEmpty()) {
+        // Clean new market with 0 persisted orders and empty book: verified synchronized
+        this._synchronizedMarkets.add(marketKey);
+        return;
+      }
+      throw new MarketNotSynchronizedError(
+        `Market "${marketKey}" is not synchronized: in-memory book contains ${book.size()} orders but PostgreSQL has 0 active orders.`,
+        { marketKey, activeOrdersCount: 0 }
+      );
+    }
+
+    // PostgreSQL has active resting orders! If the in-memory book is empty, it is missing state.
+    if (book.isEmpty()) {
+      throw new MarketNotSynchronizedError(
+        `Market "${marketKey}" is not synchronized with database: ${activeOrders.length} active resting orders exist in PostgreSQL but are missing from in-memory OrderBook.`,
+        { marketKey, activeOrdersCount: activeOrders.length }
+      );
+    }
+
+    // For non-empty books without explicit sync flag, reject until Step 8.4 reconstruction establishes sync
+    throw new MarketNotSynchronizedError(
+      `Market "${marketKey}" synchronization has not been verified against persisted orders.`,
+      { marketKey, activeOrdersCount: activeOrders.length }
+    );
   }
 
   /**
@@ -309,7 +535,7 @@ export class PersistentMatchingService {
       // 3. Verify market readiness inside serialized boundary
       this.stateManager.assertReady(marketKey);
 
-      // Verify in-memory OrderBook is registered and synchronized
+      // Verify in-memory OrderBook is registered
       const book = this._marketBooks.get(marketKey);
       if (!book) {
         throw new MarketStateDivergenceError(
@@ -318,6 +544,14 @@ export class PersistentMatchingService {
         );
       }
 
+      // Assert market book is synchronized with PostgreSQL
+      await this._assertMarketSynchronized(
+        marketKey,
+        validatedOrder.eventId,
+        validatedOrder.ticketCategoryId,
+        book
+      );
+
       // 4. Look up existing submission by (userId, idempotencyKey)
       const existing = await this.repository.findByIdempotencyKey(
         validatedOrder.userId,
@@ -325,6 +559,7 @@ export class PersistentMatchingService {
       );
 
       if (existing) {
+        assertIdempotentPayloadMatches(existing, validatedOrder);
         return this._formatSubmissionResultFromRecord(existing);
       }
 
@@ -407,11 +642,16 @@ export class PersistentMatchingService {
       } catch (err) {
         // Handle database uniqueness collision (concurrent idempotency retry race)
         if (err.code === 'P2002') {
+          if (!isIdempotencyKeyConstraintViolation(err)) {
+            // Unrelated unique constraint violation (e.g. order ID collision)
+            throw err;
+          }
           const rechecked = await this.repository.findByIdempotencyKey(
             validatedOrder.userId,
             validatedOrder.idempotencyKey
           );
           if (rechecked) {
+            assertIdempotentPayloadMatches(rechecked, validatedOrder);
             return this._formatSubmissionResultFromRecord(rechecked);
           }
         }
@@ -439,11 +679,19 @@ export class PersistentMatchingService {
       try {
         this.coordinator.applyPlan(book, validatedOrder, plan);
       } catch (mutationErr) {
-        // Catastrophic divergence: DB committed but in-memory book failed
+        // Catastrophic divergence: DB committed but in-memory book mutation failed
+        this._synchronizedMarkets.delete(marketKey);
+        this._corruptedMarkets.add(marketKey);
         this.stateManager.transition(marketKey, MarketState.RECONCILING);
         throw new PostCommitMutationError(
           `Database committed order "${validatedOrder.id}", but in-memory book mutation failed. Market quarantined into RECONCILING.`,
-          { originalError: mutationErr, marketKey, orderId: validatedOrder.id }
+          {
+            originalError: mutationErr,
+            marketKey,
+            orderId: validatedOrder.id,
+            persistedOrder: persisted.persistedOrder,
+            persistedExecutions: persisted.persistedExecutions,
+          }
         );
       }
 
