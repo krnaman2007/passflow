@@ -3,6 +3,7 @@ import cors from 'cors';
 import config from './config/index.js';
 import eventRoutes from './routes/event.routes.js';
 import authRoutes from './routes/auth.routes.js';
+import userRoutes from './routes/user.routes.js';
 import errorHandler from './middleware/errorHandler.js';
 
 const app = express();
@@ -24,6 +25,10 @@ app.get('/api/health', (req, res) => {
 // Authentication Routes
 app.use('/auth', authRoutes);
 app.use('/api/v1/auth', authRoutes);
+
+// User & Profile Routes
+app.use('/users', userRoutes);
+app.use('/api/v1/users', userRoutes);
 
 // Event & Category Routes
 app.use('/api/v1', eventRoutes);
