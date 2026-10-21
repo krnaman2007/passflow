@@ -17,7 +17,8 @@ import OrganizerApplyPage from './pages/OrganizerApplyPage';
 import OrganizerDashboardPage from './pages/OrganizerDashboardPage';
 import OrganizerCreateEventPage from './pages/OrganizerCreateEventPage';
 import AdminConsolePage from './pages/AdminConsolePage';
-import AuthPage from './pages/AuthPage';
+import LoginPage from './pages/LoginPage';
+import RegisterPage from './pages/RegisterPage';
 import SolvencyVerifyPage from './pages/SolvencyVerifyPage';
 
 import './App.css';
@@ -38,8 +39,8 @@ function MainRouter() {
     if (currentPath === '/organizer/events/new') return <OrganizerCreateEventPage />;
     if (currentPath === '/organizer' || currentPath.startsWith('/organizer/')) return <OrganizerDashboardPage />;
     if (currentPath.startsWith('/admin')) return <AdminConsolePage />;
-    if (currentPath === '/login') return <AuthPage defaultMode="LOGIN" />;
-    if (currentPath === '/register') return <AuthPage defaultMode="REGISTER" />;
+    if (currentPath === '/login') return <LoginPage />;
+    if (currentPath === '/register' || currentPath === '/signup') return <RegisterPage />;
     if (currentPath === '/solvency' || currentPath.startsWith('/solvency/')) return <SolvencyVerifyPage />;
     return <EventsPage />;
   };

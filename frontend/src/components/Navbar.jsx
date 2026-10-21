@@ -108,39 +108,8 @@ export default function Navbar() {
         </nav>
       </div>
 
-      {/* Right: Role Switcher Simulator & User Controls */}
+      {/* Right: User Controls & Auth Buttons */}
       <div className="nav-right">
-        {/* Fast Role Simulator Pill (Allows testing all roles effortlessly) */}
-        <div className="role-switcher-pill" title="Instant Role Previewer">
-          <span style={{ fontSize: '10px', color: 'var(--text-dim)', padding: '0 6px', fontWeight: 600 }}>
-            ROLE:
-          </span>
-          <button
-            className={`role-chip ${currentRole === 'PUBLIC' ? 'active' : ''}`}
-            onClick={() => switchRole('PUBLIC')}
-          >
-            Visitor
-          </button>
-          <button
-            className={`role-chip ${currentRole === 'USER' ? 'active' : ''}`}
-            onClick={() => switchRole('USER')}
-          >
-            User
-          </button>
-          <button
-            className={`role-chip ${currentRole === 'ORGANIZER' ? 'active' : ''}`}
-            onClick={() => switchRole('ORGANIZER')}
-          >
-            Organizer
-          </button>
-          <button
-            className={`role-chip ${currentRole === 'ADMIN' ? 'active' : ''}`}
-            onClick={() => switchRole('ADMIN')}
-          >
-            Admin
-          </button>
-        </div>
-
         {/* If Logged in: Wallet Pill & User Avatar */}
         {currentRole !== 'PUBLIC' ? (
           <>
