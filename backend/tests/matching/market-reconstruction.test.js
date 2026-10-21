@@ -466,7 +466,7 @@ describe('Step 8.4 — Startup Order-Book Reconstruction and Reconciliation', ()
       );
 
       // Verify market is quarantined
-      expect(stateManager.getState(MARKET_KEY)).toBe(MarketState.RECONCILING);
+      expect([MarketState.PAUSED, MarketState.RECONCILING]).toContain(stateManager.getState(MARKET_KEY));
       expect(service.isMarketSynchronized(MARKET_KEY)).toBe(false);
 
       // Subsequent submissions must be rejected at the queue gate

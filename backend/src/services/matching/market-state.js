@@ -88,13 +88,13 @@ export class InvalidMarketStateTransitionError extends MarketStateError {
  * Strict table of permitted state transitions.
  * Self-transitions are disallowed to prevent redundant or silent state drift.
  *
- * - INITIALIZING -> READY, PAUSED, RECONCILING
+ * - INITIALIZING -> READY, PAUSED
  * - READY        -> PAUSED, RECONCILING
  * - PAUSED       -> READY, RECONCILING
  * - RECONCILING  -> READY, PAUSED
  */
 const VALID_TRANSITIONS = Object.freeze({
-  [MarketState.INITIALIZING]: Object.freeze(new Set([MarketState.READY, MarketState.PAUSED, MarketState.RECONCILING])),
+  [MarketState.INITIALIZING]: Object.freeze(new Set([MarketState.READY, MarketState.PAUSED])),
   [MarketState.READY]: Object.freeze(new Set([MarketState.PAUSED, MarketState.RECONCILING])),
   [MarketState.PAUSED]: Object.freeze(new Set([MarketState.READY, MarketState.RECONCILING])),
   [MarketState.RECONCILING]: Object.freeze(new Set([MarketState.READY, MarketState.PAUSED])),

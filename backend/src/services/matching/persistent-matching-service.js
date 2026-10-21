@@ -363,9 +363,15 @@ export class PersistentMatchingService {
     this._corruptedMarkets.add(marketKey);
     this._synchronizedMarkets.delete(marketKey);
     const currentState = this.stateManager.getState(marketKey);
-    if (currentState && currentState !== MarketState.RECONCILING) {
+    if (currentState === MarketState.READY || currentState === MarketState.PAUSED) {
       try {
         this.stateManager.transition(marketKey, MarketState.RECONCILING);
+      } catch {
+        // Ignore if transition disallowed
+      }
+    } else if (currentState === MarketState.INITIALIZING) {
+      try {
+        this.stateManager.transition(marketKey, MarketState.PAUSED);
       } catch {
         // Ignore if transition disallowed
       }

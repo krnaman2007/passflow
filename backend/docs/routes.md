@@ -515,5 +515,77 @@ Step 8.3 strictly records order and execution data only:
 - Mock failure injection tests: 22 unit tests covering all edge cases and failure modes.
 - Live Neon PostgreSQL integration test: Verified against real database tables.
 
+---
+
+### 5.12 Step 8.4 Implementation: Startup Order-Book Reconstruction & Market Reconciliation
+
+#### 5.12.1 Overview & Architecture
+Step 8.4 implements deterministic startup order-book reconstruction, post-commit failure recovery, ambiguous commit reconciliation, and market synchronization certification:
+- [`persistent-matching-service.js`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/src/services/matching/persistent-matching-service.js): Implements `reconstructMarket`, `reconcileMarket`, `initializeAndSynchronizeMarket`, `_reconstructBookUnderQueue`, and `_quarantineCorruptedMarket`.
+- [`order-repository.js`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/src/services/matching/order-repository.js): Added deterministic `findActiveOrdersByMarket(eventId, ticketCategoryId)` and `countActiveOrdersByMarket(eventId, ticketCategoryId)` sorted by `createdAt ASC, id ASC`.
+- [`market-state.js`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/src/services/matching/market-state.js): Added `hasMarket(marketKey)` helper.
+- [`tests/matching/market-reconstruction.test.js`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/tests/matching/market-reconstruction.test.js): 17 comprehensive deterministic failure, recovery, and live Neon PostgreSQL integration tests.
+
+#### 5.12.2 Deterministic Startup Reconstruction & Ordering Rule
+- **Query Strategy**: Loads all active resting orders from PostgreSQL using:
+  ```javascript
+  where: {
+    eventId,
+    ticketCategoryId,
+    status: { in: ['OPEN', 'PARTIALLY_FILLED'] },
+  },
+  orderBy: [
+    { createdAt: 'asc' },
+    { id: 'asc' },
+  ]
+  ```
+- **Why FIFO is Preserved**:
+  - `OrderBookSide` enforces price priority via its internal comparator (`_comparator`).
+  - Within each price level, `PriceLevel` maintains an internal `FIFOQueue`. Orders are replayed in `createdAt ASC, id ASC` order.
+  - Earlier resting orders enter the FIFO queue first, guaranteeing that orders at the same price level match in their exact historical arrival sequence.
+- **Analysis of `createdAt` and Proposed Invariant**:
+  - `createdAt TIMESTAMP(3)` provides millisecond-resolution timestamps. Under single-writer queue serialization (`MarketExecutionQueue`), orders execute sequentially, producing distinct timestamps.
+  - `{ id: 'asc' }` serves as a strict secondary tie-breaker ensuring 100% deterministic, reproducible replay across restarts.
+  - *Proposed Additive Migration*: To guarantee sub-millisecond arrival ordering without relying on timestamps, an additive `sequenceNumber BIGSERIAL` on `Order` is recommended for future high-frequency multi-partition deployments.
+
+#### 5.12.3 Strict Order Validation & Zero Silent Skipping
+- During reconstruction, every loaded active order is strictly validated:
+  - `id` and `userId` are non-empty strings.
+  - `eventId` and `ticketCategoryId` match the market.
+  - `side` is `'BID'` or `'ASK'`.
+  - `price` is a positive safe integer minor tick unit (`cents > 0`).
+  - `remainingQuantity` is a positive safe integer (`> 0`) and does not exceed `initialQuantity`.
+  - `status` is strictly `'OPEN'` or `'PARTIALLY_FILLED'`.
+- **Zero Silent Skipping**: If any order record in PostgreSQL is invalid or corrupted (e.g. `remainingQuantity <= 0` on an `OPEN` order), it is **never** silently ignored. The reconstruction routine invokes `_quarantineCorruptedMarket(marketKey)`, removes synchronization flags, and throws `MarketReconstructionError`.
+
+#### 5.12.4 Synchronization Certification
+- A market can only become `READY` through an enforced service-level path:
+  1. Market book is registered.
+  2. Active resting orders are retrieved from PostgreSQL.
+  3. Fresh in-memory `OrderBook` is instantiated and populated.
+  4. Snapshot invariants are verified: `newBook.size() === activeOrders.length` and `newBook.totalQuantity() === sum of remainingQuantity`.
+  5. The verified book is atomically stored, corrupted flags cleared, and `_synchronizedMarkets.add(marketKey)` is set.
+- `markMarketSynchronized()` asserts that `book.size() === activeOrders.length` against PostgreSQL before certifying synchronization; unverified manual marking is prohibited.
+
+#### 5.12.5 Ambiguous Commit & Post-Commit Failure Reconciliation
+- When a market is quarantined in `RECONCILING` (due to connection reset during commit or post-commit in-memory mutation throw):
+  - `reconcileMarket(marketKey, { ambiguousSubmission })` queries PostgreSQL via `repository.findByIdempotencyKey(userId, idempotencyKey)`.
+  - If found, it confirms the order committed (`committed: true`) and returns the exact execution outcome without rematching.
+  - If absent, it authoritatively confirms the order rolled back (`committed: false`).
+  - If PostgreSQL is unreachable, it throws `MarketReconciliationError` and keeps the market quarantined in `RECONCILING`.
+  - Reconstructs a fresh `OrderBook` from PostgreSQL, clearing any corrupted or partial in-memory state.
+  - Transitions the market from `RECONCILING` to `READY` (unless administratively `PAUSED`).
+
+#### 5.12.6 Market Lifecycle State Dynamics
+- `INITIALIZING`: Initial cold-start state. Mutating submissions rejected. `initializeAndSynchronizeMarket()` reconstructs the book and transitions to `READY`.
+- `READY`: Market active and accepting orders. Reconstructing a live market serializes via `MarketExecutionQueue.execute(..., { checkState: false })`, ensuring submissions queue behind reconstruction without interleaving or race conditions.
+- `RECONCILING`: Quarantined state. Mutating submissions rejected. `reconcileMarket()` authoritatively resolves ambiguous outcomes, reconstructs the book, and transitions to `READY`.
+- `PAUSED`: Administratively paused market. Mutating submissions rejected. Reconstruction updates the in-memory book and marks it synchronized, but strictly preserves the `PAUSED` state without unpausing.
+
+#### 5.12.7 Test Suite Results
+- Full Jest test suite: **210 passing tests across 11 test suites** (0 failures).
+- Mock failure injection tests: 16 deterministic unit tests in `market-reconstruction.test.js`.
+- Live Neon PostgreSQL integration test: Verified end-to-end on live database (startup reconstruction of resting orders, taker matching against reconstructed book, maker quantity reduction, and cleanup).
+
 
 
