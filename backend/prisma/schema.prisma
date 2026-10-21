@@ -10,17 +10,20 @@ datasource db {
 }
 
 model User {
-  id        String     @id @default(uuid())
-  email     String     @unique
-  password  String
-  name      String?
-  phone     String?
-  role      Role       @default(USER)
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  id           String     @id @default(uuid())
+  name         String?
+  email        String     @unique
+  passwordHash String
+  phone        String?
+  profile      String?
+  walletId     String?    @unique
+  role         Role       @default(USER)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
   // Relationships
-  organizer Organizer?
+  organizer    Organizer?
+  buyerSeller  BuyerSeller?
 }
 
 enum Role {
@@ -30,6 +33,12 @@ enum Role {
 }
 
 enum VerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum KycStatus {
   PENDING
   VERIFIED
   REJECTED
@@ -58,6 +67,15 @@ model Organizer {
 
   // Relationships
   events             Event[]
+}
+
+model BuyerSeller {
+  id        String    @id @default(uuid())
+  userId    String    @unique
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kycStatus KycStatus @default(PENDING)
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
 }
 
 model Event {
