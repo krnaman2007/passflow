@@ -27,7 +27,7 @@ Server: Socket.IO mounted on the Express HTTP server (`server.js`).
 
 ---
 
-## 3. Matching Engine Service Status (Steps 1–6: FIFO Queue, PriceLevel, OrderBookSide, OrderBook, PriceTimePriority & MatchingCoordinator)
+## 3. Matching Engine Service Status (Steps 1–7: FIFO Queue, PriceLevel, OrderBookSide, OrderBook, PriceTimePriority, MatchingCoordinator & Market Isolation Audit)
 
 - **Step 1 Implementation:** `src/services/matching/fifo-queue.js` (Doubly linked FIFO queue)
 - **Step 2 Implementation:** `src/services/matching/price-level.js` (Price level aggregation & time priority)
@@ -35,7 +35,8 @@ Server: Socket.IO mounted on the Express HTTP server (`server.js`).
 - **Step 4 Implementation:** `src/services/matching/order-book.js` (Complete two-sided market order book)
 - **Step 5 Implementation:** `src/services/matching/price-time-priority.js` (Pure price-time matching strategy & execution plan calculation)
 - **Step 6 Implementation:** `src/services/matching/matching-coordinator.js` (In-memory matching coordinator & order lifecycle management)
-- **Route Additions in Steps 1, 2, 3, 4, 5 & 6:** **None** (per architectural scope control, these are isolated in-memory matching engine data structures and domain coordinators without external REST dependencies).
+- **Step 7 Audit & Tests:** `docs/MARKET_ISOLATION_AND_CONCURRENCY.md` & `tests/matching/market-isolation.test.js` (Market isolation and single-writer concurrency audit)
+- **Route Additions in Steps 1–7:** **None** (per architectural scope control, these are isolated in-memory matching engine data structures and domain coordinators without external REST dependencies).
 
 ---
 
