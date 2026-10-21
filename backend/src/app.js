@@ -4,6 +4,7 @@ import config from './config/index.js';
 import eventRoutes from './routes/event.routes.js';
 import authRoutes from './routes/auth.routes.js';
 import userRoutes from './routes/user.routes.js';
+import organizerRoutes from './routes/organizer.routes.js';
 import errorHandler from './middleware/errorHandler.js';
 
 const app = express();
@@ -29,6 +30,10 @@ app.use('/api/v1/auth', authRoutes);
 // User & Profile Routes
 app.use('/users', userRoutes);
 app.use('/api/v1/users', userRoutes);
+
+// Organizer Routes
+app.use('/organizers', organizerRoutes);
+app.use('/api/v1/organizers', organizerRoutes);
 
 // Event & Category Routes
 app.use('/api/v1', eventRoutes);

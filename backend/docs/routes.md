@@ -30,6 +30,14 @@ This document tracks active API routes and planned route additions as the PassFl
 | `PUT` | `/users/me/password` *(also `/api/v1/users/me/password`)* | Change password | User | `{"oldPassword": "...", "newPassword": "..."}` | `{"success": true, "data": {"message": "Password changed successfully. Please log in again with your new credentials."}}` | Active |
 | `POST` | `/users/me/kyc` *(also `/api/v1/users/me/kyc`)* | Submit KYC details; sets kycStatus | User | `{"documentType": "...", "documentNumber": "..."}` | `{"success": true, "data": {"message": "KYC details submitted successfully; status set to PENDING verification", "buyerSeller": {"kycStatus": "PENDING", ...}}}` | Active |
 
+### Organizer Management
+
+| Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `POST` | `/organizers/apply` *(also `/api/v1/organizers/apply`)* | Request organizer role (creates Organizer, status PENDING) | User | `{"organizationName": "..."}` | `{"success": true, "data": {"message": "Organizer application submitted successfully", "organizer": {"id": "...", "organizationName": "...", "verificationStatus": "PENDING"}}}` | Active |
+| `GET` | `/organizers/me` *(also `/api/v1/organizers/me`)* | Organizer profile and verification status | Organizer | None | `{"success": true, "data": {"id": "...", "organizationName": "...", "verificationStatus": "PENDING", "user": {...}}}` | Active |
+| `GET` | `/organizers/me/events` *(also `/api/v1/organizers/me/events`)* | Events created by organizer | Organizer | None | `{"success": true, "data": {"events": [...], "total": 0}}` | Active |
+
 
 ### Event, Category & Inventory Management
 
