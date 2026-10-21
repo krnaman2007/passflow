@@ -884,7 +884,106 @@ Step 8.4 implements deterministic startup order-book reconstruction, post-commit
     - CHECK constraint rejects `amount <= 0` on `WalletLedgerEntry`.
     - Multiple `NULL` idempotency keys permitted; duplicate non-null keys rejected.
 - **Full Backend Suite**: **260 passing tests across 13 test suites** (0 failures).
+### 5.14B Step 9.2 — Transactional Wallet Operations and Idempotency Architecture
 
+#### 5.14B.1 Architectural Role: Per-Wallet Audit Ledger vs. Double-Entry
+- **Per-Wallet Immutable Audit Ledger**:
+  - In Step 9.2, `WalletLedgerEntry` functions strictly as a per-wallet immutable audit ledger.
+  - Every row belongs to a single `walletId` and records `amount`, signed deltas (`availableDelta`, `reservedDelta`), and balance snapshots (`balanceAfterAvailable`, `balanceAfterReserved`).
+  - Balanced cross-party settlement (e.g. buyer debit balanced against seller credit) is **not** implemented in Step 9.2.
+- **Future Evolution to Double-Entry**:
+  - The schema is designed to bridge to double-entry settlement in Step 9.3 via shared `operationId` on `FinancialOperation`.
+  - When trade settlement is implemented, a single `FinancialOperation` will link the buyer's debit ledger entry, seller's credit ledger entry, and exchange fee ledger entry, enforcing zero-sum cross-party balance ($\sum \text{deltas} = 0$).
 
+#### 5.14B.2 Concurrency Strategy: Pessimistic Row-Level Locking
+- **Locking Mechanism**:
+  - Every mutation begins by acquiring an exclusive row-level lock within a PostgreSQL transaction (`SELECT * FROM "Wallet" WHERE id = $1 FOR UPDATE`).
+  - Concurrent operations targeting the same wallet queue deterministically inside PostgreSQL.
+- **Advantages over Optimistic Retry Loops**:
+  - Under high concurrency on a single wallet (e.g. rapid order reservations), optimistic compare-and-swap on `version` triggers repeated conflicts and CPU spin.
+  - Pessimistic locking eliminates transaction retry storms, guarantees strict serialization, and ensures that when the second transaction unblocks, it reads the freshly committed balance and version.
+- **Monotonic Version Sequence**:
+  - `Wallet.version` is incremented on every balance mutation (`version = version + 1n`).
+  - This provides sequential audit chronology for downstream audit logs and event sourcing.
+- **Transaction Settings**:
+  - Isolation level: `ReadCommitted`.
+  - `maxWait: 20000ms`, `timeout: 30000ms` with transient connection contention retry handling to prevent Prisma transaction pool queue timeouts across WAN database roundtrips.
 
+#### 5.14B.3 Transactional Boundaries & Operations Contract
+All balance mutations run inside a single atomic database transaction (`prisma.$transaction`):
+1. **`getOrCreateWallet({ userId, currency = 'INR' })`**:
+   - Idempotently creates or returns the user's wallet.
+   - Handles concurrent creation races by catching `P2002` and returning the winner's wallet.
+2. **`getWalletBalance({ walletId, userId, includeHolds = false })`**:
+   - Reads wallet balance projection.
+   - If `includeHolds: true`, returns active and partially settled holds.
+3. **`creditAvailable({ walletId, userId, amount, idempotencyKey, entryType, operationType, referenceType, referenceId, description, metadata })`**:
+   - Enforces `amount > 0` in integer paise.
+   - Locks wallet row.
+   - Evaluates idempotency; if key exists with identical payload, returns replay.
+   - Atomically updates:
+     - `FinancialOperation` (`status = 'COMPLETED'`)
+     - `WalletLedgerEntry` (`availableDelta = +amount`, `reservedDelta = 0`, snapshots)
+     - `Wallet` (`availableBalance = availableBalance + amount`, `version = version + 1n`)
+4. **`debitAvailable({ walletId, userId, amount, idempotencyKey, entryType, operationType, referenceType, referenceId, description, metadata })`**:
+   - Validates `amount > 0`. Locks wallet row.
+   - Evaluates sufficiency: if `availableBalance < amount`, throws `InsufficientFundsError`.
+   - Atomically updates:
+     - `FinancialOperation` (`status = 'COMPLETED'`)
+     - `WalletLedgerEntry` (`availableDelta = -amount`, `reservedDelta = 0`, snapshots)
+     - `Wallet` (`availableBalance = availableBalance - amount`, `version = version + 1n`)
+5. **`reserveFunds({ walletId, userId, amount, idempotencyKey, reason, orderId, referenceType, referenceId, description, metadata })`**:
+   - Validates `amount > 0`. Locks wallet row.
+   - Evaluates sufficiency: if `availableBalance < amount`, throws `InsufficientFundsError`.
+   - Conserves total balance: moves funds from available to reserved balance.
+   - Atomically updates:
+     - `FinancialOperation` (`operationType = 'ORDER_ESCROW' | 'WITHDRAWAL'`, `status = 'COMPLETED'`)
+     - `WalletHold` (`heldAmount = amount`, `remainingAmount = amount`, `status = 'ACTIVE'`, `reason`)
+     - `WalletLedgerEntry` (`availableDelta = -amount`, `reservedDelta = +amount`, `holdId = hold.id`)
+     - `Wallet` (`availableBalance -= amount`, `reservedBalance += amount`, `version += 1n`)
+6. **`releaseHold({ holdId, idempotencyKey, amount = null, referenceType, referenceId, description, metadata })`**:
+   - Fetches hold and locks parent wallet (`SELECT * FROM "Wallet" WHERE id = hold.walletId FOR UPDATE`).
+   - Verifies hold is active; rejects closed holds (`RELEASED` / `SETTLED`).
+   - Determines release amount: full remaining amount if `amount` is omitted, or specified partial amount.
+   - Invariant check: `releaseAmount <= remainingAmount`.
+   - Calculates new remaining amount:
+     - If `remainingAmount == 0`: hold status transitions to `RELEASED`.
+     - If `remainingAmount > 0`: hold status transitions to `PARTIALLY_SETTLED`.
+   - Moves funds: `availableBalance += releaseAmount`, `reservedBalance -= releaseAmount`.
+   - Atomically updates:
+     - `FinancialOperation` (`operationType = 'ORDER_RELEASE' | 'REFUND'`, `status = 'COMPLETED'`)
+     - `WalletHold` (`remainingAmount`, `status`)
+     - `WalletLedgerEntry` (`availableDelta = +releaseAmount`, `reservedDelta = -releaseAmount`)
+     - `Wallet` (`availableBalance`, `reservedBalance`, `version += 1n`)
+
+#### 5.14B.4 Idempotency Semantics & Conflict Detection
+- **Idempotency Scope & Storage**:
+  - `FinancialOperation.idempotencyKey` enforces database-level uniqueness across the system.
+  - Normal business payload parameters (`walletId`, `amount`, `operationType`, `referenceType`, `referenceId`, `holdId`) are recorded in `metadata`.
+- **Duplicate Request Handling**:
+  - **Same Key + Same Payload**: Returns the original operation and wallet state with `isIdempotentReplay: true`. No duplicate ledger entries or balance mutations occur.
+  - **Same Key + Different Payload**: Throws `IdempotencyConflictError` (HTTP 409 Conflict) detailing existing vs. requested payload differences.
+- **Concurrent Race Handling**:
+  - If two requests with the same idempotency key arrive concurrently, PostgreSQL row locking serializes them on the wallet row.
+  - If they target different wallets, the PostgreSQL unique index on `FinancialOperation.idempotencyKey` triggers `P2002` on the second transaction, which detects the conflict and safely rejects it.
+- **Non-Consuming Failures**:
+  - Insufficient-funds rejections fail *before* creating the operation record or touching the ledger. The user may deposit funds and retry with the same key.
+
+#### 5.14B.5 Invariant Auditing & Test Verification
+- **Integration Test Suite**: `backend/tests/wallet/wallet-service.test.js`
+- **27 Live PostgreSQL Integration Tests** (100% passing):
+  - Wallet creation and idempotent retrieval.
+  - Valid credits, debits, and compensating adjustments.
+  - Insufficient funds rejection with zero state change.
+  - Monetary input validation, safe integer boundaries, and float/negative/zero rejections.
+  - Fund reservation and full/partial hold releases with status transitions.
+  - Repeated idempotent requests returning original outcomes.
+  - Conflict detection on payload mismatch (amount, wallet, operation type).
+  - Concurrent duplicate requests producing exactly one ledger posting.
+  - Concurrent spending under contention serializing cleanly without overdrafts.
+  - Rollback atomicity: zero partial projection or ledger updates on error.
+  - Exact audit reconciliation:
+    $$\text{Wallet.availableBalance} = \sum \text{WalletLedgerEntry.availableDelta}$$
+    $$\text{Wallet.reservedBalance} = \sum \text{WalletLedgerEntry.reservedDelta}$$
+    $$\text{Wallet.reservedBalance} = \sum_{\text{active holds}} \text{WalletHold.remainingAmount}$$
 
