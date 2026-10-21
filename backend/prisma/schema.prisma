@@ -372,3 +372,23 @@ model AuditLog {
   @@index([action])
   @@index([timestamp])
 }
+
+enum ReconciliationStatus {
+  PENDING
+  MATCHED
+  DISCREPANCY_FOUND
+  FAILED
+}
+
+model Reconciliation {
+  id        String               @id @default(uuid())
+  date      DateTime             @default(now())
+  status    ReconciliationStatus @default(PENDING)
+  reportUrl String?
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+
+  @@index([date])
+  @@index([status])
+}
+
