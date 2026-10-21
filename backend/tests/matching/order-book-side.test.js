@@ -181,6 +181,19 @@ describe('OrderBookSide Matching Engine Component', () => {
       expect(() => ask.getLevel(-5000)).toThrow(RangeError);
       expect(() => ask.getLevel(1.5)).toThrow(TypeError);
     });
+
+    it('provides getOrder and hasOrder lookups by orderId', () => {
+      const bid = new OrderBookSide('BID');
+      const order = { id: 'ord-find', price: 10000, remainingQuantity: 5 };
+      bid.addOrder(order);
+
+      expect(bid.hasOrder('ord-find')).toBe(true);
+      expect(bid.getOrder('ord-find')).toBe(order);
+      expect(bid.hasOrder('unknown')).toBe(false);
+      expect(bid.getOrder('unknown')).toBeNull();
+      expect(bid.getOrder(null)).toBeNull();
+      expect(bid.hasOrder('')).toBe(false);
+    });
   });
 
   describe('12, 13: Order Cancellation', () => {

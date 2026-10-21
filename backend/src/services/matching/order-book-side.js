@@ -522,6 +522,33 @@ export class OrderBookSide {
   }
 
   /**
+   * Returns a resting order by its unique ID.
+   *
+   * @param {string} orderId - Non-empty string order ID.
+   * @returns {Order|null} The order if resting on this side, or null.
+   */
+  getOrder(orderId) {
+    if (typeof orderId !== 'string' || orderId.trim().length === 0) {
+      return null;
+    }
+    const loc = this._orderLocations.get(orderId);
+    return loc ? loc.order : null;
+  }
+
+  /**
+   * Indicates whether an order ID exists on this side.
+   *
+   * @param {string} orderId - Non-empty string order ID.
+   * @returns {boolean} True if order is present, false otherwise.
+   */
+  hasOrder(orderId) {
+    if (typeof orderId !== 'string' || orderId.trim().length === 0) {
+      return false;
+    }
+    return this._orderLocations.has(orderId);
+  }
+
+  /**
    * Iterates through all resting orders in price-time priority sequence.
    *
    * @generator
