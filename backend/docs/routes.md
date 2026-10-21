@@ -27,7 +27,7 @@ Server: Socket.IO mounted on the Express HTTP server (`server.js`).
 
 ---
 
-## 3. Matching Engine Service Status (Steps 1–8A: FIFO Queue, PriceLevel, OrderBookSide, OrderBook, PriceTimePriority, MatchingCoordinator, Market Isolation Audit & Corrected Persistence Architecture)
+## 3. Matching Engine Service Status (Steps 1–8.1: FIFO Queue, PriceLevel, OrderBookSide, OrderBook, PriceTimePriority, MatchingCoordinator, Market Isolation Audit, Corrected Persistence Architecture & Schema Foundation)
 
 - **Step 1 Implementation:** `src/services/matching/fifo-queue.js` (Doubly linked FIFO queue)
 - **Step 2 Implementation:** `src/services/matching/price-level.js` (Price level aggregation & time priority)
@@ -37,7 +37,8 @@ Server: Socket.IO mounted on the Express HTTP server (`server.js`).
 - **Step 6 Implementation:** `src/services/matching/matching-coordinator.js` (In-memory matching coordinator & order lifecycle management)
 - **Step 7 Audit & Tests:** `docs/MARKET_ISOLATION_AND_CONCURRENCY.md` & `tests/matching/market-isolation.test.js` (Market isolation and single-writer concurrency audit)
 - **Step 8A Review & Corrections:** `docs/routes.md` Section 5 (Corrected Persistence Architecture, Serialization Boundaries, Ambiguous Outcomes & Fenced Market Ownership)
-- **Route Additions in Steps 1–8A:** **None** (per architectural scope control, these are isolated in-memory matching engine data structures, domain coordinators, and design audits without external REST dependencies).
+- **Step 8.1 Implementation:** `prisma/schema.prisma` and `prisma/migrations/20261021161148_add_order_and_execution_models` (Persistent Order and Execution models, integer types, indexes, and applied migration)
+- **Route Additions in Steps 1–8.1:** **None** (per architectural scope control, these are isolated in-memory matching engine data structures, domain coordinators, design audits, and database schema foundations without external REST dependencies).
 
 ---
 
@@ -198,3 +199,99 @@ The implementation roadmap is restructured so serialization, transactions, and f
      - Simulated database transaction rollback leaving in-memory book unmutated.
      - Simulated commit timeout triggering market quarantine and idempotency reconciliation.
      - Restart recovery verifying identical order book depth and queue priority.
+
+---
+
+### 5.8 Step 8.1 Implementation: Persistent Order and Execution Schema Foundation
+
+#### 5.8.1 Schema Models and Relation Design
+In Step 8.1, the persistence foundation was added to `backend/prisma/schema.prisma` without altering the in-memory matching engine:
+
+- **`Order` Model**:
+  - `id String @id @default(uuid())`: Unique primary key.
+  - `userId String`: Foreign key referencing `User(id)` with `onDelete: Cascade`.
+  - `eventId String`: Foreign key referencing `Event(id)` with `onDelete: Cascade`.
+  - `ticketCategoryId String`: Foreign key referencing `TicketCategory(id)` with `onDelete: Cascade`.
+  - `side OrderSide`: Enum (`BID`, `ASK`).
+  - `status OrderStatus @default(OPEN)`: Enum (`OPEN`, `PARTIALLY_FILLED`, `FILLED`, `CANCELLED`, `REJECTED`).
+  - `price Int`: Matching price in minor currency units (cents / ticks).
+  - `initialQuantity Int`: Original requested contract/ticket quantity.
+  - `remainingQuantity Int`: Current unfilled quantity resting in the book.
+  - `idempotencyKey String?`: Client-provided deduplication key.
+  - `stoppedReason String?`: Reason matching halted (e.g., `'SELF_TRADE_PREVENTION'`).
+  - `createdAt DateTime @default(now())`, `updatedAt DateTime @updatedAt`.
+  - Dual relations to `Execution`:
+    - `incomingExecutions Execution[] @relation("IncomingOrderExecutions")`: Executions where this order was the aggressive/incoming taker.
+    - `restingExecutions Execution[] @relation("RestingOrderExecutions")`: Executions where this order was the passive resting maker.
+  - Indexes:
+    - `@@unique([userId, idempotencyKey])`: Strict per-user submission idempotency.
+    - `@@index([eventId, ticketCategoryId, status, price, createdAt])`: Supports market depth lookups, active resting order queries, and price-time recovery ordering.
+    - `@@index([userId, createdAt])`: Efficient retrieval of user order history.
+
+- **`Execution` Model**:
+  - `id String @id @default(uuid())`: Unique trade identifier.
+  - `incomingOrderId String`: Foreign key referencing `Order(id)` (`@relation("IncomingOrderExecutions")`, `onDelete: Cascade`).
+  - `restingOrderId String`: Foreign key referencing `Order(id)` (`@relation("RestingOrderExecutions")`, `onDelete: Cascade`).
+  - `price Int`: Execution fill price (passive resting order price in ticks/cents).
+  - `quantity Int`: Executed quantity.
+  - `sequenceNumber BigInt @default(autoincrement())`: Monotonically increasing 64-bit sequence (`BIGSERIAL`) for deterministic global audit and replay ordering.
+  - `executedAt DateTime @default(now())`.
+  - Indexes:
+    - `@@index([incomingOrderId])`: Fast lookup of fills generated by an incoming submission.
+    - `@@index([restingOrderId])`: Fast lookup of passive counterparty fills.
+    - `@@index([sequenceNumber])`: Sequential trade feed and replay scans.
+
+#### 5.8.2 Integer Type Selection (`Int` vs `BigInt`) and Serialization Implications
+- **Prices and Quantities (`Int`)**:
+  - PostgreSQL `INTEGER` (32-bit signed: -2,147,483,648 to 2,147,483,647) was selected for `price`, `initialQuantity`, and `remainingQuantity`.
+  - *Capacity Verification*: For ticket markets, prices in minor units (e.g., cents) allow up to $21,474,836.47 per ticket, and quantities up to 2.14 billion tickets per order. This comfortably accommodates all foreseeable marketplace activity.
+  - *Serialization Safety*: JavaScript `Number` safely represents integers up to `Number.MAX_SAFE_INTEGER` ($2^{53} - 1 \approx 9 \times 10^{15}$). Using `Int` guarantees that order prices and quantities serialize natively via `JSON.stringify()` in Express HTTP responses and WebSocket events without triggering `TypeError: Do not know how to serialize a BigInt`.
+- **Global Sequence Number (`BigInt`)**:
+  - PostgreSQL `BIGSERIAL` / Prisma `BigInt` was selected for `Execution.sequenceNumber`.
+  - *Capacity Verification*: Global execution counts across all events and markets over months and years can exceed 2.14 billion. A 64-bit integer prevents overflow.
+  - *Serialization Handling*: When returned in REST or WebSocket payloads, repository and route layers must serialize `sequenceNumber` as a string (`seq.toString()`) to maintain precision and avoid Node.js JSON serialization crashes.
+
+#### 5.8.3 Idempotency Scope and Submission Outcome Recovery
+- **Idempotency Scope (`@@unique([userId, idempotencyKey])`)**:
+  - The uniqueness constraint is scoped per user. Scoping to `userId` ensures clients generating simple UUIDs or client sequence numbers do not conflict with other users, while preventing network retries from creating duplicate orders for the same user.
+- **Original Submission Outcome Recovery**:
+  - A unique constraint alone only detects duplicate insertion attempts; it does not reconstruct the original execution outcome.
+  - In PassFlow, when an idempotent retry arrives with a known `(userId, idempotencyKey)`:
+    1. The order record already contains the terminal or resting status (`status`, `remainingQuantity`, and `stoppedReason`).
+    2. Any fills generated on submission are durably stored in `Execution` where `incomingOrderId = order.id`.
+    3. Querying `Order` with its related `incomingExecutions` (ordered by `sequenceNumber ASC`) allows `PersistentMatchingService` (Step 8.3) to completely reconstruct the exact `SubmissionResult` object:
+       ```javascript
+       {
+         orderId: order.id,
+         status: order.status,
+         originalQuantity: order.initialQuantity,
+         remainingQuantity: order.remainingQuantity,
+         stoppedReason: order.stoppedReason,
+         executions: order.incomingExecutions.map(e => ({
+           restingOrderId: e.restingOrderId,
+           price: e.price,
+           quantity: e.quantity,
+           sequenceNumber: e.sequenceNumber.toString()
+         }))
+       }
+       ```
+    4. This completely avoids re-running the matching algorithm or returning partial or ambiguous state on retries.
+
+#### 5.8.4 Schema Drift Discovery and Safe Non-Destructive Migration
+- **Drift Discovery**:
+  - Inspection of the live Neon database and migration directory revealed that the database had 2 previously applied migrations: `20261021112254` (initial User) and `20261021151519_add_user_model` (Organizer, Event, TicketCategory, TicketInventory).
+  - However, git commit `7c69299` had added `model BuyerSeller` and `enum KycStatus` to `prisma/schema.prisma` without generating a migration.
+- **Safe Resolution**:
+  - Rather than resetting or using destructive commands, `npx prisma migrate dev --create-only --name add_order_and_execution_models` was executed to generate migration `20261021161148_add_order_and_execution_models`.
+  - The generated SQL safely bundled `BuyerSeller`, `KycStatus`, `OrderSide`, `OrderStatus`, `Order`, `Execution`, and their constraints in an additive, non-destructive migration.
+  - The migration was reviewed and applied via `npx prisma migrate deploy`. `npx prisma migrate status` confirms 3 migrations applied and database schema up to date.
+
+#### 5.8.5 Validation and Known Limitations
+- **Validation**:
+  - `npx prisma validate`: Schema is valid.
+  - `npx prisma generate`: Generated Prisma Client v6.19.3.
+  - `npm test`: 153 tests passed across 8 suites (100% pass rate).
+- **Known Limitations & Scope Boundaries**:
+  - *No matching engine coupling*: As required by Step 8.1, `src/services/matching/` was not touched. `MatchingCoordinator` remains pure and in-memory.
+  - *Prerequisites before DB integration*: `MarketExecutionQueue` (Step 8.2) and `PersistentMatchingService` (Step 8.3) must be implemented before any live orders can be routed through this schema.
+

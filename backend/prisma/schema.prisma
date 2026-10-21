@@ -24,6 +24,7 @@ model User {
   // Relationships
   organizer    Organizer?
   buyerSeller  BuyerSeller?
+  orders       Order[]
 }
 
 enum Role {
@@ -55,6 +56,19 @@ enum CategoryStatus {
   ACTIVE
   SOLD_OUT
   CLOSED
+}
+
+enum OrderSide {
+  BID
+  ASK
+}
+
+enum OrderStatus {
+  OPEN
+  PARTIALLY_FILLED
+  FILLED
+  CANCELLED
+  REJECTED
 }
 
 model Organizer {
@@ -93,6 +107,7 @@ model Event {
 
   // Relationships
   categories    TicketCategory[]
+  orders        Order[]
 }
 
 model TicketCategory {
@@ -109,6 +124,7 @@ model TicketCategory {
 
   // Relationships
   inventory         TicketInventory?
+  orders            Order[]
 }
 
 model TicketInventory {
@@ -120,5 +136,50 @@ model TicketInventory {
   reservedQuantity  Int            @default(0)
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
+}
+
+model Order {
+  id                String         @id @default(uuid())
+  userId            String
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  eventId           String
+  event             Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  ticketCategoryId  String
+  ticketCategory    TicketCategory @relation(fields: [ticketCategoryId], references: [id], onDelete: Cascade)
+  side              OrderSide
+  status            OrderStatus    @default(OPEN)
+  price             Int            // Integer minor currency units / ticks (e.g. cents)
+  initialQuantity   Int            // Original requested size
+  remainingQuantity Int            // Unfilled quantity resting in the market
+  idempotencyKey    String?        // Client-provided deduplication token
+  stoppedReason     String?        // Recorded reason matching stopped (e.g. 'SELF_TRADE_PREVENTION')
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  // Relationships
+  incomingExecutions Execution[]   @relation("IncomingOrderExecutions")
+  restingExecutions  Execution[]   @relation("RestingOrderExecutions")
+
+  // Constraints & Indexes
+  @@unique([userId, idempotencyKey])
+  @@index([eventId, ticketCategoryId, status, price, createdAt])
+  @@index([userId, createdAt])
+}
+
+model Execution {
+  id              String   @id @default(uuid())
+  incomingOrderId String
+  incomingOrder   Order    @relation("IncomingOrderExecutions", fields: [incomingOrderId], references: [id], onDelete: Cascade)
+  restingOrderId  String
+  restingOrder    Order    @relation("RestingOrderExecutions", fields: [restingOrderId], references: [id], onDelete: Cascade)
+  price           Int      // Integer execution price (passive resting order price in ticks/cents)
+  quantity        Int      // Executed quantity
+  sequenceNumber  BigInt   @default(autoincrement())
+  executedAt      DateTime @default(now())
+
+  // Indexes for order history reconstruction and audit
+  @@index([incomingOrderId])
+  @@index([restingOrderId])
+  @@index([sequenceNumber])
 }
 
