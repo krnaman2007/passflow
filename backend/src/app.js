@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import config from './config/index.js';
 import eventRoutes from './routes/event.routes.js';
+import authRoutes from './routes/auth.routes.js';
 import errorHandler from './middleware/errorHandler.js';
 
 const app = express();
@@ -19,6 +20,10 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// Authentication Routes
+app.use('/auth', authRoutes);
+app.use('/api/v1/auth', authRoutes);
 
 // Event & Category Routes
 app.use('/api/v1', eventRoutes);

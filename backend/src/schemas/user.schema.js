@@ -43,6 +43,20 @@ export const loginUserSchema = z.object({
 });
 
 /**
+ * Refresh Token Validation Schema
+ */
+export const refreshTokenSchema = z.object({
+  refreshToken: z.string().min(1, 'Refresh token is required'),
+});
+
+/**
+ * Logout Validation Schema
+ */
+export const logoutSchema = z.object({
+  refreshToken: z.string().optional(),
+});
+
+/**
  * Update Profile Validation Schema
  */
 export const updateProfileSchema = z.object({

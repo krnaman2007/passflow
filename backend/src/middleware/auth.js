@@ -27,9 +27,18 @@ export const authenticateUser = async (req, res, next) => {
       throw new AppError('Token payload missing user identifier', 401, 'INVALID_TOKEN');
     }
 
+    // Ensure access token is used, not refresh token
+    if (decoded.type && decoded.type !== 'access') {
+      throw new AppError('Invalid token type: access token required', 401, 'INVALID_TOKEN');
+    }
+
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      include: { organizer: true },
+      include: {
+        organizer: true,
+        buyerSeller: true,
+        wallet: true,
+      },
     });
 
     if (!user) {

@@ -26,6 +26,7 @@ model User {
   buyerSeller  BuyerSeller?
   orders       Order[]
   wallet       Wallet?
+  refreshTokens RefreshToken[]
 }
 
 enum Role {
@@ -328,3 +329,16 @@ model WalletLedgerEntry {
   @@index([executionId])
 }
 
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([token])
+  @@index([userId])
+}
