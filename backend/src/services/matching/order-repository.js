@@ -83,6 +83,11 @@ export class OrderRepository {
   /**
    * Finds active resting orders for a specific market, ordered for deterministic book reconstruction.
    *
+   * Query criteria:
+   * - Filters only OPEN and PARTIALLY_FILLED orders.
+   * - Filters only orders with positive remainingQuantity (> 0).
+   * - Orders by createdAt ASC (FIFO arrival order) and id ASC (deterministic tie-breaker).
+   *
    * @param {string} eventId
    * @param {string} ticketCategoryId
    * @param {Object} [tx]
@@ -96,9 +101,27 @@ export class OrderRepository {
         status: { in: ['OPEN', 'PARTIALLY_FILLED'] },
       },
       orderBy: [
-        { price: 'asc' },
         { createdAt: 'asc' },
+        { id: 'asc' },
       ],
+    });
+  }
+
+  /**
+   * Counts active resting orders for a specific market.
+   *
+   * @param {string} eventId
+   * @param {string} ticketCategoryId
+   * @param {Object} [tx]
+   * @returns {Promise<number>}
+   */
+  async countActiveOrdersByMarket(eventId, ticketCategoryId, tx = this.prisma) {
+    return tx.order.count({
+      where: {
+        eventId,
+        ticketCategoryId,
+        status: { in: ['OPEN', 'PARTIALLY_FILLED'] },
+      },
     });
   }
 

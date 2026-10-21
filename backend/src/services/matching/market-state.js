@@ -88,13 +88,13 @@ export class InvalidMarketStateTransitionError extends MarketStateError {
  * Strict table of permitted state transitions.
  * Self-transitions are disallowed to prevent redundant or silent state drift.
  *
- * - INITIALIZING -> READY, PAUSED
+ * - INITIALIZING -> READY, PAUSED, RECONCILING
  * - READY        -> PAUSED, RECONCILING
  * - PAUSED       -> READY, RECONCILING
  * - RECONCILING  -> READY, PAUSED
  */
 const VALID_TRANSITIONS = Object.freeze({
-  [MarketState.INITIALIZING]: Object.freeze(new Set([MarketState.READY, MarketState.PAUSED])),
+  [MarketState.INITIALIZING]: Object.freeze(new Set([MarketState.READY, MarketState.PAUSED, MarketState.RECONCILING])),
   [MarketState.READY]: Object.freeze(new Set([MarketState.PAUSED, MarketState.RECONCILING])),
   [MarketState.PAUSED]: Object.freeze(new Set([MarketState.READY, MarketState.RECONCILING])),
   [MarketState.RECONCILING]: Object.freeze(new Set([MarketState.READY, MarketState.PAUSED])),
@@ -236,6 +236,17 @@ export class MarketStateManager {
       this._states.set(marketKey, initialState);
     }
     return this._states.get(marketKey);
+  }
+
+  /**
+   * Checks whether a market has been registered with the state manager.
+   *
+   * @param {string|Object} marketKeyOrConfig
+   * @returns {boolean}
+   */
+  hasMarket(marketKeyOrConfig) {
+    const marketKey = this._resolveKey(marketKeyOrConfig);
+    return this._states.has(marketKey);
   }
 
   /**
