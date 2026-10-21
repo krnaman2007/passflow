@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import config from './config/index.js';
+import eventRoutes from './routes/event.routes.js';
+import errorHandler from './middleware/errorHandler.js';
 
 const app = express();
 
@@ -18,4 +20,12 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Event & Category Routes
+app.use('/api/v1', eventRoutes);
+app.use('/api', eventRoutes);
+
+// Centralized Error Handling Middleware (must be after routes)
+app.use(errorHandler);
+
 export default app;
+
