@@ -361,7 +361,7 @@ export default function EventDetailPage() {
                   <span>Log in to buy</span>
                 </button>
                 <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-dim)', marginTop: 10 }}>
-                  Account nahi?{' '}
+                  Don't have an account?{' '}
                   <span
                     style={{ color: 'var(--accent-orange)', cursor: 'pointer', textDecoration: 'underline' }}
                     onClick={() => navigate('/register')}

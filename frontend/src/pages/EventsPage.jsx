@@ -42,8 +42,8 @@ export default function EventsPage() {
         </h1>
         <p className="hero-sub">
           {currentRole === 'PUBLIC'
-            ? 'Primary + resale, ek hi jagah. Stock-exchange style order book with anti-scalping caps.'
-            : 'Wallet ready — seedha khareedo. Buy primary or trade on the live order book.'}
+            ? 'Primary and resale tickets, all in one place. Stock-exchange style order book with fair anti-scalping price caps.'
+            : 'Wallet ready — buy directly at face value or trade on the live order book.'}
         </p>
       </div>
 

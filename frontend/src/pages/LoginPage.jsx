@@ -93,7 +93,7 @@ export default function LoginPage() {
         <div style={{ marginBottom: 20 }}>
           <h2 style={{ fontSize: 20, marginBottom: 4 }}>Welcome Back</h2>
           <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-            Log in karke wallet aur tickets dekho
+            Sign in to access your wallet and ticket vault
           </p>
         </div>
 
@@ -136,7 +136,7 @@ export default function LoginPage() {
         </form>
 
         <div style={{ textAlign: 'center', marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--border-subtle)', fontSize: 13, color: 'var(--text-muted)' }}>
-          <span>Naya hai? </span>
+          <span>Don't have an account? </span>
           <button
             onClick={() => navigate('/register')}
             style={{ color: 'var(--accent-orange)', fontWeight: 600, textDecoration: 'underline' }}

@@ -227,9 +227,9 @@ export default function MarketPage() {
               >
                 <Lock size={24} color="#f97316" />
               </div>
-              <h3 style={{ fontSize: 18, marginBottom: 8 }}>Trade karne ke liye login karo</h3>
+              <h3 style={{ fontSize: 18, marginBottom: 8 }}>Log In to Start Trading</h3>
               <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 24, lineHeight: 1.5 }}>
-                Book dekhna free hai. Buy / Sell order place karne ke liye verified account aur escrow wallet balance chahiye.
+                Viewing the live order book is free. To place buy or sell limit orders, an authenticated account and wallet balance are required.
               </p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <button className="btn-primary" onClick={() => navigate('/login')}>

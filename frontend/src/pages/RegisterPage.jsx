@@ -96,7 +96,7 @@ export default function RegisterPage() {
         <div style={{ marginBottom: 20 }}>
           <h2 style={{ fontSize: 20, marginBottom: 4 }}>Create Account</h2>
           <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-            Wallet apne aap ban jaata hai
+            Your custodial escrow wallet is created automatically
           </p>
         </div>
 
@@ -323,7 +323,7 @@ export default function RegisterPage() {
         </form>
 
         <div style={{ textAlign: 'center', marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--border-subtle)', fontSize: 13, color: 'var(--text-muted)' }}>
-          <span>Pehle se account hai? </span>
+          <span>Already have an account? </span>
           <button
             onClick={() => navigate('/login')}
             style={{ color: 'var(--accent-orange)', fontWeight: 600, textDecoration: 'underline' }}

@@ -133,7 +133,7 @@ export default function ProfilePage() {
                 <span className="badge badge-orange">SELLER ACCESS</span>
               </div>
               <p style={{ fontSize: 13, color: 'var(--text-sub)', maxWidth: 520 }}>
-                Apne events bechne hain? Application bhejo, admin verify karega. Gain access to the Organizer Console to publish events, manage primary tier inventories, and collect revenues.
+                Looking to sell tickets for your own live events? Submit an application for admin approval to access the Organizer Console, publish events, and collect box office payouts.
               </p>
             </div>
 
