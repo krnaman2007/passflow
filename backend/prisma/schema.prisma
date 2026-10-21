@@ -10,9 +10,97 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
+  id        String     @id @default(uuid())
+  email     String     @unique
   password  String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  name      String?
+  phone     String?
+  role      Role       @default(USER)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  // Relationships
+  organizer Organizer?
 }
+
+enum Role {
+  USER
+  ORGANIZER
+  ADMIN
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum EventStatus {
+  DRAFT
+  PUBLISHED
+  CANCELLED
+  COMPLETED
+}
+
+enum CategoryStatus {
+  ACTIVE
+  SOLD_OUT
+  CLOSED
+}
+
+model Organizer {
+  id                 String             @id @default(uuid())
+  userId             String             @unique
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationName   String
+  verificationStatus VerificationStatus @default(PENDING)
+  createdAt          DateTime           @default(now())
+
+  // Relationships
+  events             Event[]
+}
+
+model Event {
+  id            String           @id @default(uuid())
+  name          String
+  description   String?
+  dateTime      DateTime
+  location      String
+  organizerId   String
+  organizer     Organizer        @relation(fields: [organizerId], references: [id], onDelete: Cascade)
+  status        EventStatus      @default(DRAFT)
+  originalPrice Decimal?         @db.Decimal(12, 2)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  // Relationships
+  categories    TicketCategory[]
+}
+
+model TicketCategory {
+  id                String           @id @default(uuid())
+  eventId           String
+  event             Event            @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  name              String
+  originalPrice     Decimal          @db.Decimal(12, 2)
+  totalQuantity     Int
+  availableQuantity Int
+  status            CategoryStatus   @default(ACTIVE)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  // Relationships
+  inventory         TicketInventory?
+}
+
+model TicketInventory {
+  id                String         @id @default(uuid())
+  categoryId        String         @unique
+  category          TicketCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  totalQuantity     Int
+  availableQuantity Int
+  reservedQuantity  Int            @default(0)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+}
+
