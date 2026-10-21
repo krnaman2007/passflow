@@ -27,6 +27,7 @@ model User {
   orders       Order[]
   wallet       Wallet?
   refreshTokens RefreshToken[]
+  admin        Admin?
 }
 
 enum Role {
@@ -341,4 +342,17 @@ model RefreshToken {
 
   @@index([token])
   @@index([userId])
+}
+
+model Admin {
+  id        String   @id @default(uuid())
+  userId    String?  @unique
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  email     String   @unique
+  role      Role     @default(ADMIN)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email])
 }
