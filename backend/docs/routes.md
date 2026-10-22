@@ -1836,6 +1836,56 @@ model TradeSettlement {
     6. Call `server.listen(config.port)` only after all prerequisites succeed.
   - Failures during startup abort execution and exit cleanly without accepting API traffic.
 
+#### 5.18.18 Step 9.13 Durable Settlement Recovery and Retry Management
+- **Durable Recovery Schema (`Execution` Model)**:
+  - Added durable recovery state fields directly to `Execution` via migration `20261022200000_add_execution_settlement_recovery_state`:
+    - `settlementStatus`: enum `SettlementStatus` (`PENDING`, `SETTLED`, `MANUAL_REVIEW`, default `PENDING`).
+    - `retryCount`: `Int` (default `0`).
+    - `lastAttemptedAt`: `DateTime?` timestamp of last settlement execution attempt.
+    - `lastFailedAt`: `DateTime?` timestamp of most recent failure.
+    - `nextRetryAt`: `DateTime?` (default `CURRENT_TIMESTAMP`) eligible timestamp for next retry.
+    - `lastErrorCode`: `String?` sanitized, bounded error classification code.
+    - Composite index: `@@index([settlementStatus, nextRetryAt, sequenceNumber])` supporting bounded FIFO due queries.
+  - Existing executions backfilled: executions with committed `TradeSettlement` records transitioned to `SETTLED`.
+- **Retry Classification & Backoff Policy**:
+  - *Transient Failures*:
+    - PostgreSQL SQLSTATE `40001` (serialization failure), SQLSTATE `40P01` (deadlock detected), Prisma `P2034` (write conflict), and transient connection pool timeouts.
+    - Handled via bounded exponential backoff with jitter: `min(maxBackoffMs, baseBackoffMs * 2^(attempt - 1)) + jitter`.
+    - Default configuration: `baseBackoffMs = 1000ms`, `maxBackoffMs = 60000ms`, `maxAutoRetries = 5`.
+    - Persists `nextRetryAt = NOW() + delayMs` and sanitized error code (`SERIALIZATION_FAILURE`, `DEADLOCK_DETECTED`, `DATABASE_CONNECTIVITY`, `PRISMA_WRITE_CONFLICT`).
+  - *Permanent / Invariant Failures*:
+    - `SettlementInvariantError` (e.g. buyer hold missing or insufficient, seller reserved inventory insufficient, price exceeds limit, market mismatch).
+    - Moved immediately to `MANUAL_REVIEW` status; `nextRetryAt` set to `null`; `lastErrorCode = 'SETTLEMENT_INVARIANT'`.
+  - *Retry Exhaustion*:
+    - When `retryCount >= maxAutoRetries`, execution transitions to `MANUAL_REVIEW` with `lastErrorCode = 'MAX_RETRIES_EXCEEDED'`.
+  - *Sanitized Error Metadata*:
+    - Error codes are strictly bounded string enums. Raw stack traces, SQL queries, credentials, and wallet balances are never persisted in recovery metadata.
+- **Recovery Worker Scheduling & Starvation Prevention**:
+  - Worker queries PostgreSQL directly for due executions:
+    `WHERE "settlementStatus" = 'PENDING' AND "settlement" IS NULL AND ("nextRetryAt" IS NULL OR "nextRetryAt" <= NOW()) ORDER BY "sequenceNumber" ASC LIMIT batchSize`.
+  - Eliminates reliance on volatile in-memory cursor for correctness.
+  - *Starvation Protection*: Failing executions wait out their backoff delay in the future (`nextRetryAt > NOW()`), allowing newly arriving executions to be settled immediately. When their backoff expires, their low `sequenceNumber` gives them top FIFO priority.
+  - *Restart Safety*: Process restart reloads exact retry count, scheduling, and manual-review state directly from PostgreSQL.
+- **Concurrency & Idempotency Guarantees**:
+  - Competing workers or parallel retries serialize on the durable `Execution` row lock (`SELECT FOR UPDATE`).
+  - If a worker encounters an already settled execution, `_assertExistingSettlement` returns `{ settlement, isIdempotentReplay: true }` with zero duplicate ledger movements or wallet balance mutations.
+  - `recordSettlementFailure` executes in an atomic transaction; if an execution is already `SETTLED`, it never overwrites the settlement status or retry count.
+- **Controlled Operator Interface**:
+  - Internal service method: `tradeSettlementService.requeueExecution({ executionId, resetRetryCount = false })`.
+  - Transitions `MANUAL_REVIEW` executions back to `PENDING` with `nextRetryAt = NOW()`.
+  - Idempotent: returns `{ requeued: false }` if already `PENDING` or `SETTLED`.
+  - No public or unauthenticated HTTP endpoint exposed.
+- **Structured Observability**:
+  - Standardized structured log events emitted:
+    - `Settlement recovery attempt started`: includes `executionId`, `sequenceNumber`, `retryCount`.
+    - `Settlement succeeded`: includes `executionId`, `isIdempotentReplay`.
+    - `Settlement retry scheduled`: includes `executionId`, `retryCount`, `errorCode`, `nextRetryAt`.
+    - `Settlement execution moved to manual review`: includes `executionId`, `retryCount`, `errorCode`, `reason`.
+    - `Settlement recovery batch summary`: includes `processedCount`, `succeededCount`, `failedCount`.
+    - `Settlement recovery worker error`: includes sanitized error message.
+  - Internal worker diagnostics exposed via `settlementRecoveryWorker.getStatus()` and `tradeSettlementService.getExecutionRecoveryState({ executionId })`.
+
+
 
 
 

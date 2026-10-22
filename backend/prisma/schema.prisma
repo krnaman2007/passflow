@@ -119,6 +119,12 @@ enum FinancialOperationStatus {
   FAILED
 }
 
+enum SettlementStatus {
+  PENDING
+  SETTLED
+  MANUAL_REVIEW
+}
+
 model Organizer {
   id                 String             @id @default(uuid())
   userId             String             @unique
@@ -255,24 +261,31 @@ model Order {
 }
 
 model Execution {
-  id              String   @id @default(uuid())
-  incomingOrderId String
-  incomingOrder   Order    @relation("IncomingOrderExecutions", fields: [incomingOrderId], references: [id], onDelete: Restrict)
-  restingOrderId  String
-  restingOrder    Order    @relation("RestingOrderExecutions", fields: [restingOrderId], references: [id], onDelete: Restrict)
-  price           Int      // Integer execution price (passive resting order price in ticks/cents)
-  quantity        Int      // Executed quantity
-  sequenceNumber  BigInt   @default(autoincrement())
-  executedAt      DateTime @default(now())
+  id               String           @id @default(uuid())
+  incomingOrderId  String
+  incomingOrder    Order            @relation("IncomingOrderExecutions", fields: [incomingOrderId], references: [id], onDelete: Restrict)
+  restingOrderId   String
+  restingOrder     Order            @relation("RestingOrderExecutions", fields: [restingOrderId], references: [id], onDelete: Restrict)
+  price            Int              // Integer execution price (passive resting order price in ticks/cents)
+  quantity         Int              // Executed quantity
+  sequenceNumber   BigInt           @default(autoincrement())
+  settlementStatus SettlementStatus @default(PENDING)
+  retryCount       Int              @default(0)
+  lastAttemptedAt  DateTime?
+  lastFailedAt     DateTime?
+  nextRetryAt      DateTime?        @default(now())
+  lastErrorCode    String?
+  executedAt       DateTime         @default(now())
 
   // Relationships
-  ledgerEntries   WalletLedgerEntry[]
-  settlement      TradeSettlement?
+  ledgerEntries    WalletLedgerEntry[]
+  settlement       TradeSettlement?
 
-  // Indexes for order history reconstruction and audit
+  // Indexes for order history reconstruction, recovery, and audit
   @@index([incomingOrderId])
   @@index([restingOrderId])
   @@index([sequenceNumber])
+  @@index([settlementStatus, nextRetryAt, sequenceNumber])
 }
 
 // One immutable, completed accounting result per execution.  This is both the

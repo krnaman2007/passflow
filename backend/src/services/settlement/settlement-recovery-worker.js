@@ -9,6 +9,7 @@
  * 2. Unsettled executions are settled idempotently via TradeSettlementService.
  * 3. Competing workers serialize on PostgreSQL row locks (Execution row).
  * 4. Graceful shutdown mechanism to drain active in-flight tick within timeout.
+ * 5. Uses durable database state (settlementStatus, nextRetryAt) for scheduling.
  */
 import logger from '../../errorlogging/logger.js';
 import { tradeSettlementService as defaultTradeSettlementService } from './trade-settlement-service.js';
@@ -32,8 +33,25 @@ export class SettlementRecoveryWorker {
     this.isRunning = false;
     this.isTickInProgress = false;
     this.lastSeenSequenceNumber = null;
+    this.lastTickAt = null;
+    this.lastBatchStats = null;
     this._timer = null;
     this._currentTickPromise = null;
+  }
+
+  /**
+   * Safe internal inspection helper for recovery worker status.
+   */
+  getStatus() {
+    return {
+      isRunning: this.isRunning,
+      isTickInProgress: this.isTickInProgress,
+      intervalMs: this.intervalMs,
+      batchSize: this.batchSize,
+      lastSeenSequenceNumber: this.lastSeenSequenceNumber !== null ? this.lastSeenSequenceNumber.toString() : null,
+      lastTickAt: this.lastTickAt || null,
+      lastBatchStats: this.lastBatchStats || null,
+    };
   }
 
   /**
@@ -154,6 +172,22 @@ export class SettlementRecoveryWorker {
         }
 
         const failures = Array.isArray(results) ? results.filter((r) => r && r.settled === false) : [];
+        const succeeded = Array.isArray(results) ? results.filter((r) => r && r.settled !== false) : [];
+
+        this.lastTickAt = new Date();
+        this.lastBatchStats = {
+          processedCount: Array.isArray(results) ? results.length : 0,
+          succeededCount: succeeded.length,
+          failedCount: failures.length,
+        };
+
+        if (this.logger?.info && Array.isArray(results) && results.length > 0) {
+          this.logger.info('Settlement recovery batch summary', {
+            processedCount: results.length,
+            succeededCount: succeeded.length,
+            failedCount: failures.length,
+          });
+        }
 
         if (failures.length > 0) {
           if (this.logger?.error) {
@@ -179,6 +213,7 @@ export class SettlementRecoveryWorker {
         return results;
       } catch (err) {
         if (this.logger?.error) {
+          this.logger.error('Settlement recovery worker error', { error: err.message });
           this.logger.error('Settlement recovery tick failed unexpectedly', { error: err.message });
         }
         return null;

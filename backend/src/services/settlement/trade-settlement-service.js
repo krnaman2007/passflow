@@ -10,6 +10,11 @@
 import crypto from 'node:crypto';
 import { prisma as defaultPrisma } from '../../db/prisma.js';
 import { MAX_PAISE } from '../wallet/wallet-service.js';
+import logger from '../../errorlogging/logger.js';
+
+export const DEFAULT_MAX_AUTO_RETRIES = 5;
+export const DEFAULT_BASE_BACKOFF_MS = 1000;
+export const DEFAULT_MAX_BACKOFF_MS = 60000;
 
 export class SettlementInvariantError extends Error {
   constructor(message, details = {}) {
@@ -39,6 +44,27 @@ export function calculateSettlementAmounts({ limitPricePaise, executionPricePais
   return { executionCost, buyerReservedConsumed, priceImprovement: buyerReservedConsumed - executionCost };
 }
 
+/**
+ * Calculates bounded exponential backoff delay with jitter.
+ */
+export function calculateBackoff({
+  attempt,
+  baseBackoffMs = DEFAULT_BASE_BACKOFF_MS,
+  maxBackoffMs = DEFAULT_MAX_BACKOFF_MS,
+  jitter = true,
+  randomFn = Math.random,
+} = {}) {
+  const safeAttempt = Number.isSafeInteger(attempt) && attempt > 0 ? attempt : 1;
+  const exponential = baseBackoffMs * (2 ** Math.min(safeAttempt - 1, 10));
+  const bounded = Math.min(maxBackoffMs, exponential);
+  if (!jitter) return Math.round(bounded);
+  const jitterOffset = Math.round(bounded * 0.2 * (typeof randomFn === 'function' ? randomFn() : Math.random()));
+  return bounded + jitterOffset;
+}
+
+/**
+ * Checks whether an error indicates a transient serialization conflict or lock contention.
+ */
 export function isTransientSettlementConflict(error) {
   if (!error || typeof error !== 'object') return false;
   if (error instanceof SettlementInvariantError) return false;
@@ -52,13 +78,84 @@ export function isTransientSettlementConflict(error) {
   if (msg.includes('40001') || msg.includes('could not serialize access')) return true;
   // PostgreSQL SQLSTATE 40P01 (deadlock detected)
   if (msg.includes('40P01') || msg.includes('deadlock detected')) return true;
+  // Connection drops / pool timeouts
+  if (
+    msg.includes('connection') ||
+    msg.includes('Connection') ||
+    msg.includes('timed out') ||
+    msg.includes('timeout') ||
+    error.code === 'P1001' ||
+    error.code === 'P1002' ||
+    error.code === 'P1008'
+  ) {
+    return true;
+  }
 
   return false;
 }
 
+/**
+ * Classifies an error into transient vs permanent, producing a sanitized error code.
+ * Never leaks passwords, SQL statements, credentials, or raw stack traces.
+ */
+export function classifySettlementError(error) {
+  if (!error) {
+    return { type: 'UNKNOWN', code: 'UNKNOWN_ERROR', isTransient: false };
+  }
+  if (error instanceof SettlementInvariantError || error.name === 'SettlementInvariantError') {
+    return {
+      type: 'PERMANENT',
+      code: error.code || 'SETTLEMENT_INVARIANT',
+      isTransient: false,
+    };
+  }
+
+  if (error.code === 'P2034') {
+    return { type: 'TRANSIENT', code: 'PRISMA_WRITE_CONFLICT', isTransient: true };
+  }
+
+  const msg = typeof error.message === 'string' ? error.message : '';
+  if (msg.includes('40001') || msg.includes('could not serialize access')) {
+    return { type: 'TRANSIENT', code: 'SERIALIZATION_FAILURE', isTransient: true };
+  }
+  if (msg.includes('40P01') || msg.includes('deadlock detected')) {
+    return { type: 'TRANSIENT', code: 'DEADLOCK_DETECTED', isTransient: true };
+  }
+  if (
+    msg.includes('connection') ||
+    msg.includes('Connection') ||
+    msg.includes('timed out') ||
+    msg.includes('timeout') ||
+    error.code === 'P1001' ||
+    error.code === 'P1002' ||
+    error.code === 'P1008'
+  ) {
+    return { type: 'TRANSIENT', code: 'DATABASE_CONNECTIVITY', isTransient: true };
+  }
+
+  // Conservative policy: unknown errors are treated as transient up to maxAutoRetries
+  return { type: 'TRANSIENT', code: 'UNKNOWN_TRANSIENT_ERROR', isTransient: true };
+}
+
 export class TradeSettlementService {
-  constructor({ prismaClient = defaultPrisma } = {}) {
+  constructor({
+    prismaClient = defaultPrisma,
+    maxAutoRetries = Number(process.env.SETTLEMENT_MAX_AUTO_RETRIES) || DEFAULT_MAX_AUTO_RETRIES,
+    baseBackoffMs = Number(process.env.SETTLEMENT_BASE_BACKOFF_MS) || DEFAULT_BASE_BACKOFF_MS,
+    maxBackoffMs = Number(process.env.SETTLEMENT_MAX_BACKOFF_MS) || DEFAULT_MAX_BACKOFF_MS,
+    jitter = true,
+    loggerInstance = logger,
+  } = {}) {
     this.prisma = prismaClient;
+    this.maxAutoRetries =
+      Number.isSafeInteger(maxAutoRetries) && maxAutoRetries > 0 ? maxAutoRetries : DEFAULT_MAX_AUTO_RETRIES;
+    this.baseBackoffMs =
+      Number.isSafeInteger(baseBackoffMs) && baseBackoffMs > 0 ? baseBackoffMs : DEFAULT_BASE_BACKOFF_MS;
+    const rawMaxBackoff =
+      Number.isSafeInteger(maxBackoffMs) && maxBackoffMs > 0 ? maxBackoffMs : DEFAULT_MAX_BACKOFF_MS;
+    this.maxBackoffMs = Math.max(this.baseBackoffMs, rawMaxBackoff);
+    this.jitter = Boolean(jitter);
+    this.logger = loggerInstance;
   }
 
   async settleExecution({ executionId, maxAttempts = 5 } = {}) {
@@ -72,13 +169,23 @@ export class TradeSettlementService {
     while (attempt < attemptsLimit) {
       attempt++;
       try {
-        return await this.prisma.$transaction((tx) => this._settle(tx, cleanId), {
+        const result = await this.prisma.$transaction((tx) => this._settle(tx, cleanId), {
           isolationLevel: 'Serializable',
           maxWait: 5000,
           timeout: 15000,
         });
+        if (this.logger?.info) {
+          this.logger.info('Settlement succeeded', {
+            executionId: cleanId,
+            isIdempotentReplay: result.isIdempotentReplay,
+          });
+        }
+        return result;
       } catch (error) {
         if (!isTransientSettlementConflict(error) || attempt >= attemptsLimit) {
+          if (typeof this.prisma?.execution?.update === 'function') {
+            await this.recordSettlementFailure({ executionId: cleanId, error });
+          }
           throw error;
         }
         // Bounded exponential backoff with jitter: 20ms * 2^(attempt - 1), capped at 200ms
@@ -89,7 +196,210 @@ export class TradeSettlementService {
     }
   }
 
-  async recoverUnsettled({ batchSize = 100, afterSequenceNumber = null } = {}) {
+  /**
+   * Durably records a settlement failure, updates retry counts and timestamps,
+   * schedules backoff for transient failures, or moves to MANUAL_REVIEW if permanent/exhausted.
+   */
+  async recordSettlementFailure({ executionId, error, now = new Date() } = {}) {
+    if (!executionId || typeof executionId !== 'string') return null;
+    if (typeof this.prisma?.execution?.update !== 'function') return null;
+    const cleanId = executionId.trim();
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const rows = await tx.$queryRaw`
+          SELECT id, "settlementStatus", "retryCount"
+          FROM "Execution"
+          WHERE id = ${cleanId}
+          FOR UPDATE
+        `;
+        if (!rows || rows.length === 0) return null;
+        const execution = rows[0];
+
+        // If already settled, do not corrupt settlement status or overwrite retry state
+        if (execution.settlementStatus === 'SETTLED') {
+          return execution;
+        }
+
+        // Verify if a TradeSettlement exists
+        const settlement = await tx.tradeSettlement.findUnique({
+          where: { executionId: cleanId },
+        });
+        if (settlement) {
+          await tx.execution.update({
+            where: { id: cleanId },
+            data: {
+              settlementStatus: 'SETTLED',
+              nextRetryAt: null,
+              lastErrorCode: null,
+            },
+          });
+          return execution;
+        }
+
+        const classification = classifySettlementError(error);
+        const newRetryCount = execution.retryCount + 1;
+        const isExceededRetries = newRetryCount >= this.maxAutoRetries;
+
+        let newStatus = 'PENDING';
+        let nextRetryAt = null;
+        let finalErrorCode = classification.code;
+
+        if (classification.type === 'PERMANENT') {
+          newStatus = 'MANUAL_REVIEW';
+          nextRetryAt = null;
+        } else if (isExceededRetries) {
+          newStatus = 'MANUAL_REVIEW';
+          nextRetryAt = null;
+          finalErrorCode = 'MAX_RETRIES_EXCEEDED';
+        } else {
+          newStatus = 'PENDING';
+          const delayMs = calculateBackoff({
+            attempt: newRetryCount,
+            baseBackoffMs: this.baseBackoffMs,
+            maxBackoffMs: this.maxBackoffMs,
+            jitter: this.jitter,
+          });
+          nextRetryAt = new Date(now.getTime() + delayMs);
+        }
+
+        const updated = await tx.execution.update({
+          where: { id: cleanId },
+          data: {
+            settlementStatus: newStatus,
+            retryCount: newRetryCount,
+            lastAttemptedAt: now,
+            lastFailedAt: now,
+            nextRetryAt,
+            lastErrorCode: finalErrorCode,
+          },
+        });
+
+        // Observability logging
+        if (newStatus === 'MANUAL_REVIEW') {
+          if (this.logger?.error) {
+            this.logger.error('Settlement execution moved to manual review', {
+              executionId: cleanId,
+              retryCount: newRetryCount,
+              errorCode: finalErrorCode,
+              reason: classification.type === 'PERMANENT' ? 'PERMANENT_INVARIANT_VIOLATION' : 'MAX_RETRIES_EXCEEDED',
+            });
+          }
+        } else {
+          if (this.logger?.warn) {
+            this.logger.warn('Settlement retry scheduled', {
+              executionId: cleanId,
+              retryCount: newRetryCount,
+              errorCode: finalErrorCode,
+              nextRetryAt: nextRetryAt?.toISOString(),
+            });
+          }
+        }
+
+        return updated;
+      }, {
+        isolationLevel: 'ReadCommitted',
+        timeout: 10000,
+      });
+    } catch (recErr) {
+      if (this.logger?.warn) {
+        this.logger.warn('Failed to record settlement failure for execution', {
+          executionId: cleanId,
+          error: recErr.message,
+        });
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Internal service interface to requeue an execution under MANUAL_REVIEW back to PENDING.
+   * Preserves retryCount for auditability by default unless resetRetryCount is true.
+   */
+  async requeueExecution({ executionId, resetRetryCount = false } = {}) {
+    if (!executionId || typeof executionId !== 'string' || !executionId.trim()) {
+      throw new SettlementInvariantError('executionId must be a non-empty string');
+    }
+    const cleanId = executionId.trim();
+
+    return await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw`
+        SELECT id, "settlementStatus", "retryCount"
+        FROM "Execution"
+        WHERE id = ${cleanId}
+        FOR UPDATE
+      `;
+      if (!rows || rows.length === 0) {
+        throw new SettlementInvariantError('Execution not found', { executionId: cleanId });
+      }
+      const execution = rows[0];
+
+      if (execution.settlementStatus === 'SETTLED') {
+        return {
+          executionId: cleanId,
+          status: 'SETTLED',
+          requeued: false,
+          message: 'Execution is already settled',
+        };
+      }
+      if (execution.settlementStatus === 'PENDING') {
+        return {
+          executionId: cleanId,
+          status: 'PENDING',
+          requeued: false,
+          message: 'Execution is already pending',
+        };
+      }
+
+      const updated = await tx.execution.update({
+        where: { id: cleanId },
+        data: {
+          settlementStatus: 'PENDING',
+          nextRetryAt: new Date(),
+          retryCount: resetRetryCount ? 0 : execution.retryCount,
+          lastErrorCode: null,
+        },
+      });
+
+      if (this.logger?.info) {
+        this.logger.info('Execution requeued for settlement recovery', {
+          executionId: cleanId,
+          retryCount: updated.retryCount,
+          settlementStatus: updated.settlementStatus,
+        });
+      }
+
+      return {
+        executionId: cleanId,
+        status: updated.settlementStatus,
+        requeued: true,
+        retryCount: updated.retryCount,
+      };
+    });
+  }
+
+  /**
+   * Safe internal inspection helper for execution recovery state.
+   */
+  async getExecutionRecoveryState({ executionId } = {}) {
+    if (!executionId || typeof executionId !== 'string') return null;
+    return this.prisma.execution.findUnique({
+      where: { id: executionId.trim() },
+      select: {
+        id: true,
+        sequenceNumber: true,
+        settlementStatus: true,
+        retryCount: true,
+        lastAttemptedAt: true,
+        lastFailedAt: true,
+        nextRetryAt: true,
+        lastErrorCode: true,
+        executedAt: true,
+      },
+    });
+  }
+
+  async recoverUnsettled({ batchSize = 100, afterSequenceNumber = null, now = new Date(), onlyDue } = {}) {
     if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 500) {
       throw new SettlementInvariantError('batchSize must be an integer from 1 to 500');
     }
@@ -109,29 +419,61 @@ export class TradeSettlementService {
       }
     }
 
+    const shouldFilterDue = onlyDue !== undefined ? Boolean(onlyDue) : cursor === null;
+    const queryTime = new Date(now.getTime() + 1000);
+
     const where = {
       settlement: null,
       ...(cursor !== null ? { sequenceNumber: { gt: cursor } } : {}),
+      ...(shouldFilterDue
+        ? {
+            settlementStatus: 'PENDING',
+            OR: [
+              { nextRetryAt: null },
+              { retryCount: 0 },
+              { nextRetryAt: { lte: queryTime } },
+            ],
+          }
+        : {}),
     };
+
+    const select = shouldFilterDue
+      ? { id: true, sequenceNumber: true, retryCount: true }
+      : { id: true, sequenceNumber: true };
 
     const executions = await this.prisma.execution.findMany({
       where,
-      select: { id: true, sequenceNumber: true },
+      select,
       orderBy: { sequenceNumber: 'asc' },
       take: batchSize,
     });
     const results = [];
     for (const execution of executions) {
+      if (this.logger?.info) {
+        this.logger.info('Settlement recovery attempt started', {
+          executionId: execution.id,
+          sequenceNumber: execution.sequenceNumber?.toString(),
+          retryCount: execution.retryCount,
+        });
+      }
       try {
         const settlementOutcome = await this.settleExecution({ executionId: execution.id });
+        if (this.logger?.info) {
+          this.logger.info('Settlement recovery succeeded', {
+            executionId: execution.id,
+            sequenceNumber: execution.sequenceNumber?.toString(),
+            isIdempotentReplay: settlementOutcome.isIdempotentReplay,
+          });
+        }
         results.push({
           ...settlementOutcome,
           executionId: execution.id,
           sequenceNumber: execution.sequenceNumber,
+          settled: true,
         });
       } catch (error) {
-        // A later recovery pass retries only transient failures.  Integrity errors
-        // are returned to the caller instead of being hidden or auto-compensated.
+        // A later recovery pass retries transient failures. Permanent errors
+        // and exceeded retries have been recorded durably as MANUAL_REVIEW.
         results.push({
           executionId: execution.id,
           sequenceNumber: execution.sequenceNumber,
@@ -148,6 +490,13 @@ export class TradeSettlementService {
       SELECT * FROM "Execution" WHERE id = ${executionId} FOR UPDATE
     `;
     if (!executionRows?.length) throw new SettlementInvariantError('Execution not found', { executionId });
+    const executionRow = executionRows[0];
+
+    // If an execution was placed in MANUAL_REVIEW, it cannot be automatically settled
+    // unless an operator requeues it (which transitions status back to PENDING).
+    if (executionRow.settlementStatus === 'MANUAL_REVIEW') {
+      throw new SettlementInvariantError('Execution is in MANUAL_REVIEW status and requires operator requeue', { executionId });
+    }
 
     const execution = await tx.execution.findUnique({
       where: { id: executionId },
@@ -173,6 +522,16 @@ export class TradeSettlementService {
     const existing = await tx.tradeSettlement.findUnique({ where: { executionId } });
     if (existing) {
       await this._assertExistingSettlement(tx, { existing, execution, buyerOrder, sellerOrder, amounts });
+      if (executionRow.settlementStatus !== 'SETTLED') {
+        await tx.execution.update({
+          where: { id: executionId },
+          data: {
+            settlementStatus: 'SETTLED',
+            nextRetryAt: null,
+            lastErrorCode: null,
+          },
+        });
+      }
       return { settlement: existing, isIdempotentReplay: true };
     }
 
@@ -250,6 +609,17 @@ export class TradeSettlementService {
     await tx.userTicketInventory.update({ where: { userId_ticketCategoryId: { userId: sellerOrder.userId, ticketCategoryId: buyerOrder.ticketCategoryId } }, data: { totalQuantity: { decrement: execution.quantity }, reservedQuantity: { decrement: execution.quantity } } });
     await tx.userTicketInventory.update({ where: { userId_ticketCategoryId: { userId: buyerOrder.userId, ticketCategoryId: buyerOrder.ticketCategoryId } }, data: { totalQuantity: { increment: execution.quantity }, availableQuantity: { increment: execution.quantity } } });
     const settlement = await tx.tradeSettlement.create({ data: { executionId, buyerOrderId: buyerOrder.id, sellerOrderId: sellerOrder.id, buyerHoldId: hold.id, quantity: execution.quantity, executionPricePaise: execution.price, executionCostPaise: cost, buyerReservedConsumed: consumed, priceImprovementPaise: improvement } });
+
+    await tx.execution.update({
+      where: { id: executionId },
+      data: {
+        settlementStatus: 'SETTLED',
+        lastAttemptedAt: new Date(),
+        nextRetryAt: null,
+        lastErrorCode: null,
+      },
+    });
+
     return { settlement, isIdempotentReplay: false };
   }
 
