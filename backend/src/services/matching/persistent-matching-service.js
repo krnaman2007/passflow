@@ -311,7 +311,7 @@ export class PersistentMatchingService {
 
     this.requireMarketLease = requireMarketLease !== undefined
       ? Boolean(requireMarketLease)
-      : false;
+      : (process.env.ENABLE_DISTRIBUTED_MARKET_LEASES === 'true' || process.env.REQUIRE_MARKET_LEASE === 'true');
 
     /**
      * Map of marketKey -> in-memory OrderBook instance.
