@@ -122,8 +122,18 @@ export class OrderController {
       }
 
       const userId = req.user.id;
-      const { eventId, ticketCategoryId, side, price, quantity, idempotencyKey } =
-        req.validatedBody || req.body;
+      const body = req.validatedBody || req.body;
+      const { eventId, ticketCategoryId, side, price, quantity } = body;
+
+      const rawIdempotencyKey =
+        body.idempotencyKey ||
+        req.headers['idempotency-key'] ||
+        req.headers['x-idempotency-key'];
+
+      if (!rawIdempotencyKey || typeof rawIdempotencyKey !== 'string' || !rawIdempotencyKey.trim()) {
+        throw new AppError('idempotencyKey is required (in body or Idempotency-Key header)', 400, 'VALIDATION_ERROR');
+      }
+      const idempotencyKey = String(rawIdempotencyKey).trim();
 
       const placementResult = await this.orderService.placeLimitOrder({
         userId,

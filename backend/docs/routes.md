@@ -1761,7 +1761,32 @@ model TradeSettlement {
 - **Security & Integrity Invariants**:
   - No direct database or wallet mutations in the controller.
   - Centralized error handler protects internal stack traces and raw SQL errors from leaking to API consumers.
-  - Verified with 17 integration and unit tests in `backend/tests/order/order-api.test.js`.
+  - Verified with 18 integration and unit tests in `backend/tests/order/order-api.test.js`.
+
+#### 5.18.16 Step 9.11 Production Readiness & End-to-End Integration Audit
+- **Audit Objective & Scope**:
+  - End-to-end audit of the secondary-market lifecycle across HTTP layer (`OrderController`, `orderRoutes`, `order.schema.js`), financial engine (`OrderService`), persistent matching engine (`PersistentMatchingService`, `OrderBook`, `MarketExecutionQueue`), settlement service (`TradeSettlementService`), and background worker (`SettlementRecoveryWorker`).
+- **HTTP Boundary Refinement**:
+  - `placeLimitOrderSchema` and `OrderController` updated to resolve `idempotencyKey` interchangeably from the request body or standard `Idempotency-Key` / `X-Idempotency-Key` HTTP headers. Missing keys across both body and headers are rejected with `400 VALIDATION_ERROR`.
+  - Authenticated principal derivation (`userId = req.user.id`) and Zod `.strict()` validation protect against client-supplied `userId` overrides.
+- **Financial Invariants (100% Verified)**:
+  1. *Minor Units & BigInt*: All monetary values are strictly positive integers (paise) bounded by `MAX_PAISE = 10_000_000_000_000n`.
+  2. *Matching Isolation*: Matching engine calculates pure plans and writes orders/executions without touching wallet balances or ticket inventories.
+  3. *Execution != Settlement*: Executions are persisted prior to settlement; settlement occurs atomically via `TradeSettlementService` in `Serializable` transactions.
+  4. *Buyer Hold Consumption & Price Improvement*: For execution price `<= limit price`, buyer reserved balance is reduced by `limitPrice * qty`; price improvement `(limitPrice - execPrice) * qty` is returned to `availableBalance`.
+  5. *Seller Proceeds*: Seller receives exact execution value `execPrice * qty` with zero platform fees.
+  6. *Partial Fills & Cancellations*: Unfilled reservations remain held; cancellation releases strictly the unfilled remainder `price * remainingQuantity`.
+  7. *Ledger Immutability*: All balance transitions create append-only `WalletLedgerEntry` rows guarded by foreign key `RESTRICT` constraints and unique idempotency keys.
+  8. *Inventory Safety*: Ticket inventory reservations acquire row-level locks (`SELECT FOR UPDATE`), preventing overselling or duplicate crediting.
+- **Concurrency & Idempotency Architecture**:
+  - *Database Level (Cross-Process & Durable)*: `Order(userId, idempotencyKey)`, `FinancialOperation(idempotencyKey)`, and `TradeSettlement(executionId)` compound unique constraints prevent duplicate orders, double-reservations, and double-settlements even across process restarts.
+  - *Process-Local Level*: `MarketExecutionQueue` enforces in-memory FIFO serialization per market. Does not provide cross-instance distributed locking.
+- **Operational & Deployment Limitations**:
+  - **Single-Instance Deployment Invariant**: PassFlow must remain a single-instance service until distributed advisory lease fencing (`pg_try_advisory_lock` / `MarketLease`) is implemented to prevent dual-master order book divergence.
+  - **Readiness vs Liveness**: `/health` functions solely as a shallow liveness probe (Node event loop responsive). A dedicated deep readiness probe (`/ready`) that verifies PostgreSQL connectivity and order book sync is recommended.
+  - **Startup Ordering**: In `server.js`, `await checkDatabaseConnections()` and `await recoverSettlements()` should run before `server.listen()` opens network sockets.
+  - **In-Memory Recovery Cursor**: `SettlementRecoveryWorker` maintains its sequence cursor in memory. Persistent failure starvation prevention remains bounded to single-batch keyset pagination until a durable dead-letter schema migration is applied.
+
 
 
 

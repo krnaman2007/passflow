@@ -29,7 +29,7 @@ export const placeLimitOrderSchema = z
       .int('quantity must be an integer')
       .positive('quantity must be positive')
       .max(Number.MAX_SAFE_INTEGER, 'quantity exceeds safe limit'),
-    idempotencyKey: z.string().min(1, 'idempotencyKey is required'),
+    idempotencyKey: z.string().min(1, 'idempotencyKey cannot be empty').optional(),
   })
   .strict();
 

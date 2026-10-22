@@ -393,9 +393,41 @@ describe('Step 9.10 — Secondary Market Order API Integration', () => {
         });
       expect(resInjected.status).toBe(400);
       expect(resInjected.body.error.code).toBe('VALIDATION_ERROR');
+
+      // Missing from both body and headers
+      const resMissingKey = await request(app)
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${buyerToken}`)
+        .send({
+          eventId: testEvent.id,
+          ticketCategoryId: testCategory.id,
+          side: 'BID',
+          price: 100,
+          quantity: 1,
+        });
+      expect(resMissingKey.status).toBe(400);
+      expect(resMissingKey.body.error.code).toBe('VALIDATION_ERROR');
     });
 
-    test('4. Successfully places a limit BUY order and returns 201 with sanitized response', async () => {
+    test('4. Accepts Idempotency-Key header when omitted from body', async () => {
+      const headerKey = `header-key-${crypto.randomUUID()}`;
+      const resHeader = await request(app)
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${buyerToken}`)
+        .set('Idempotency-Key', headerKey)
+        .send({
+          eventId: testEvent.id,
+          ticketCategoryId: testCategory.id,
+          side: 'BID',
+          price: 120,
+          quantity: 1,
+        });
+      expect(resHeader.status).toBe(201);
+      expect(resHeader.body.success).toBe(true);
+      expect(resHeader.body.data.orderId).toBeDefined();
+    });
+
+    test('5. Successfully places a limit BUY order and returns 201 with sanitized response', async () => {
       const idempotencyKey = `buy-success-${crypto.randomUUID()}`;
       const res = await request(app)
         .post('/api/v1/orders')
