@@ -1552,6 +1552,70 @@ model TradeSettlement {
     ```
   - This guarantees that completed trade execution history can never be cascade-deleted.
 
+#### 5.18.7 Step 9.4D Invariant Verification: Ledger Snapshots & Concurrency Matrix
+- **Ledger Snapshot Sequencing (Price Improvement $> 0$)**:
+  1. `TRADE_SETTLEMENT_DEBIT`:
+     - `amount`: $\text{tradeCost}$
+     - `availableDelta`: $0$
+     - `reservedDelta`: $-\text{tradeCost}$
+     - `balanceAfterAvailable`: $A_0$
+     - `balanceAfterReserved`: $R_0 - \text{tradeCost}$
+     - Intermediate wallet balance: $(A_0, R_0 - \text{tradeCost})$, version $+1$.
+  2. `ORDER_RELEASE` (omitted if $\text{PI} = 0$):
+     - `amount`: $\text{priceImprovement}$
+     - `availableDelta`: $+\text{priceImprovement}$
+     - `reservedDelta`: $-\text{priceImprovement}$
+     - `balanceAfterAvailable`: $A_0 + \text{priceImprovement}$
+     - `balanceAfterReserved`: $R_0 - \text{buyerReservedConsumed}$
+     - Final wallet balance: $(A_0 + \text{priceImprovement}, R_0 - \text{buyerReservedConsumed})$, version $+2$.
+  - Both entries strictly satisfy `CHECK (amount > 0)`, `CHECK (balanceAfterAvailable >= 0)`, and `CHECK (balanceAfterReserved >= 0)`.
+- **Cross-Market Lock Linearization**:
+  - When User A participates in Market 1 and Market 2 simultaneously, the settlements execute under separate in-memory market queues but serialize strictly in PostgreSQL via `SELECT * FROM "Wallet" WHERE id IN ($W1, $W2) ORDER BY id ASC FOR UPDATE`.
+  - Because all concurrent transactions request wallets in strictly ascending lexicographical order, circular lock wait is mathematically impossible across arbitrary concurrent markets.
+
+#### 5.18.8 Step 9.4E Canonical Accounting Reconciliation & Sequence Walkthrough
+- **Exact Benchmark Scenario**:
+  - Baseline before Order: Available = $10,000\text{ paise}$, Reserved = $1,000\text{ paise}$, Total Wallet Balance = $11,000\text{ paise}$.
+  - Buy Order: 10 tickets @ $100\text{ paise}$ limit price ($1,000\text{ paise}$ total reservation).
+  - Match: 4 tickets execute at $90\text{ paise}$ each ($360\text{ paise}$ actual cost, $40\text{ paise}$ price improvement).
+  - Cancellation: 6 unfilled tickets ($600\text{ paise}$) cancelled before settlement.
+- **Explicit 5-Stage State Progression**:
+  1. *Stage 1 — Initial Buy Order Reservation* (`WalletService.reserveFunds`):
+     - Moves $1,000\text{ paise}$ from available to reserved.
+     - Available: $10,000 - 1,000 = 9,000\text{ paise}$.
+     - Reserved: $1,000 + 1,000 = 2,000\text{ paise}$.
+     - Total Wallet Balance ($\text{Avail} + \text{Res}$): $9,000 + 2,000 = 11,000\text{ paise}$ (conserved).
+     - Hold: `heldAmount` = $1,000\text{p}$, `remainingAmount` = $1,000\text{p}$, `status` = `ACTIVE`.
+     - Ledger: `ORDER_HOLD`, amount = 1,000, $\Delta A = -1000$, $\Delta R = +1000$.
+  2. *Stage 2 — Cancellation of 6 Unfilled Tickets* (`OrderService.cancelLimitOrder` $\rightarrow$ `releaseHold`):
+     - Releases $6 \times 100 = 600\text{ paise}$ back to available balance.
+     - Available: $9,000 + 600 = 9,600\text{ paise}$.
+     - Reserved: $2,000 - 600 = 1,400\text{ paise}$ ($1,000\text{p}$ baseline + $400\text{p}$ held for 4 executed tickets).
+     - Total Wallet Balance: $9,600 + 1,400 = 11,000\text{ paise}$ (conserved).
+     - Hold: `remainingAmount` = $1,000 - 600 = 400\text{ paise}$, `status` = `PARTIALLY_RELEASED`.
+     - Ledger: `ORDER_RELEASE`, amount = 600, $\Delta A = +600$, $\Delta R = -600$.
+  3. *Stage 3 — Settlement Debit for 4 Executed Tickets* (Trade Cost: $4 \times 90 = 360\text{ paise}$):
+     - Debits $360\text{ paise}$ from reserved balance.
+     - Available: $9,600\text{ paise}$ (unchanged).
+     - Reserved: $1,400 - 360 = 1,040\text{ paise}$ ($1,000\text{p}$ baseline + $40\text{p}$ unspent price improvement).
+     - Total Wallet Balance: $9,600 + 1,040 = 10,640\text{ paise}$ (net outflow of 360p to seller).
+     - Ledger: `TRADE_SETTLEMENT_DEBIT`, amount = 360, $\Delta A = 0$, $\Delta R = -360$.
+  4. *Stage 4 — Price-Improvement Release* ($4 \times (100 - 90) = 40\text{ paise}$):
+     - Moves $40\text{ paise}$ from reserved balance to available balance.
+     - Available: $9,600 + 40 = 9,640\text{ paise}$.
+     - Reserved: $1,040 - 40 = 1,000\text{ paise}$ (exactly restored to pre-existing baseline).
+     - Total Wallet Balance: $9,640 + 1,000 = 10,640\text{ paise}$ (conserved).
+     - Hold: Decrements by full $\text{buyerReservedConsumed} = 400\text{ paise}$; `remainingAmount` = $400 - 400 = 0\text{ paise}$, `status` = `SETTLED`.
+     - Ledger: `ORDER_RELEASE`, amount = 40, $\Delta A = +40$, $\Delta R = -40$.
+  5. *Stage 5 — Final Reconciliation & Economic Invariant*:
+     - Final Available Balance: **$9,640\text{ paise}$**.
+     - Final Reserved Balance: **$1,000\text{ paise}$**.
+     - Final Total Wallet Balance ($\text{Avail} + \text{Res}$): **$10,640\text{ paise}$**.
+     - Remaining Hold Amount: **$0\text{ paise}$** (`SETTLED`).
+     - **Net Economic Result**: Initial total wealth ($11,000\text{p}$) minus final total wealth ($10,640\text{p}$) = $-360\text{ paise}$. The buyer paid exactly the $360\text{ paise}$ trade cost for 4 tickets and received a $40\text{ paise}$ price improvement refund. Total wallet balance **decreased by 360 paise**; it did not increase.
+
+
+
 
 
 
