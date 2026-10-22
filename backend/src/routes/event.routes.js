@@ -10,6 +10,10 @@ import {
   updateCategorySchema,
   updateInventorySchema,
 } from '../schemas/event.schema.js';
+import {
+  priceHistoryParamsSchema,
+  queryPriceHistorySchema,
+} from '../schemas/market.schema.js';
 
 const router = express.Router();
 
@@ -48,6 +52,14 @@ router.patch(
   requireOrganizer,
   validate(updateEventStatusSchema),
   eventController.updateEventStatus
+);
+
+// GET /events/:id/price-history - OHLC / price history for charts (Public)
+router.get(
+  '/events/:id/price-history',
+  validate(priceHistoryParamsSchema, 'params'),
+  validate(queryPriceHistorySchema, 'query'),
+  eventController.getPriceHistory
 );
 
 // ==========================================

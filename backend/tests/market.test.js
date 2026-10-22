@@ -359,4 +359,102 @@ describe('Market Data API (/market)', () => {
       expect(res.body.data.total).toBeGreaterThan(0);
     });
   });
+
+  describe('GET /market/summary', () => {
+    it('should return market summary of top events (200 OK)', async () => {
+      const res = await request(app).get('/market/summary').expect(200);
+
+      expect(res.body.success).toBe(true);
+      const data = res.body.data;
+      expect(data).toBeDefined();
+      expect(Array.isArray(data.summary)).toBe(true);
+      expect(data.totalEvents).toBeGreaterThan(0);
+
+      const targetEvent = data.summary.find((e) => e.eventId === eventId);
+      expect(targetEvent).toBeDefined();
+      expect(targetEvent.eventName).toBeDefined();
+      expect(targetEvent.volume).toBeGreaterThanOrEqual(1);
+    });
+
+    it('should support query params sortBy=priceMovement and sortBy=trades (200 OK)', async () => {
+      const res = await request(app)
+        .get('/market/summary?sortBy=priceMovement&limit=5')
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(Array.isArray(res.body.data.summary)).toBe(true);
+      expect(res.body.data.sortBy).toBe('priceMovement');
+    });
+
+    it('should support /api/v1/market/summary alias route (200 OK)', async () => {
+      const res = await request(app).get('/api/v1/market/summary').expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(Array.isArray(res.body.data.summary)).toBe(true);
+    });
+  });
+
+  describe('GET /events/:id/price-history', () => {
+    it('should return 404 when event does not exist', async () => {
+      const res = await request(app)
+        .get('/events/00000000-0000-0000-0000-000000000000/price-history')
+        .expect(404);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('EVENT_NOT_FOUND');
+    });
+
+    it('should return 404 when categoryId query does not exist for event', async () => {
+      const res = await request(app)
+        .get(`/events/${eventId}/price-history?categoryId=00000000-0000-0000-0000-000000000000`)
+        .expect(404);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('CATEGORY_NOT_FOUND');
+    });
+
+    it('should return OHLC candlestick price history for event (200 OK)', async () => {
+      const res = await request(app)
+        .get(`/events/${eventId}/price-history?interval=1h`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      const data = res.body.data;
+      expect(data).toBeDefined();
+      expect(data.eventId).toBe(eventId);
+      expect(Array.isArray(data.candles)).toBe(true);
+      expect(data.candles.length).toBeGreaterThan(0);
+
+      const candle = data.candles[0];
+      expect(candle.open).toBeDefined();
+      expect(candle.high).toBeDefined();
+      expect(candle.low).toBeDefined();
+      expect(candle.close).toBeDefined();
+      expect(candle.volume).toBeDefined();
+      expect(candle.timestamp).toBeDefined();
+
+      expect(data.summary).toBeDefined();
+      expect(data.summary.currentPrice).toBeDefined();
+    });
+
+    it('should filter price history by categoryId (200 OK)', async () => {
+      const res = await request(app)
+        .get(`/events/${eventId}/price-history?categoryId=${categoryId}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.categoryId).toBe(categoryId);
+      expect(Array.isArray(res.body.data.candles)).toBe(true);
+    });
+
+    it('should support /api/v1/events/:id/price-history alias route (200 OK)', async () => {
+      const res = await request(app)
+        .get(`/api/v1/events/${eventId}/price-history`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.eventId).toBe(eventId);
+      expect(Array.isArray(res.body.data.candles)).toBe(true);
+    });
+  });
 });

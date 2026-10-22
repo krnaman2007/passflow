@@ -1,4 +1,5 @@
 import eventService from '../services/event.service.js';
+import marketService from '../services/market.service.js';
 import { successResponse } from '../utils/response.js';
 
 /**
@@ -156,6 +157,20 @@ export const eventController = {
         req.user.role
       );
       res.status(200).json(successResponse(updated));
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  /**
+   * GET /events/:id/price-history - OHLC / price history for charts (Public)
+   */
+  async getPriceHistory(req, res, next) {
+    try {
+      const eventId = req.params.id;
+      const query = req.validatedQuery || req.query;
+      const data = await marketService.getPriceHistory(eventId, query);
+      res.status(200).json(successResponse(data));
     } catch (err) {
       next(err);
     }

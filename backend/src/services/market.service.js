@@ -276,6 +276,267 @@ export const marketService = {
       total: trades.length,
     };
   },
+
+  /**
+   * Retrieves summary of top events by volume and price movement.
+   *
+   * @param {object} [options] - limit, sortBy ('volume' | 'priceMovement' | 'trades'), timeframe
+   * @returns {Promise<object>} Summary report of top events.
+   */
+  async getMarketSummary(options = {}) {
+    const limit = Math.min(Math.max(parseInt(options.limit, 10) || 10, 1), 50);
+    const sortBy = options.sortBy || 'volume';
+
+    // 1. Fetch published/active events with their categories
+    const events = await prisma.event.findMany({
+      where: {
+        status: { in: ['PUBLISHED', 'COMPLETED', 'DRAFT'] },
+      },
+      include: {
+        categories: {
+          select: {
+            id: true,
+            name: true,
+            originalPrice: true,
+          },
+        },
+      },
+    });
+
+    // 2. Fetch executions for each event to calculate volume and price metrics
+    const eventSummaries = await Promise.all(
+      events.map(async (event) => {
+        const executions = await prisma.execution.findMany({
+          where: {
+            incomingOrder: {
+              eventId: event.id,
+            },
+          },
+          orderBy: [{ sequenceNumber: 'asc' }, { executedAt: 'asc' }],
+          select: {
+            price: true,
+            quantity: true,
+            executedAt: true,
+          },
+        });
+
+        let totalVolume = 0;
+        let totalVolumePaise = 0n;
+        let highPrice = null;
+        let lowPrice = null;
+        let openPrice = null;
+        let lastPrice = null;
+
+        if (executions.length > 0) {
+          openPrice = executions[0].price;
+          lastPrice = executions[executions.length - 1].price;
+          highPrice = executions[0].price;
+          lowPrice = executions[0].price;
+
+          for (const exec of executions) {
+            totalVolume += exec.quantity;
+            totalVolumePaise += BigInt(exec.price) * BigInt(exec.quantity);
+            if (exec.price > highPrice) highPrice = exec.price;
+            if (exec.price < lowPrice) lowPrice = exec.price;
+          }
+        } else if (event.originalPrice) {
+          const basePrice = Number(event.originalPrice);
+          openPrice = basePrice;
+          lastPrice = basePrice;
+          highPrice = basePrice;
+          lowPrice = basePrice;
+        }
+
+        const priceChange =
+          openPrice !== null && lastPrice !== null ? lastPrice - openPrice : 0;
+        const priceChangePercent =
+          openPrice && openPrice > 0
+            ? Math.round((priceChange / openPrice) * 10000) / 100
+            : 0;
+
+        return {
+          eventId: event.id,
+          eventName: event.name,
+          location: event.location,
+          dateTime: event.dateTime,
+          status: event.status,
+          volume: totalVolume,
+          volumePaise: Number(totalVolumePaise),
+          tradeCount: executions.length,
+          lastPrice,
+          openPrice,
+          highPrice,
+          lowPrice,
+          priceChange,
+          priceChangePercent,
+          categoriesCount: event.categories.length,
+        };
+      })
+    );
+
+    // 3. Sort based on criteria
+    if (sortBy === 'priceMovement') {
+      eventSummaries.sort(
+        (a, b) => Math.abs(b.priceChangePercent) - Math.abs(a.priceChangePercent)
+      );
+    } else if (sortBy === 'trades') {
+      eventSummaries.sort((a, b) => b.tradeCount - a.tradeCount);
+    } else {
+      // Default: volume
+      eventSummaries.sort((a, b) => b.volume - a.volume);
+    }
+
+    const topEvents = eventSummaries.slice(0, limit);
+
+    return {
+      summary: topEvents,
+      events: topEvents,
+      totalEvents: topEvents.length,
+      sortBy,
+      updatedAt: new Date().toISOString(),
+    };
+  },
+
+  /**
+   * Retrieves OHLC candlestick price history for an event.
+   *
+   * @param {string} eventId - Event UUID.
+   * @param {object} [options] - categoryId, interval ('1m'|'5m'|'15m'|'1h'|'1d'), limit
+   * @returns {Promise<object>} OHLC candles and price history summary.
+   */
+  async getPriceHistory(eventId, options = {}) {
+    const { categoryId, interval = '1h', limit = 100 } = options;
+    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
+
+    // 1. Verify event existence
+    const event = await prisma.event.findUnique({
+      where: { id: eventId },
+      select: { id: true, name: true, originalPrice: true, createdAt: true },
+    });
+
+    if (!event) {
+      throw new AppError('Event not found', 404, 'EVENT_NOT_FOUND');
+    }
+
+    // 2. If categoryId provided, verify it belongs to this event
+    let category = null;
+    if (categoryId) {
+      category = await prisma.ticketCategory.findFirst({
+        where: { id: categoryId, eventId },
+        select: { id: true, name: true, originalPrice: true },
+      });
+      if (!category) {
+        throw new AppError('Ticket category not found for event', 404, 'CATEGORY_NOT_FOUND');
+      }
+    }
+
+    // 3. Query executions chronologically
+    const where = {
+      incomingOrder: {
+        eventId,
+        ...(categoryId && { ticketCategoryId: categoryId }),
+      },
+    };
+
+    const executions = await prisma.execution.findMany({
+      where,
+      orderBy: [{ executedAt: 'asc' }, { sequenceNumber: 'asc' }],
+      select: {
+        id: true,
+        price: true,
+        quantity: true,
+        executedAt: true,
+      },
+    });
+
+    // Determine interval in ms
+    const intervalMsMap = {
+      '1m': 60 * 1000,
+      '5m': 5 * 60 * 1000,
+      '15m': 15 * 60 * 1000,
+      '1h': 60 * 60 * 1000,
+      '1d': 24 * 60 * 60 * 1000,
+    };
+    const bucketMs = intervalMsMap[interval] || intervalMsMap['1h'];
+
+    let candles = [];
+
+    if (executions.length > 0) {
+      // Group executions into time buckets
+      const buckets = new Map();
+
+      for (const exec of executions) {
+        const time = new Date(exec.executedAt).getTime();
+        const bucketKey = Math.floor(time / bucketMs) * bucketMs;
+
+        if (!buckets.has(bucketKey)) {
+          buckets.set(bucketKey, {
+            timestamp: new Date(bucketKey).toISOString(),
+            open: exec.price,
+            high: exec.price,
+            low: exec.price,
+            close: exec.price,
+            volume: 0,
+            trades: 0,
+          });
+        }
+
+        const b = buckets.get(bucketKey);
+        if (exec.price > b.high) b.high = exec.price;
+        if (exec.price < b.low) b.low = exec.price;
+        b.close = exec.price;
+        b.volume += exec.quantity;
+        b.trades += 1;
+      }
+
+      candles = Array.from(buckets.values()).slice(-limitNum);
+    } else {
+      // Baseline candle based on event or category originalPrice
+      const baselinePrice = category?.originalPrice
+        ? Number(category.originalPrice)
+        : event.originalPrice ? Number(event.originalPrice) : 1000;
+
+      candles = [
+        {
+          timestamp: new Date().toISOString(),
+          open: baselinePrice,
+          high: baselinePrice,
+          low: baselinePrice,
+          close: baselinePrice,
+          volume: 0,
+          trades: 0,
+        },
+      ];
+    }
+
+    const firstCandle = candles[0];
+    const lastCandle = candles[candles.length - 1];
+    const currentPrice = lastCandle.close;
+    const openPrice = firstCandle.open;
+    const highPrice = Math.max(...candles.map((c) => c.high));
+    const lowPrice = Math.min(...candles.map((c) => c.low));
+    const totalVolume = candles.reduce((acc, c) => acc + c.volume, 0);
+    const priceChange = currentPrice - openPrice;
+    const priceChangePercent =
+      openPrice > 0 ? Math.round((priceChange / openPrice) * 10000) / 100 : 0;
+
+    return {
+      eventId: event.id,
+      eventName: event.name,
+      ...(categoryId && { categoryId: category.id, categoryName: category.name }),
+      interval,
+      candles,
+      summary: {
+        currentPrice,
+        openPrice,
+        highPrice,
+        lowPrice,
+        totalVolume,
+        priceChange,
+        priceChangePercent,
+      },
+    };
+  },
 };
 
 export default marketService;
