@@ -7,6 +7,7 @@
  */
 
 import { prisma as defaultPrisma } from '../../db/prisma.js';
+import { verifyFencingToken } from './market-lease-manager.js';
 
 /**
  * Error thrown when resting order state in the database does not match the expected in-memory state.
@@ -145,8 +146,20 @@ export class OrderRepository {
     incomingOrderData,
     restingUpdates = [],
     executionsData = [],
+    leaseContext = null,
   }) {
     return this.prisma.$transaction(async (tx) => {
+      // 0. Fencing verification inside atomic database transaction
+      if (leaseContext) {
+        await verifyFencingToken(tx, leaseContext);
+        if (leaseContext.fencingToken !== undefined && leaseContext.fencingToken !== null) {
+          incomingOrderData = {
+            ...incomingOrderData,
+            fencingToken: BigInt(leaseContext.fencingToken),
+          };
+        }
+      }
+
       // 1. Create incoming order
       const persistedOrder = await tx.order.create({
         data: incomingOrderData,

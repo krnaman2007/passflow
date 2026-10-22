@@ -128,6 +128,14 @@ export const gracefulShutdown = async (signal) => {
     logger.error('Error stopping settlement recovery worker during shutdown', err);
   }
 
+  try {
+    if (orderService?.matchingService?.releaseAllLeases) {
+      await orderService.matchingService.releaseAllLeases();
+    }
+  } catch (err) {
+    logger.error('Error releasing market leases during shutdown', err);
+  }
+
   if (server && server.listening) {
     await new Promise((resolve) => {
       server.close(() => {
