@@ -1684,6 +1684,21 @@ model TradeSettlement {
     - `settlementStatus ExecutionSettlementStatus @default(PENDING)` (enum: `PENDING`, `SETTLED`, `FAILED_DEAD_LETTER`)
   - With these fields, executions exceeding `MAX_RECOVERY_ATTEMPTS` (e.g. 10) can be transitioned to `FAILED_DEAD_LETTER` for administrative review, completely removing them from the automated recovery query.
 
+#### 5.18.13 Step 9.8 End-to-End Financial Lifecycle Integration Audit
+- **Audit Scope & Scope Boundaries**:
+  - Full lifecycle audit tracing buy/sell placement, reservation, matching, cancellation, settlement, recovery, and reconciliation.
+  - Integration verified against real PostgreSQL database (`passflow_isolated_validation`).
+- **Defect Identified & Resolved**:
+  - *Defect*: In `OrderService.cancelLimitOrder` and `reconcileOrderReservations`, the wallet hold lookup filtered by `status: { in: ['ACTIVE', 'PARTIALLY_RELEASED'] }`.
+  - *Root Cause*: When a buy order is partially matched and settled, `TradeSettlementService` transitions the hold to `status: 'PARTIALLY_SETTLED'`. When the buyer subsequently cancelled the remaining unfilled quantity, `cancelLimitOrder` could not find the hold, failing to release the remaining reserved funds and leaving them trapped in the hold indefinitely.
+  - *Fix*: Updated `OrderService` hold lookups to `status: { in: ['ACTIVE', 'PARTIALLY_RELEASED', 'PARTIALLY_SETTLED'] }`, matching `WalletService.releaseHold()` and ensuring clean release of the unfilled funds back to available balance.
+- **Accounting & Concurrency Invariants Verified**:
+  - Full conservation of money: Buyer available + Seller available + active holds = initial deposited money.
+  - Full conservation of tickets: Buyer owned + Seller available + Seller reserved = initial inventory.
+  - Price improvement correctly refunded: Exact difference between limit price and execution price refunded to buyer's available balance upon settlement.
+  - Concurrent fund & inventory races: Concurrent buy orders competing for insufficient funds and concurrent sell orders competing for insufficient inventory serialize cleanly with zero negative or oversold balances.
+  - Process restart & recovery: Executions committed during matching but unhandled by immediate settlement dispatch are safely settled by `SettlementRecoveryWorker` without duplicate ledger mutations or double-transfers.
+
 
 
 
