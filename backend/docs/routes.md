@@ -1699,6 +1699,22 @@ model TradeSettlement {
   - Concurrent fund & inventory races: Concurrent buy orders competing for insufficient funds and concurrent sell orders competing for insufficient inventory serialize cleanly with zero negative or oversold balances.
   - Process restart & recovery: Executions committed during matching but unhandled by immediate settlement dispatch are safely settled by `SettlementRecoveryWorker` without duplicate ledger mutations or double-transfers.
 
+#### 5.18.14 Step 9.9 Production Readiness and API Boundary Audit
+- **Audit Objective & Scope**:
+  - Audit of the boundary between PassFlow's financial engines (`OrderService`, `WalletService`, `TradeSettlementService`, `PersistentMatchingService`) and the HTTP/Express API layer.
+  - Verification of authentication, authorization, ownership enforcement, BigInt serialization, error envelopes, single-instance constraints, and health probes.
+- **Key Audit Findings & Invariants**:
+  1. *Response Formatting & BigInt Serialization*: `formatSafeUser()` sanitizes `passwordHash` and safely serializes wallet BigInts (`availableBalance`, `reservedBalance`, `version`) to strings, eliminating `TypeError` during `JSON.stringify()`.
+  2. *Centralized Error Handling & Secret Protection*: `errorHandler` formats all operational and validation errors into `{ success: false, error: { code, message } }`. Internal stack traces are suppressed in production.
+  3. *Zero-Surface Internal Settlement*: Settlement and recovery operations have no public HTTP endpoints and are triggered strictly through post-matching transactions and `SettlementRecoveryWorker`.
+  4. *API Inventory & Deferred Routes*:
+     - Core financial engines (`OrderService.placeLimitOrder`, `OrderService.cancelLimitOrder`, `WalletService` mutations, `UserTicketInventory`) are fully operational and tested at the service level. Dedicated secondary-market public HTTP routes (`/orders`, `/wallets`) have not yet been exposed and are deferred to the upcoming API routing milestone.
+     - Public routes currently active: `/health` (shallow liveness), `/market/*` (depth, trades, summary), `/events/*` (event & category management with organizer ownership gating), `/users/me` (profile with sanitized wallet summary).
+  5. *Operational & Deployment Constraints*:
+     - **Single-Instance Constraint**: In-memory `MarketExecutionQueue` requires PassFlow to run as a single-instance service until database lease fencing (`pg_try_advisory_lock` / `MarketLease`) is implemented. Multi-instance matching without fencing will cause dual-master order book divergence.
+     - **Health vs Readiness Probes**: `/health` functions as a shallow liveness probe (Node process up). A deep readiness probe testing database connectivity and order book synchronization should be adopted for production container orchestrators.
+     - **Unapplied Teammate Migrations**: Confirmed that `RefreshToken`, `Admin`, `ReconciliationReport`, and `PrimaryPurchase` models exist in `schema.prisma` but have unapplied migrations owned by other workstreams. The core financial schema (10 migrations) is 100% migrated and verified.
+
 
 
 
