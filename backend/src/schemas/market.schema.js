@@ -25,7 +25,17 @@ export const marketDataSchema = z.object({
   updatedAt: z.coerce.date(),
 });
 
+export const queryMarketDepthSchema = z.object({
+  limit: z.coerce.number().int().positive().max(100).default(50).optional(),
+});
+
+export const queryTradeFeedSchema = z.object({
+  limit: z.coerce.number().int().positive().max(100).default(50).optional(),
+});
+
 export default {
   marketParamsSchema,
   marketDataSchema,
+  queryMarketDepthSchema,
+  queryTradeFeedSchema,
 };

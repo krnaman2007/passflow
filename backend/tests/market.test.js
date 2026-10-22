@@ -18,6 +18,17 @@ describe('Market Data API (/market)', () => {
   let executionId = null;
 
   beforeAll(async () => {
+    // Ensure DB connection is active (Neon serverless wake-up retry)
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await prisma.$queryRaw`SELECT 1`;
+        break;
+      } catch (e) {
+        if (attempt === 3) throw e;
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+    }
+
     // 1. Create an organizer user
     const organizerUser = await prisma.user.create({
       data: {
@@ -242,6 +253,110 @@ describe('Market Data API (/market)', () => {
       expect(res.body.data.bestBid).toBe(1900);
       expect(res.body.data.bestAsk).toBe(2100);
       expect(res.body.data.lastPrice).toBe(2050);
+    });
+  });
+
+  describe('GET /market/:eventId/:categoryId/depth', () => {
+    it('should return 404 when event does not exist', async () => {
+      const res = await request(app)
+        .get(`/market/00000000-0000-0000-0000-000000000000/${categoryId}/depth`)
+        .expect(404);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('EVENT_NOT_FOUND');
+    });
+
+    it('should return 404 when ticket category does not exist for event', async () => {
+      const res = await request(app)
+        .get(`/market/${eventId}/00000000-0000-0000-0000-000000000000/depth`)
+        .expect(404);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('CATEGORY_NOT_FOUND');
+    });
+
+    it('should return aggregated MarketDepth price levels (200 OK)', async () => {
+      const res = await request(app)
+        .get(`/market/${eventId}/${categoryId}/depth`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      const data = res.body.data;
+      expect(data).toBeDefined();
+      expect(data.id).toBe(`${eventId}:${categoryId}`);
+      expect(Array.isArray(data.bids)).toBe(true);
+      expect(Array.isArray(data.asks)).toBe(true);
+      expect(data.bids.length).toBeGreaterThan(0);
+      expect(data.asks.length).toBeGreaterThan(0);
+
+      // Verify bid price level
+      const topBid = data.bids[0];
+      expect(topBid.price).toBe(1900);
+      expect(topBid.totalQuantity).toBe(2);
+
+      // Verify ask price level
+      const topAsk = data.asks[0];
+      expect(topAsk.price).toBe(2100);
+      expect(topAsk.totalQuantity).toBe(3);
+
+      expect(data.timestamp).toBeDefined();
+    });
+
+    it('should support /api/v1/market/:eventId/:categoryId/depth alias route (200 OK)', async () => {
+      const res = await request(app)
+        .get(`/api/v1/market/${eventId}/${categoryId}/depth`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.bids.length).toBeGreaterThan(0);
+      expect(res.body.data.asks.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('GET /market/:eventId/:categoryId/trades', () => {
+    it('should return 404 when event does not exist', async () => {
+      const res = await request(app)
+        .get(`/market/00000000-0000-0000-0000-000000000000/${categoryId}/trades`)
+        .expect(404);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('EVENT_NOT_FOUND');
+    });
+
+    it('should return 404 when ticket category does not exist for event', async () => {
+      const res = await request(app)
+        .get(`/market/${eventId}/00000000-0000-0000-0000-000000000000/trades`)
+        .expect(404);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('CATEGORY_NOT_FOUND');
+    });
+
+    it('should return recent executed TradeFeed (200 OK)', async () => {
+      const res = await request(app)
+        .get(`/market/${eventId}/${categoryId}/trades`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      const data = res.body.data;
+      expect(data).toBeDefined();
+      expect(Array.isArray(data.trades)).toBe(true);
+      expect(data.total).toBeGreaterThan(0);
+
+      const trade = data.trades[0];
+      expect(trade.price).toBe(2050);
+      expect(trade.quantity).toBe(1);
+      expect(trade.timestamp).toBeDefined();
+    });
+
+    it('should support /api/v1/market/:eventId/:categoryId/trades alias route (200 OK)', async () => {
+      const res = await request(app)
+        .get(`/api/v1/market/${eventId}/${categoryId}/trades`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(Array.isArray(res.body.data.trades)).toBe(true);
+      expect(res.body.data.total).toBeGreaterThan(0);
     });
   });
 });

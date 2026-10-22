@@ -81,9 +81,9 @@ This document tracks active API routes and planned route additions as the PassFl
 
 ### Market Data & Analytics
 
-| Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `GET` | `/market/:eventId/:categoryId` *(also `/api/v1/market/:eventId/:categoryId`)* | MarketData snapshot: best bid/ask, last traded price, volume, spread | Public | None | `{"success": true, "data": {"id": "...", "eventId": "...", "categoryId": "...", "bestBid": 1500, "bestAsk": 1600, "lastPrice": 1550, "volume": 25, "spread": 100, "updatedAt": "..."}}` | Active |
+| `GET` | `/market/:eventId/:categoryId/depth` *(also `/api/v1/market/:eventId/:categoryId/depth`)* | MarketDepth price levels (bids descending, asks ascending) | Public | None (Query: `limit`) | `{"success": true, "data": {"id": "...", "bids": [{"price": 1900, "totalQuantity": 2, "orderCount": 1}], "asks": [{"price": 2100, "totalQuantity": 3, "orderCount": 1}], "timestamp": "..."}}` | Active |
+| `GET` | `/market/:eventId/:categoryId/trades` *(also `/api/v1/market/:eventId/:categoryId/trades`)* | Real-time TradeFeed stream of executed trades (last N trades) | Public | None (Query: `limit`) | `{"success": true, "data": {"trades": [{"id": "...", "price": 2050, "quantity": 1, "timestamp": "..."}], "total": 1}}` | Active |
 
 ---
 
