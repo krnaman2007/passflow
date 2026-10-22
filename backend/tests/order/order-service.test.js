@@ -144,39 +144,9 @@ describe('Step 9.3 — Order Lifecycle & Reservations (Live PostgreSQL)', () => 
   });
 
   afterAll(async () => {
-    try {
-      // WalletLedgerEntry is immutable by DB trigger and WalletHold/Wallet have FK RESTRICT constraints.
-      // Leaving test wallets and holds untouched preserves the append-only audit trail.
-      await livePrisma.execution.deleteMany({
-        where: {
-          incomingOrder: { eventId: testEvent.id },
-        },
-      });
-      await livePrisma.order.deleteMany({
-        where: { eventId: testEvent.id },
-      });
-      await livePrisma.userTicketInventory.deleteMany({
-        where: { userId: { in: [buyerUser.id, sellerUser.id, organizerUser.id] } },
-      });
-      await livePrisma.ticketInventory.deleteMany({
-        where: { categoryId: testCategory.id },
-      });
-      await livePrisma.ticketCategory.deleteMany({
-        where: { eventId: testEvent.id },
-      });
-      await livePrisma.event.deleteMany({
-        where: { id: testEvent.id },
-      });
-      await livePrisma.organizer.deleteMany({
-        where: { id: organizer.id },
-      });
-      await livePrisma.user.deleteMany({
-        where: { id: { in: [buyerUser.id, sellerUser.id, organizerUser.id] } },
-      });
-      await livePrisma.$disconnect();
-    } catch (e) {
-      // Ignore teardown errors
-    }
+    // Executions and settlements are immutable financial history protected by RESTRICT foreign keys.
+    // Preserving all financial history leaves the append-only audit trail intact across isolated test runs.
+    await livePrisma.$disconnect();
   });
 
   describe('1. Buy-Order Placement & Fund Reservations', () => {
@@ -628,23 +598,31 @@ describe('Step 9.3 — Order Lifecycle & Reservations (Live PostgreSQL)', () => 
       expect(dbAsk.status).toBe('PARTIALLY_FILLED');
       expect(dbAsk.remainingQuantity).toBe(4);
 
-      // 3. INVARIANT VERIFICATION: Matching is NOT settlement!
-      // Buyer funds for the 6 matched tickets must REMAIN IN RESERVED BALANCE (not debited or paid to seller)
+      // 3. INVARIANT VERIFICATION: Automatic Post-Match Settlement (Step 9.4)
+      // Buyer funds for the 6 matched tickets (42,000 paise) were consumed from reserved balance by settlement
       const buyerBalAfter = await walletService.getWalletBalance({ userId: buyerUser.id });
-      const buyerExpectedReserved = BigInt(buyerBalBefore.reservedBalance) + BigInt(7000 * 6);
-      expect(BigInt(buyerBalAfter.reservedBalance)).toBe(buyerExpectedReserved);
+      expect(BigInt(buyerBalAfter.reservedBalance)).toBe(BigInt(buyerBalBefore.reservedBalance));
 
-      // Seller wallet must NOT have been credited yet (settlement deferred to Step 9.4)
+      // Seller wallet was credited 42,000 paise by settlement
       const sellerBalAfter = await walletService.getWalletBalance({ userId: sellerUser.id });
-      expect(sellerBalAfter.availableBalance).toBe('0');
+      expect(sellerBalAfter.availableBalance).toBe('42000');
 
-      // Seller inventory for the 6 matched tickets must REMAIN RESERVED (not transferred to buyer)
+      // Seller inventory for the 6 matched tickets was settled: transferred from seller to buyer
       const sellerInvAfter = await orderService.getUserTicketInventory({
         userId: sellerUser.id,
         ticketCategoryId: testCategory.id,
       });
-      // 10 tickets originally reserved for askOrder: 4 still resting + 6 matched = 10 reserved
-      expect(sellerInvAfter.reservedQuantity).toBe(sellerInvBefore.reservedQuantity);
+      // 6 matched tickets transferred to buyer; 4 tickets remain reserved for the resting askOrder
+      expect(sellerInvAfter.reservedQuantity).toBe(sellerInvBefore.reservedQuantity - 6);
+      expect(sellerInvAfter.totalQuantity).toBe(sellerInvBefore.totalQuantity - 6);
+
+      // Verify buyer received the 6 settled tickets
+      const buyerInvAfter = await orderService.getUserTicketInventory({
+        userId: buyerUser.id,
+        ticketCategoryId: testCategory.id,
+      });
+      expect(buyerInvAfter.totalQuantity).toBe(6);
+      expect(buyerInvAfter.availableQuantity).toBe(6);
 
       // 4. Cancel the remaining 4 tickets of the partially filled ASK order
       const cancelAsk = await orderService.cancelLimitOrder({
@@ -657,14 +635,14 @@ describe('Step 9.3 — Order Lifecycle & Reservations (Live PostgreSQL)', () => 
       expect(cancelAsk.cancelledQuantity).toBe(4);
       expect(cancelAsk.releasedReservation).toBe(4);
 
-      // Verify that ONLY the 4 unfilled tickets were restored to availableQuantity!
-      // The 6 matched tickets MUST REMAIN in reservedQuantity awaiting Step 9.4 settlement transfer!
+      // Verify that the 4 unfilled tickets were restored to availableQuantity!
       const sellerInvFinal = await orderService.getUserTicketInventory({
         userId: sellerUser.id,
         ticketCategoryId: testCategory.id,
       });
       expect(sellerInvFinal.availableQuantity).toBe(sellerInvAfter.availableQuantity + 4);
       expect(sellerInvFinal.reservedQuantity).toBe(sellerInvAfter.reservedQuantity - 4);
+      expect(sellerInvFinal.totalQuantity).toBe(sellerInvAfter.totalQuantity);
     });
 
     it('should reject cancellation of a completely filled order', async () => {

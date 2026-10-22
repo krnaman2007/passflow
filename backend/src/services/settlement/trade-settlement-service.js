@@ -39,20 +39,54 @@ export function calculateSettlementAmounts({ limitPricePaise, executionPricePais
   return { executionCost, buyerReservedConsumed, priceImprovement: buyerReservedConsumed - executionCost };
 }
 
+export function isTransientSettlementConflict(error) {
+  if (!error || typeof error !== 'object') return false;
+  if (error instanceof SettlementInvariantError) return false;
+  if (error.name === 'SettlementInvariantError') return false;
+
+  // Prisma write conflict / serialization code
+  if (error.code === 'P2034') return true;
+
+  const msg = typeof error.message === 'string' ? error.message : '';
+  // PostgreSQL SQLSTATE 40001 (serialization failure)
+  if (msg.includes('40001') || msg.includes('could not serialize access')) return true;
+  // PostgreSQL SQLSTATE 40P01 (deadlock detected)
+  if (msg.includes('40P01') || msg.includes('deadlock detected')) return true;
+
+  return false;
+}
+
 export class TradeSettlementService {
   constructor({ prismaClient = defaultPrisma } = {}) {
     this.prisma = prismaClient;
   }
 
-  async settleExecution({ executionId }) {
+  async settleExecution({ executionId, maxAttempts = 5 } = {}) {
     if (!executionId || typeof executionId !== 'string' || !executionId.trim()) {
       throw new SettlementInvariantError('executionId must be a non-empty string');
     }
-    return this.prisma.$transaction((tx) => this._settle(tx, executionId.trim()), {
-      isolationLevel: 'Serializable',
-      maxWait: 5000,
-      timeout: 15000,
-    });
+    const cleanId = executionId.trim();
+    const attemptsLimit = Number.isSafeInteger(maxAttempts) && maxAttempts > 0 ? maxAttempts : 5;
+
+    let attempt = 0;
+    while (attempt < attemptsLimit) {
+      attempt++;
+      try {
+        return await this.prisma.$transaction((tx) => this._settle(tx, cleanId), {
+          isolationLevel: 'Serializable',
+          maxWait: 5000,
+          timeout: 15000,
+        });
+      } catch (error) {
+        if (!isTransientSettlementConflict(error) || attempt >= attemptsLimit) {
+          throw error;
+        }
+        // Bounded exponential backoff with jitter: 20ms * 2^(attempt - 1), capped at 200ms
+        const baseDelay = Math.min(200, 20 * (2 ** (attempt - 1)));
+        const jitter = Math.floor(Math.random() * 15);
+        await new Promise((resolve) => setTimeout(resolve, baseDelay + jitter));
+      }
+    }
   }
 
   async recoverUnsettled({ batchSize = 100 } = {}) {

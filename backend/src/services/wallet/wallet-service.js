@@ -665,10 +665,20 @@ export class WalletService {
     const entryType = reason === 'WITHDRAWAL_ESCROW' ? 'WITHDRAWAL_LOCK' : 'ORDER_HOLD';
 
     const execute = async (tx) => {
-      // 1. Lock wallet row
+      // 1. A linked order must be locked before its wallet.  Settlement uses
+      // Order -> Wallet -> Hold, and the WalletHold insert below acquires an
+      // implicit foreign-key lock on Order.  Taking Wallet first here would
+      // create a real inversion for callers that supply orderId.
+      if (orderId) {
+        await tx.$queryRaw`
+          SELECT id FROM "Order" WHERE id = ${orderId} FOR UPDATE
+        `;
+      }
+
+      // 2. Lock wallet row
       const wallet = await this._lockWallet(tx, { walletId, userId });
 
-      // 2. Define expected payload
+      // 3. Define expected payload
       const expectedPayload = {
         walletId: wallet.id,
         operationType: opType,
@@ -678,7 +688,7 @@ export class WalletService {
         holdId: null,
       };
 
-      // 3. Check existing operation
+      // 4. Check existing operation
       const existingOp = await tx.financialOperation.findUnique({
         where: { idempotencyKey },
         include: {
@@ -698,7 +708,7 @@ export class WalletService {
         };
       }
 
-      // 4. Verify sufficiency
+      // 5. Verify sufficiency
       const currentAvailable = BigInt(wallet.availableBalance);
       if (currentAvailable < amountBigInt) {
         throw new InsufficientFundsError(
@@ -711,7 +721,7 @@ export class WalletService {
         );
       }
 
-      // 5. Invariant calculations: available reduces by amount, reserved increases by amount
+      // 6. Invariant calculations: available reduces by amount, reserved increases by amount
       const currentReserved = BigInt(wallet.reservedBalance);
       const currentVersion = BigInt(wallet.version);
 
@@ -719,7 +729,7 @@ export class WalletService {
       const newReserved = currentReserved + amountBigInt;
       const newVersion = currentVersion + 1n;
 
-      // 6. Create FinancialOperation
+      // 7. Create FinancialOperation
       const op = await tx.financialOperation.create({
         data: {
           idempotencyKey,
@@ -737,7 +747,7 @@ export class WalletService {
         },
       });
 
-      // 7. Create WalletHold
+      // 8. Create WalletHold
       const hold = await tx.walletHold.create({
         data: {
           walletId: wallet.id,
@@ -751,7 +761,7 @@ export class WalletService {
         },
       });
 
-      // 8. Create immutable WalletLedgerEntry
+      // 9. Create immutable WalletLedgerEntry
       const ledger = await tx.walletLedgerEntry.create({
         data: {
           walletId: wallet.id,
@@ -769,7 +779,7 @@ export class WalletService {
         },
       });
 
-      // 9. Update Wallet projection
+      // 10. Update Wallet projection
       const updatedWallet = await tx.wallet.update({
         where: { id: wallet.id },
         data: {
@@ -843,6 +853,17 @@ export class WalletService {
         throw new WalletNotFoundError(`Wallet hold not found with id: ${holdId}`);
       }
 
+      // 1b. Enforce global lock hierarchy (Order -> Wallet -> WalletHold):
+      // When the hold is linked to an Order (either via hold.orderId or referenceType === 'ORDER'),
+      // acquire the Order row lock BEFORE acquiring the Wallet lock.
+      // This eliminates lock-order inversion deadlocks (40P01) against TradeSettlementService.
+      const linkedOrderId = initialHold.orderId || (referenceType === 'ORDER' ? referenceId : null);
+      if (linkedOrderId) {
+        await tx.$queryRaw`
+          SELECT id FROM "Order" WHERE id = ${linkedOrderId} FOR UPDATE
+        `;
+      }
+
       // 2. Lock the parent wallet row
       const walletRows = await tx.$queryRaw`
         SELECT * FROM "Wallet" WHERE id = ${initialHold.walletId} FOR UPDATE
@@ -853,9 +874,13 @@ export class WalletService {
       const wallet = walletRows[0];
 
       // 3. Re-read hold under lock to ensure authoritative state
-      const hold = await tx.walletHold.findUnique({
-        where: { id: holdId },
-      });
+      const holdRows = await tx.$queryRaw`
+        SELECT * FROM "WalletHold" WHERE id = ${holdId} FOR UPDATE
+      `;
+      if (!holdRows || holdRows.length === 0) {
+        throw new WalletNotFoundError(`Wallet hold not found with id: ${holdId}`);
+      }
+      const hold = holdRows[0];
 
       // 4. Validate hold active state
       const currentRemaining = BigInt(hold.remainingAmount);
