@@ -1962,6 +1962,48 @@ model TradeSettlement {
     11. Existing settlement, wallet-conservation, and recovery regressions.
     12. Graceful shutdown and readiness behavior when ownership is lost.
 
+#### 5.18.20 Step 9.15 Distributed Market Coordination Safety Audit
+- **Mutation-Path Inventory & Fencing Protection**:
+  - Audited all candidate mutation paths across `backend/src/`:
+    1. *Order Placement (`placeLimitOrder` / `submitLimitOrder` / `persistMatchingTransaction`)*:
+       - Mutates: creates `Order`, updates resting `Order` records (`remainingQuantity`, `status`), creates `Execution` records.
+       - Changes market state: Yes.
+       - Requires market ownership: Yes (`requireMarketLease: true`).
+       - Fencing boundary: `verifyFencingToken(tx, leaseContext)` executes `SELECT ... FOR UPDATE` on `MarketLease` within the atomic matching transaction.
+       - Stale owner writes: Strictly blocked; rolls back transaction with `FencingViolationError`.
+    2. *Order Cancellation (`cancelLimitOrder`)*:
+       - Mutates: updates target `Order` status to `CANCELLED`, removes from in-memory book, releases unfilled reservation.
+       - Changes market state: Yes.
+       - Requires market ownership: Yes.
+       - Fencing boundary: `verifyFencingToken(tx, leaseContext)` executes inside `this.repository.prisma.$transaction` before updating the order row.
+       - Stale owner writes: Strictly blocked; rolls back transaction.
+    3. *Book Reconstruction (`reconstructMarket` / `reconcileMarket` / `_reconstructBookUnderQueue`)*:
+       - Mutates: in-memory `OrderBook` only; zero database writes.
+       - Requires market ownership: Yes; called upon acquiring market lease or reconciling ambiguous submission.
+       - Stale owner writes: Even if stale memory is populated, subsequent database writes are blocked at the fencing boundary.
+    4. *Trade Settlement (`settleExecution` / `recoverUnsettled`)*:
+       - Mutates: `Execution.settlementStatus = 'SETTLED'`, `WalletLedgerEntry`, `Wallet`, `WalletHold`, `TradeSettlement`, `UserTicketInventory`.
+       - Changes market state: No. Post-matching asynchronous clearing decoupled from matching coordinator ownership.
+       - Concurrency protection: Serialized on `Execution` row lock (`SELECT FOR UPDATE`). Idempotent replay prevents double-crediting.
+    5. *Order Reservation Reconciliation (`reconcileOrderReservations`)*:
+       - Observational audit: verifies active holds and seller inventory against database state. Does not mutate market orders or book state.
+    6. *Primary Inventory Credit (`creditUserTicketInventory`)*:
+       - Primary issuance to user balance; decoupled from secondary matching markets.
+- **PostgreSQL Concurrency & Fencing Guarantees**:
+  - *Exclusive Row Lock Serialization*: `verifyFencingToken` and `acquireLease` both acquire exclusive `SELECT ... FOR UPDATE` row locks on the identical `MarketLease` record. A matching persistence transaction locking the lease row before nominal expiry blocks any concurrent takeover attempt in PostgreSQL until commit.
+  - *Monotonic Fencing*: Consecutive takeovers strictly increment `fencingToken = fencingToken + 1n`. Stale owners attempting writes are rejected with `FencingViolationError`.
+  - *Clock Skew Elimination*: Expiration is evaluated natively in PostgreSQL via `("expiresAt" <= NOW()) as "isExpired"`.
+  - *Fail-Closed Outage Handling*: Database disconnections during renewal invoke `onRenewalFailure`, clear cached lease, transition market to `RECONCILING`, reject new orders, and cause `/ready` probe to report 503 degraded.
+- **Environment & Deployment Configuration**:
+  - Supported `ENABLE_DISTRIBUTED_MARKET_LEASES=true` in `PersistentMatchingService` and `config/index.js` to enable automatic distributed lease enforcement in multi-node deployments.
+  - Defaults to `false` for standalone single-instance backward compatibility.
+  - Verified no `.env` files or credentials are tracked in Git.
+- **Audit Verification Results**:
+  - New Dedicated Audit Suite: `backend/tests/matching/distributed-market-coordination-audit.test.js` (10 tests, 100% pass).
+  - Step 9.14 Integration Suite: `backend/tests/matching/distributed-market-leases.test.js` (12 tests, 100% pass).
+  - Complete Core Backend Regression: 24 test suites, 427 tests passed, 0 failures.
+
+
 
 
 

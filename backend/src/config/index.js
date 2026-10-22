@@ -12,6 +12,7 @@ export const config = {
   jwtAccessExpiry: process.env.JWT_ACCESS_EXPIRY || '15m',
   jwtRefreshExpiry: process.env.JWT_REFRESH_EXPIRY || '7d',
   nodeEnv: process.env.NODE_ENV || 'development',
+  enableDistributedMarketLeases: process.env.ENABLE_DISTRIBUTED_MARKET_LEASES === 'true' || process.env.REQUIRE_MARKET_LEASE === 'true',
 };
 
 export default config;
