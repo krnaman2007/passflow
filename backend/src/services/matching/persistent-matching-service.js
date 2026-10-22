@@ -860,6 +860,41 @@ export class PersistentMatchingService {
   }
 
   /**
+   * Evaluates the operational readiness and integrity of the matching coordinator:
+   * - Must have state manager and execution queue initialized.
+   * - Must not have any markets flagged as corrupted in `_corruptedMarkets`.
+   * - None of the registered markets may be actively in RECONCILING state.
+   *
+   * @returns {{ ready: boolean, reason?: string, details?: Object }}
+   */
+  checkReadiness() {
+    if (!this.stateManager || !this.queue) {
+      return { ready: false, reason: 'Matching coordinator sub-services not initialized' };
+    }
+    if (this._corruptedMarkets && this._corruptedMarkets.size > 0) {
+      return {
+        ready: false,
+        reason: 'One or more markets are flagged as corrupted or require reconciliation',
+        corruptedCount: this._corruptedMarkets.size,
+      };
+    }
+    if (this.stateManager && typeof this.stateManager.getRegisteredMarkets === 'function') {
+      const registered = this.stateManager.getRegisteredMarkets();
+      for (const key of registered) {
+        const state = this.stateManager.getState(key);
+        if (state === MarketState.RECONCILING) {
+          return {
+            ready: false,
+            reason: `Market "${key}" is currently reconciling`,
+            marketKey: key,
+          };
+        }
+      }
+    }
+    return { ready: true };
+  }
+
+  /**
    * Retrieves the in-memory OrderBook registered for a market.
    *
    * @param {string|Object} marketKeyOrConfig

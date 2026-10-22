@@ -1787,6 +1787,56 @@ model TradeSettlement {
   - **Startup Ordering**: In `server.js`, `await checkDatabaseConnections()` and `await recoverSettlements()` should run before `server.listen()` opens network sockets.
   - **In-Memory Recovery Cursor**: `SettlementRecoveryWorker` maintains its sequence cursor in memory. Persistent failure starvation prevention remains bounded to single-batch keyset pagination until a durable dead-letter schema migration is applied.
 
+#### 5.18.17 Step 9.12 Deep Readiness Probe & Safe Startup Sequencing
+- **Endpoints Exposed**:
+  - `GET /api/v1/health/ready` (also mounted at `/health/ready` and `/api/health/ready` for cluster ingress compatibility)
+- **Authentication & Access**:
+  - Public / Unauthenticated (intended for deployment load balancers, Kubernetes readiness probes, and AWS ECS health checks).
+- **Readiness Verification Conditions**:
+  1. *Database Connectivity*: Executes a lightweight, bounded query (`SELECT 1`) via Prisma with a 3000ms timeout. Fails immediately if the database is unreachable or times out, without hanging readiness probes.
+  2. *Startup Initialization Completion*: Verifies `appLifecycleState.isInitialized()`. Returns 503 if the server has not finished establishing connections, running startup settlement recovery, or verifying matching readiness.
+  3. *Graceful Shutdown Status*: Returns 503 immediately if `gracefulShutdown()` has been triggered, allowing load balancers to deregister the pod before in-flight connections close.
+  4. *Matching Coordinator Health*: Queries `orderService.matchingService.checkReadiness()`. Verifies that no markets are quarantined in `_corruptedMarkets` and no markets are in `MarketState.RECONCILING`.
+- **Response Contracts**:
+  - **Success (`200 OK`)**:
+    ```json
+    {
+      "status": "ready",
+      "timestamp": "2026-10-22T13:25:00.000Z",
+      "checks": {
+        "database": "healthy",
+        "startup": "completed",
+        "matching": "ready"
+      }
+    }
+    ```
+  - **Failure (`503 Service Unavailable`)**:
+    ```json
+    {
+      "status": "not_ready",
+      "timestamp": "2026-10-22T13:25:00.000Z",
+      "checks": {
+        "database": "unhealthy",
+        "startup": "in_progress",
+        "matching": "degraded"
+      }
+    }
+    ```
+- **Information Protection**:
+  - Response never leaks raw SQL error text, PostgreSQL connection strings, credentials, or internal stack traces.
+- **Liveness Compatibility**:
+  - Existing `/health`, `/api/health`, and `/api/v1/health` endpoints remain shallow liveness probes returning `{ status: 'ok', message: 'Backend server is running' }` (`200 OK`) without blocking on database locks.
+- **Safe Startup Sequence (`server.js`)**:
+  - Re-ordered to strictly prevent socket binding before backend readiness:
+    1. Verify database connectivity via active bounded query (`checkDatabaseConnections({ throwOnError: true, timeoutMs: 5000 })`).
+    2. Execute bounded startup settlement recovery (`recoverSettlements()`).
+    3. Verify matching coordinator readiness.
+    4. Start periodic background settlement recovery worker (`settlementRecoveryWorker.start()`).
+    5. Mark `appLifecycleState.setInitialized(true)`.
+    6. Call `server.listen(config.port)` only after all prerequisites succeed.
+  - Failures during startup abort execution and exit cleanly without accepting API traffic.
+
+
 
 
 

@@ -995,4 +995,16 @@ export class OrderService {
       idempotencyKey: idempotencyKey.trim(),
     };
   }
+
+  /**
+   * Evaluates the operational readiness of the order service and underlying matching coordinator.
+   * @returns {{ ready: boolean, reason?: string }}
+   */
+  checkReadiness() {
+    if (!this.matchingService || typeof this.matchingService.checkReadiness !== 'function') {
+      return { ready: false, reason: 'Matching service uninitialized' };
+    }
+    return this.matchingService.checkReadiness();
+  }
 }
+

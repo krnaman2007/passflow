@@ -18,6 +18,8 @@ app.use(cors({ origin: config.frontendUrl, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+import { evaluateReadiness } from './services/readiness.service.js';
+
 // Liveness Check Route for deployment (GET /health, /api/health)
 const healthCheckHandler = (req, res) => {
   res.status(200).json({
@@ -29,6 +31,15 @@ const healthCheckHandler = (req, res) => {
 app.get('/health', healthCheckHandler);
 app.get('/api/health', healthCheckHandler);
 app.get('/api/v1/health', healthCheckHandler);
+
+// Deep Readiness Check Route for deployment (GET /api/v1/health/ready, /health/ready)
+const readinessCheckHandler = async (req, res) => {
+  const result = await evaluateReadiness();
+  res.status(result.statusCode).json(result.body);
+};
+app.get('/health/ready', readinessCheckHandler);
+app.get('/api/health/ready', readinessCheckHandler);
+app.get('/api/v1/health/ready', readinessCheckHandler);
 
 // Authentication Routes
 app.use('/auth', authRoutes);

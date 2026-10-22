@@ -5,10 +5,12 @@ import config from './src/config/index.js';
 import logger from './src/errorlogging/logger.js';
 import { checkDatabaseConnections } from './src/db/index.js';
 import { tradeSettlementService, settlementRecoveryWorker } from './src/services/settlement/index.js';
+import { appLifecycleState } from './src/services/app-state.js';
+import { orderService } from './src/services/order/index.js';
 
 const server = http.createServer(app);
 
-const recoverSettlements = async () => {
+export const recoverSettlements = async () => {
   try {
     const recovery = await tradeSettlementService.recoverUnsettled({ batchSize: 100 });
     const failures = recovery.filter((result) => result.settled === false);
@@ -19,9 +21,10 @@ const recoverSettlements = async () => {
     } else if (recovery.length > 0) {
       logger.info('Recovered unsettled executions', { count: recovery.length });
     }
+    return recovery;
   } catch (error) {
-    // Startup remains available; a subsequent bounded pass can retry.
     logger.error('Settlement recovery could not query durable execution state', error);
+    throw error;
   }
 };
 
@@ -50,38 +53,108 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(config.port, async () => {
-  console.log('\n==================================================');
-  logger.info(`🚀 Server running on http://localhost:${config.port} (${config.nodeEnv})`);
-  logger.info(`🌐 Allowed Frontend Origin: ${config.frontendUrl}`);
-  logger.info(`🔌 Socket.IO Server: Initialized & Listening`);
-  console.log('--------------------------------------------------');
-  await checkDatabaseConnections();
-  // Bounded at-least-once recovery on startup. Multiple instances are safe because each
-  // attempt claims its Execution row inside the settlement transaction.
-  await recoverSettlements();
-  // Start the recurring recovery worker for post-match executions interrupted while running
-  settlementRecoveryWorker.start();
-  console.log('==================================================\n');
-});
+/**
+ * Executes safe startup sequencing:
+ * 1. Establish and verify database connectivity with bounded query.
+ * 2. Complete startup settlement recovery.
+ * 3. Verify market coordinator readiness.
+ * 4. Start periodic settlement recovery worker.
+ * 5. Set appLifecycleState to initialized.
+ * 6. Begin listening for HTTP traffic only after all prerequisites succeed.
+ */
+export const startServer = async () => {
+  try {
+    console.log('\n==================================================');
+    logger.info(`Starting PassFlow backend (${config.nodeEnv})...`);
+    console.log('--------------------------------------------------');
+
+    // 1. Establish database connectivity with active bounded query
+    await checkDatabaseConnections({ throwOnError: true, timeoutMs: 5000 });
+
+    // 2. Complete required startup settlement recovery before serving
+    await recoverSettlements();
+
+    // 3. Initialize or verify market coordinator readiness
+    const coordinatorStatus = orderService?.matchingService?.checkReadiness
+      ? orderService.matchingService.checkReadiness()
+      : { ready: true };
+    if (!coordinatorStatus.ready) {
+      throw new Error(`Market coordinator not ready: ${coordinatorStatus.reason}`);
+    }
+
+    // 4. Start settlement recovery worker only after prerequisites succeed
+    if (!settlementRecoveryWorker.isRunning) {
+      settlementRecoveryWorker.start();
+    }
+
+    // 5. Mark application state initialized
+    appLifecycleState.setInitialized(true);
+
+    // 6. Begin listening for HTTP traffic only after all prerequisites succeed
+    await new Promise((resolve, reject) => {
+      server.listen(config.port, (err) => {
+        if (err) return reject(err);
+        logger.info(`🚀 Server running on http://localhost:${config.port} (${config.nodeEnv})`);
+        logger.info(`🌐 Allowed Frontend Origin: ${config.frontendUrl}`);
+        logger.info(`🔌 Socket.IO Server: Initialized & Listening`);
+        console.log('==================================================\n');
+        resolve();
+      });
+    });
+
+    return server;
+  } catch (err) {
+    appLifecycleState.setStartupError(err);
+    logger.error('❌ Critical startup failure: backend unable to start safely', err);
+    if (process.env.NODE_ENV !== 'test') {
+      process.exit(1);
+    }
+    throw err;
+  }
+};
 
 let isShuttingDown = false;
-const gracefulShutdown = async (signal) => {
+export const gracefulShutdown = async (signal) => {
   if (isShuttingDown) return;
   isShuttingDown = true;
+  appLifecycleState.setShuttingDown(true);
   logger.info(`Received ${signal}. Shutting down gracefully...`);
+
   try {
-    await settlementRecoveryWorker.stop({ timeoutMs: 5000 });
+    if (settlementRecoveryWorker && settlementRecoveryWorker.isRunning) {
+      await settlementRecoveryWorker.stop({ timeoutMs: 5000 });
+    }
   } catch (err) {
     logger.error('Error stopping settlement recovery worker during shutdown', err);
   }
-  server.close(() => {
-    logger.info('HTTP server closed');
+
+  if (server && server.listening) {
+    await new Promise((resolve) => {
+      server.close(() => {
+        logger.info('HTTP server closed');
+        resolve();
+      });
+    });
+  } else {
+    logger.info('HTTP server was not listening; shutdown complete');
+  }
+
+  if (process.env.NODE_ENV !== 'test') {
     process.exit(0);
-  });
+  }
 };
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
+// Auto-start when executed directly as script in non-test mode
+const isDirectExecution =
+  process.argv[1] &&
+  (process.argv[1].endsWith('server.js') || process.argv[1].endsWith('server'));
+
+if (isDirectExecution && process.env.NODE_ENV !== 'test') {
+  startServer().catch(() => {});
+}
+
 export { app, server, io, settlementRecoveryWorker };
+export default server;
