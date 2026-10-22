@@ -73,4 +73,73 @@ describe('TradeSettlement accounting', () => {
     expect(settleExecution).toHaveBeenNthCalledWith(1, { executionId: 'execution-1' });
     expect(settleExecution).toHaveBeenNthCalledWith(2, { executionId: 'execution-2' });
   });
+
+  describe('Transient conflict detection and bounded retries', () => {
+    test('correctly identifies transient PostgreSQL and Prisma concurrency errors', async () => {
+      const { isTransientSettlementConflict } = await import('../../src/services/settlement/trade-settlement-service.js');
+
+      expect(isTransientSettlementConflict({ code: 'P2034' })).toBe(true);
+      expect(isTransientSettlementConflict({ message: 'could not serialize access due to concurrent update (40001)' })).toBe(true);
+      expect(isTransientSettlementConflict({ message: 'deadlock detected (40P01)' })).toBe(true);
+
+      expect(isTransientSettlementConflict(new SettlementInvariantError('Invalid state'))).toBe(false);
+      expect(isTransientSettlementConflict({ name: 'SettlementInvariantError', message: 'error' })).toBe(false);
+      expect(isTransientSettlementConflict({ code: 'P2002', message: 'Unique constraint failed' })).toBe(false);
+      expect(isTransientSettlementConflict(null)).toBe(false);
+    });
+
+    test('retries transient conflicts and succeeds within attempt limit', async () => {
+      let callCount = 0;
+      const fakePrisma = {
+        $transaction: jest.fn().mockImplementation(async (callback) => {
+          callCount++;
+          if (callCount < 3) {
+            const err = new Error('could not serialize access due to concurrent update (40001)');
+            throw err;
+          }
+          return { settlement: { id: 'settled-1' }, isIdempotentReplay: false };
+        }),
+      };
+
+      const service = new TradeSettlementService({ prismaClient: fakePrisma });
+      const result = await service.settleExecution({ executionId: 'exec-retry-1', maxAttempts: 5 });
+
+      expect(callCount).toBe(3);
+      expect(result.settlement.id).toBe('settled-1');
+    });
+
+    test('does not retry business invariant errors', async () => {
+      let callCount = 0;
+      const fakePrisma = {
+        $transaction: jest.fn().mockImplementation(async () => {
+          callCount++;
+          throw new SettlementInvariantError('Seller has insufficient inventory');
+        }),
+      };
+
+      const service = new TradeSettlementService({ prismaClient: fakePrisma });
+      await expect(
+        service.settleExecution({ executionId: 'exec-invariant-1', maxAttempts: 5 })
+      ).rejects.toThrow(SettlementInvariantError);
+
+      expect(callCount).toBe(1);
+    });
+
+    test('throws when maximum retry attempts are exhausted', async () => {
+      let callCount = 0;
+      const fakePrisma = {
+        $transaction: jest.fn().mockImplementation(async () => {
+          callCount++;
+          throw new Error('could not serialize access due to concurrent update (40001)');
+        }),
+      };
+
+      const service = new TradeSettlementService({ prismaClient: fakePrisma });
+      await expect(
+        service.settleExecution({ executionId: 'exec-exhaust-1', maxAttempts: 3 })
+      ).rejects.toThrow(/could not serialize access/);
+
+      expect(callCount).toBe(3);
+    });
+  });
 });

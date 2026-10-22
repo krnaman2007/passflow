@@ -843,6 +843,17 @@ export class WalletService {
         throw new WalletNotFoundError(`Wallet hold not found with id: ${holdId}`);
       }
 
+      // 1b. Enforce global lock hierarchy (Order -> Wallet -> WalletHold):
+      // When the hold is linked to an Order (either via hold.orderId or referenceType === 'ORDER'),
+      // acquire the Order row lock BEFORE acquiring the Wallet lock.
+      // This eliminates lock-order inversion deadlocks (40P01) against TradeSettlementService.
+      const linkedOrderId = initialHold.orderId || (referenceType === 'ORDER' ? referenceId : null);
+      if (linkedOrderId) {
+        await tx.$queryRaw`
+          SELECT id FROM "Order" WHERE id = ${linkedOrderId} FOR UPDATE
+        `;
+      }
+
       // 2. Lock the parent wallet row
       const walletRows = await tx.$queryRaw`
         SELECT * FROM "Wallet" WHERE id = ${initialHold.walletId} FOR UPDATE
@@ -853,9 +864,13 @@ export class WalletService {
       const wallet = walletRows[0];
 
       // 3. Re-read hold under lock to ensure authoritative state
-      const hold = await tx.walletHold.findUnique({
-        where: { id: holdId },
-      });
+      const holdRows = await tx.$queryRaw`
+        SELECT * FROM "WalletHold" WHERE id = ${holdId} FOR UPDATE
+      `;
+      if (!holdRows || holdRows.length === 0) {
+        throw new WalletNotFoundError(`Wallet hold not found with id: ${holdId}`);
+      }
+      const hold = holdRows[0];
 
       // 4. Validate hold active state
       const currentRemaining = BigInt(hold.remainingAmount);

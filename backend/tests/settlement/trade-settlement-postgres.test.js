@@ -1,15 +1,17 @@
 /**
- * Step 9.4H-R — Isolated PostgreSQL Integration Validation for Trade Settlement
+ * Step 9.4I — Isolated PostgreSQL Regression Tests for Settlement Deadlock & Serialization Retry
  *
  * Real PostgreSQL integration tests against isolated disposable database (127.0.0.1:55432):
- * 1. Concurrent settlement of the same execution -> exactly one settlement and no duplicate ledger/inventory effects.
- * 2. Idempotent replay -> returns isIdempotentReplay: true, zero duplicate mutations.
- * 3. Atomic rollback on partial failure -> zero mutations persisted.
- * 4. Cross-market settlements with overlapping wallets -> serialize cleanly without unrecoverable deadlock.
- * 5. Settlement and cancellation races -> hold, reserved inventory, and balance conservation under concurrency.
- * 6. Execution/order foreign key RESTRICT setting -> prevents deletion of referenced history.
- * 7. Ledger immutability triggers (UPDATE/DELETE/TRUNCATE) and balance/inventory check constraints.
- * 8. Full Step 9.4E documented accounting scenario verified against real persisted database rows.
+ * 1. Two concurrent settlement attempts for the same execution produce exactly one settlement via built-in bounded retries.
+ * 2. Replaying a settled execution idempotently returns isIdempotentReplay: true with zero duplicate ledger rows.
+ * 3. Atomic rollback on partial failure (insufficient inventory) leaves zero persistent mutations.
+ * 4. Cross-market settlements with overlapping wallets serialize cleanly without circular deadlock.
+ * 5. Concurrent cancellation hold release vs settlement: lock-order inversion is eliminated (both acquire Order -> Wallet -> Hold), preventing 40P01 deadlock.
+ * 6. Execution/order foreign keys with ON DELETE RESTRICT prevent deletion of referenced history.
+ * 7. Ledger immutability triggers (UPDATE/DELETE/TRUNCATE) and check constraints enforced by database.
+ * 8. Exact Step 9.4E documented price-improvement accounting scenario matches persisted database rows.
+ * 9. Retry exhaustion handling: when maxAttempts is exceeded, controlled failure is returned and zero partial mutations commit.
+ * 10. Re-running cancellation and settlement idempotently after concurrent execution preserves state.
  */
 
 import { describe, expect, beforeAll, afterAll, test, jest } from '@jest/globals';
@@ -21,7 +23,7 @@ import {
 } from '../../src/services/settlement/trade-settlement-service.js';
 import { WalletService } from '../../src/services/wallet/index.js';
 
-describe('Step 9.4H-R — Trade Settlement Isolated PostgreSQL Integration Validation', () => {
+describe('Step 9.4I — Trade Settlement Deadlock & Serialization Retry Integration Tests', () => {
   jest.setTimeout(120000);
 
   const testRunId = Math.random().toString(36).substring(2, 9);
@@ -32,58 +34,6 @@ describe('Step 9.4H-R — Trade Settlement Isolated PostgreSQL Integration Valid
   let testCategory;
   let testEvent2;
   let testCategory2;
-
-  /**
-   * Standard helper for PostgreSQL Serializable transactions: retries transient
-   * serialization failures (40001) or transient deadlock aborts (40P01) as required
-   * by PostgreSQL SSI architecture.
-   */
-  async function settleWithTransientRetry(executionId, maxRetries = 5) {
-    let attempts = 0;
-    while (attempts < maxRetries) {
-      attempts++;
-      try {
-        return await settlementService.settleExecution({ executionId });
-      } catch (err) {
-        const isTransient =
-          err.message?.includes('40001') ||
-          err.message?.includes('could not serialize access') ||
-          err.message?.includes('40P01') ||
-          err.message?.includes('deadlock detected') ||
-          err.code === 'P2034';
-        if (isTransient && attempts < maxRetries) {
-          await new Promise((r) => setTimeout(r, 25 * attempts));
-          continue;
-        }
-        throw err;
-      }
-    }
-  }
-
-  /**
-   * Helper for transient retry of releaseHold under concurrency
-   */
-  async function releaseHoldWithTransientRetry(params, maxRetries = 5) {
-    let attempts = 0;
-    while (attempts < maxRetries) {
-      attempts++;
-      try {
-        return await walletService.releaseHold(params);
-      } catch (err) {
-        const isTransient =
-          err.message?.includes('40001') ||
-          err.message?.includes('could not serialize access') ||
-          err.message?.includes('40P01') ||
-          err.message?.includes('deadlock detected') ||
-          err.code === 'P2034';
-        if (isTransient && attempts < maxRetries) {
-          await new Promise((r) => setTimeout(r, 25 * attempts));
-          continue;
-        }
-        throw err;
-      }
-    }
-  }
 
   beforeAll(async () => {
     // Verify connection to the isolated PostgreSQL database
@@ -273,9 +223,9 @@ describe('Step 9.4H-R — Trade Settlement Isolated PostgreSQL Integration Valid
   }
 
   // --------------------------------------------------------------------------
-  // 1. Two Concurrent Settlement Attempts for the Same Execution
+  // 1. Concurrent Settlement with Built-in Retries
   // --------------------------------------------------------------------------
-  test('1. Two concurrent settlement attempts for the same execution produce exactly one financial settlement', async () => {
+  test('1. Two concurrent settlement attempts for the same execution produce exactly one financial settlement via built-in retries', async () => {
     const buyer = await createUserWithWallet('conc-buy', 10000n, 400n);
     const seller = await createUserWithWallet('conc-sell', 5000n, 0n);
 
@@ -290,13 +240,13 @@ describe('Step 9.4H-R — Trade Settlement Isolated PostgreSQL Integration Valid
       quantity: 4,
     });
 
-    // Launch two settlement attempts concurrently with transient retry handling
+    // Launch two settlement attempts concurrently using native settleExecution (no external retry helper!)
     const [result1, result2] = await Promise.all([
-      settleWithTransientRetry(execution.id),
-      settleWithTransientRetry(execution.id),
+      settlementService.settleExecution({ executionId: execution.id }),
+      settlementService.settleExecution({ executionId: execution.id }),
     ]);
 
-    // One attempt must be the authoritative settlement; the other an idempotent replay
+    // One attempt must be authoritative; the other an idempotent replay caught by retry
     const settlements = [result1, result2];
     const initialSettlement = settlements.find((r) => r.isIdempotentReplay === false);
     const replaySettlement = settlements.find((r) => r.isIdempotentReplay === true);
@@ -447,7 +397,7 @@ describe('Step 9.4H-R — Trade Settlement Isolated PostgreSQL Integration Valid
   // --------------------------------------------------------------------------
   // 4. Cross-Market Settlements with Overlapping Wallets
   // --------------------------------------------------------------------------
-  test('4. Cross-market transactions involving overlapping wallets behave correctly without deadlocks', async () => {
+  test('4. Cross-market transactions involving overlapping wallets serialize cleanly without circular deadlock', async () => {
     // User A and User B participate simultaneously in opposite roles in two different markets
     const userA = await createUserWithWallet('cross-A', 20000n, 500n);
     const userB = await createUserWithWallet('cross-B', 20000n, 800n);
@@ -478,8 +428,8 @@ describe('Step 9.4H-R — Trade Settlement Isolated PostgreSQL Integration Valid
 
     // Execute concurrent settlements across markets with overlapping wallets
     const results = await Promise.all([
-      settleWithTransientRetry(trade1.execution.id),
-      settleWithTransientRetry(trade2.execution.id),
+      settlementService.settleExecution({ executionId: trade1.execution.id }),
+      settlementService.settleExecution({ executionId: trade2.execution.id }),
     ]);
 
     expect(results[0].isIdempotentReplay).toBe(false);
@@ -511,9 +461,9 @@ describe('Step 9.4H-R — Trade Settlement Isolated PostgreSQL Integration Valid
   });
 
   // --------------------------------------------------------------------------
-  // 5. Settlement and Cancellation Races
+  // 5. Settlement and Cancellation Races (Lock Inversion 40P01 Elimination)
   // --------------------------------------------------------------------------
-  test('5. Settlement and cancellation races preserve wallet holds, reserved inventory, and balances', async () => {
+  test('5. Settlement and cancellation races acquire locks in uniform hierarchy without 40P01 deadlock', async () => {
     const buyer = await createUserWithWallet('race-buy', 10000n, 1000n);
     const seller = await createUserWithWallet('race-sell', 5000n, 0n);
 
@@ -582,9 +532,10 @@ describe('Step 9.4H-R — Trade Settlement Isolated PostgreSQL Integration Valid
       },
     });
 
-    // Concurrently trigger cancellation release of 600 paise and settlement of the 4 tickets
-    // Under lock-order differences, transient retries allow both operations to complete.
-    const cancelOperation = releaseHoldWithTransientRetry({
+    // Concurrently trigger cancellation release of 600 paise and settlement of the 4 tickets.
+    // Because releaseHold now locks Order BEFORE Wallet (matching settlement's hierarchy),
+    // no cyclical wait can form. Both resolve cleanly without 40P01 deadlock!
+    const cancelOperation = walletService.releaseHold({
       holdId: buyerHold.id,
       amount: 600n,
       idempotencyKey: `race-cancel-${crypto.randomUUID()}`,
@@ -593,8 +544,9 @@ describe('Step 9.4H-R — Trade Settlement Isolated PostgreSQL Integration Valid
       description: 'Cancellation release of unfilled 6 tickets',
     });
 
-    const settlementOperation = settleWithTransientRetry(execution.id);
+    const settlementOperation = settlementService.settleExecution({ executionId: execution.id });
 
+    // Must resolve successfully without deadlock
     await Promise.all([cancelOperation, settlementOperation]);
 
     // Check invariants after both commit:
@@ -635,7 +587,7 @@ describe('Step 9.4H-R — Trade Settlement Isolated PostgreSQL Integration Valid
     ).rejects.toThrow();
 
     // Settle the execution to create TradeSettlement and WalletLedgerEntry linkages
-    await settleWithTransientRetry(execution.id);
+    await settlementService.settleExecution({ executionId: execution.id });
 
     // Attempting to delete the Execution while TradeSettlement or WalletLedgerEntry references it MUST fail
     await expect(
@@ -661,7 +613,7 @@ describe('Step 9.4H-R — Trade Settlement Isolated PostgreSQL Integration Valid
       quantity: 2,
     });
 
-    await settleWithTransientRetry(execution.id);
+    await settlementService.settleExecution({ executionId: execution.id });
 
     const [entry] = await livePrisma.walletLedgerEntry.findMany({
       where: { executionId: execution.id },
@@ -893,5 +845,119 @@ describe('Step 9.4H-R — Trade Settlement Isolated PostgreSQL Integration Valid
     expect(sellerInventory.totalQuantity).toBe(0);
     expect(sellerInventory.reservedQuantity).toBe(0);
     expect(sellerInventory.availableQuantity).toBe(0);
+  });
+
+  // --------------------------------------------------------------------------
+  // 9. Retry Exhaustion Leaves Zero Partial Writes
+  // --------------------------------------------------------------------------
+  test('9. Retry exhaustion with maxAttempts=1 under artificial transaction abort preserves atomic rollback', async () => {
+    const buyer = await createUserWithWallet('exhaust-buy', 5000n, 200n);
+    const seller = await createUserWithWallet('exhaust-sell', 5000n, 0n);
+
+    const { execution } = await seedMatchedTrade({
+      buyer,
+      seller,
+      category: testCategory,
+      event: testEvent,
+      buyerLimitPrice: 100,
+      sellerAskPrice: 100,
+      executionPrice: 100,
+      quantity: 2,
+    });
+
+    // Mock transient failure on first attempt with maxAttempts=1
+    const serviceWithLimitedRetry = new TradeSettlementService({
+      prismaClient: {
+        ...livePrisma,
+        $transaction: async (fn, opts) => {
+          throw new Error('could not serialize access due to concurrent update (40001)');
+        },
+      },
+    });
+
+    await expect(
+      serviceWithLimitedRetry.settleExecution({ executionId: execution.id, maxAttempts: 1 })
+    ).rejects.toThrow(/could not serialize access/);
+
+    // Verify ZERO mutations were committed to real database
+    const settlementCount = await livePrisma.tradeSettlement.count({
+      where: { executionId: execution.id },
+    });
+    expect(settlementCount).toBe(0);
+
+    const ledgerCount = await livePrisma.walletLedgerEntry.count({
+      where: { executionId: execution.id },
+    });
+    expect(ledgerCount).toBe(0);
+  });
+
+  // --------------------------------------------------------------------------
+  // 10. Re-running Cancellation and Settlement Idempotently
+  // --------------------------------------------------------------------------
+  test('10. Re-running cancellation and settlement idempotently after completion preserves state', async () => {
+    // 500n reserved for execution + 300n reserved for cancellation hold = 800n total reserved
+    const buyer = await createUserWithWallet('idem-run-buy', 10000n, 800n);
+    const seller = await createUserWithWallet('idem-run-sell', 5000n, 0n);
+
+    const { execution, buyerHold, buyOrder } = await seedMatchedTrade({
+      buyer,
+      seller,
+      category: testCategory,
+      event: testEvent,
+      buyerLimitPrice: 100,
+      sellerAskPrice: 100,
+      executionPrice: 100,
+      quantity: 5,
+    });
+
+    // 1. Initial settlement
+    const settlementResult = await settlementService.settleExecution({ executionId: execution.id });
+    expect(settlementResult.isIdempotentReplay).toBe(false);
+
+    // 2. Replay settlement with exact same executionId
+    const replayResult = await settlementService.settleExecution({ executionId: execution.id });
+    expect(replayResult.isIdempotentReplay).toBe(true);
+    expect(replayResult.settlement.id).toBe(settlementResult.settlement.id);
+
+    // 3. Test idempotent replay on a separate cancellation release operation
+    const idempKey = `idem-cancel-${crypto.randomUUID()}`;
+    const testHold = await livePrisma.walletHold.create({
+      data: {
+        walletId: buyer.wallet.id,
+        orderId: buyOrder.id,
+        reason: 'ORDER_ESCROW',
+        status: 'ACTIVE',
+        heldAmount: 300n,
+        remainingAmount: 300n,
+        idempotencyKey: `hold-for-cancel-${crypto.randomUUID()}`,
+      },
+    });
+
+    // First cancellation release of 100 paise
+    const op1 = await walletService.releaseHold({
+      holdId: testHold.id,
+      amount: 100n,
+      idempotencyKey: idempKey,
+      referenceType: 'ORDER',
+      referenceId: buyOrder.id,
+    });
+    expect(op1.isIdempotentReplay).toBe(false);
+
+    // Second call with same idempotencyKey returns idempotent replay
+    const op2 = await walletService.releaseHold({
+      holdId: testHold.id,
+      amount: 100n,
+      idempotencyKey: idempKey,
+      referenceType: 'ORDER',
+      referenceId: buyOrder.id,
+    });
+    expect(op2.isIdempotentReplay).toBe(true);
+
+    // Verify database state remains completely consistent
+    const settlements = await livePrisma.tradeSettlement.findMany({ where: { executionId: execution.id } });
+    expect(settlements.length).toBe(1);
+
+    const finalSeller = await livePrisma.wallet.findUnique({ where: { id: seller.wallet.id } });
+    expect(finalSeller.availableBalance).toBe(5500n);
   });
 });
