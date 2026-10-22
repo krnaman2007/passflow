@@ -5,6 +5,7 @@ import {
   TradeSettlementService,
 } from '../../src/services/settlement/trade-settlement-service.js';
 import { OrderService } from '../../src/services/order/order-service.js';
+import { WalletService } from '../../src/services/wallet/wallet-service.js';
 
 describe('TradeSettlement accounting', () => {
   test('preserves the specified partial-fill accounting progression', () => {
@@ -72,6 +73,33 @@ describe('TradeSettlement accounting', () => {
     await service._settleExecutions([{ id: 'execution-1' }, { id: 'execution-2' }]);
     expect(settleExecution).toHaveBeenNthCalledWith(1, { executionId: 'execution-1' });
     expect(settleExecution).toHaveBeenNthCalledWith(2, { executionId: 'execution-2' });
+  });
+
+  test('locks a linked order before its wallet while reserving funds', async () => {
+    const lockQueries = [];
+    const wallet = {
+      id: 'wallet-1', userId: 'buyer-1', currency: 'INR', availableBalance: 1_000n,
+      reservedBalance: 0n, version: 0n,
+    };
+    const tx = {
+      $queryRaw: async (strings) => {
+        const sql = strings.join('');
+        lockQueries.push(sql);
+        return sql.includes('"Order"') ? [{ id: 'order-1' }] : [wallet];
+      },
+      financialOperation: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'operation-1', idempotencyKey: 'reserve-1', operationType: 'ORDER_ESCROW', status: 'COMPLETED' }),
+      },
+      walletHold: { create: jest.fn().mockResolvedValue({ id: 'hold-1', walletId: 'wallet-1', orderId: 'order-1', reason: 'ORDER_ESCROW', status: 'ACTIVE', heldAmount: 100n, remainingAmount: 100n, idempotencyKey: 'reserve-1' }) },
+      walletLedgerEntry: { create: jest.fn().mockResolvedValue({ id: 'ledger-1', walletId: 'wallet-1', amount: 100n, availableDelta: -100n, reservedDelta: 100n, balanceAfterAvailable: 900n, balanceAfterReserved: 100n, entryType: 'ORDER_HOLD' }) },
+      wallet: { update: jest.fn().mockResolvedValue({ ...wallet, availableBalance: 900n, reservedBalance: 100n, version: 1n }) },
+    };
+    await new WalletService({ prismaClient: {} }).reserveFunds({
+      walletId: 'wallet-1', amount: 100n, orderId: 'order-1', idempotencyKey: 'reserve-1',
+    }, tx);
+    expect(lockQueries[0]).toContain('"Order"');
+    expect(lockQueries[1]).toContain('"Wallet"');
   });
 
   describe('Transient conflict detection and bounded retries', () => {
