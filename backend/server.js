@@ -4,7 +4,7 @@ import app from './src/app.js';
 import config from './src/config/index.js';
 import logger from './src/errorlogging/logger.js';
 import { checkDatabaseConnections } from './src/db/index.js';
-import { tradeSettlementService } from './src/services/settlement/index.js';
+import { tradeSettlementService, settlementRecoveryWorker } from './src/services/settlement/index.js';
 
 const server = http.createServer(app);
 
@@ -57,10 +57,31 @@ server.listen(config.port, async () => {
   logger.info(`🔌 Socket.IO Server: Initialized & Listening`);
   console.log('--------------------------------------------------');
   await checkDatabaseConnections();
-  // Bounded at-least-once recovery. Multiple instances are safe because each
+  // Bounded at-least-once recovery on startup. Multiple instances are safe because each
   // attempt claims its Execution row inside the settlement transaction.
   await recoverSettlements();
+  // Start the recurring recovery worker for post-match executions interrupted while running
+  settlementRecoveryWorker.start();
   console.log('==================================================\n');
 });
 
-export { app, server, io };
+let isShuttingDown = false;
+const gracefulShutdown = async (signal) => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  logger.info(`Received ${signal}. Shutting down gracefully...`);
+  try {
+    await settlementRecoveryWorker.stop({ timeoutMs: 5000 });
+  } catch (err) {
+    logger.error('Error stopping settlement recovery worker during shutdown', err);
+  }
+  server.close(() => {
+    logger.info('HTTP server closed');
+    process.exit(0);
+  });
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+export { app, server, io, settlementRecoveryWorker };

@@ -1645,8 +1645,26 @@ model TradeSettlement {
 
 #### 5.18.10 Settlement Dispatch and Recovery Boundaries
 - `OrderService` dispatches settlement only after matching has committed an execution. An idempotent order replay re-dispatches its persisted executions.
-- The server runs a bounded startup scan of unsettled executions (100 maximum). It is safe across instances because settlement claims the execution row in PostgreSQL.
-- Startup recovery is not a continuous scheduler. A permanently running deployment needs an external, bounded job to call `recoverUnsettled`; neither matching nor the process-local market queue provides distributed recovery coordination.
+- The server runs a bounded startup scan of unsettled executions (100 maximum) during initialization. It is safe across instances because settlement claims the execution row in PostgreSQL.
+- In addition to startup recovery, Step 9.5 introduces a recurring recovery worker (`SettlementRecoveryWorker`) to continuously recover executions interrupted by crashes or transient failures.
+
+#### 5.18.11 Step 9.5 Recurring Settlement Recovery Worker
+- **Module**: `backend/src/services/settlement/settlement-recovery-worker.js` (exported from `backend/src/services/settlement/index.js`).
+- **Configuration**:
+  - `intervalMs`: Polling interval in milliseconds via `SETTLEMENT_RECOVERY_INTERVAL_MS` (default: 10,000ms / 10s).
+  - `batchSize`: Maximum executions per recovery tick via `SETTLEMENT_RECOVERY_BATCH_SIZE` (default: 100, clamped to [1, 500]).
+- **Concurrency & Overlapping Tick Protection**:
+  - Single active polling loop per Node.js process. An internal `isTickInProgress` guard prevents concurrent tick execution within the same process.
+  - Cross-process and cross-instance safety: multiple worker processes safely race and serialize on database-level row locks (`SELECT * FROM "Execution" WHERE id = ... FOR UPDATE`) inside Serializable PostgreSQL transactions.
+  - Idempotent settlement: completed settlements return `{ isIdempotentReplay: true }` without duplicating financial ledger entries or ticket transfers.
+- **Error Handling & Failure Policy**:
+  - Unhandled tick exceptions are caught, logged with structured metadata, and do NOT crash the worker or stop future polling ticks.
+  - Per-execution errors during a batch are returned as `{ executionId, settled: false, error }`, permitting healthy executions in the same batch to settle successfully.
+- **Lifecycle Integration**:
+  - Starts after database connection and startup recovery in `server.js`.
+  - Graceful shutdown on `SIGTERM` and `SIGINT`: `stop({ timeoutMs: 5000 })` cancels pending timers and awaits completion of any in-flight tick within a bounded 5s window.
+- **Operational Starvation Boundary**:
+  - `recoverUnsettled` processes executions in ascending sequence order (`orderBy: { sequenceNumber: 'asc' }`). If executions fail due to permanent invariant errors (e.g. corrupted test data), they remain with `settlement: null`. If accumulated permanent failures equal or exceed `batchSize`, newer unsettled executions could be delayed until operator intervention or batch size increase.
 
 
 

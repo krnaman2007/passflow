@@ -89,24 +89,55 @@ export class TradeSettlementService {
     }
   }
 
-  async recoverUnsettled({ batchSize = 100 } = {}) {
+  async recoverUnsettled({ batchSize = 100, afterSequenceNumber = null } = {}) {
     if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 500) {
       throw new SettlementInvariantError('batchSize must be an integer from 1 to 500');
     }
+    let cursor = null;
+    if (afterSequenceNumber !== undefined && afterSequenceNumber !== null) {
+      if (typeof afterSequenceNumber === 'bigint') {
+        if (afterSequenceNumber < 0n) {
+          throw new SettlementInvariantError('afterSequenceNumber must be a non-negative integer');
+        }
+        cursor = afterSequenceNumber;
+      } else if (typeof afterSequenceNumber === 'number' && Number.isSafeInteger(afterSequenceNumber) && afterSequenceNumber >= 0) {
+        cursor = BigInt(afterSequenceNumber);
+      } else if (typeof afterSequenceNumber === 'string' && /^\d+$/.test(afterSequenceNumber)) {
+        cursor = BigInt(afterSequenceNumber);
+      } else {
+        throw new SettlementInvariantError('afterSequenceNumber must be a non-negative integer or bigint');
+      }
+    }
+
+    const where = {
+      settlement: null,
+      ...(cursor !== null ? { sequenceNumber: { gt: cursor } } : {}),
+    };
+
     const executions = await this.prisma.execution.findMany({
-      where: { settlement: null },
-      select: { id: true },
+      where,
+      select: { id: true, sequenceNumber: true },
       orderBy: { sequenceNumber: 'asc' },
       take: batchSize,
     });
     const results = [];
     for (const execution of executions) {
       try {
-        results.push(await this.settleExecution({ executionId: execution.id }));
+        const settlementOutcome = await this.settleExecution({ executionId: execution.id });
+        results.push({
+          ...settlementOutcome,
+          executionId: execution.id,
+          sequenceNumber: execution.sequenceNumber,
+        });
       } catch (error) {
         // A later recovery pass retries only transient failures.  Integrity errors
         // are returned to the caller instead of being hidden or auto-compensated.
-        results.push({ executionId: execution.id, settled: false, error });
+        results.push({
+          executionId: execution.id,
+          sequenceNumber: execution.sequenceNumber,
+          settled: false,
+          error,
+        });
       }
     }
     return results;

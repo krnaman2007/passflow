@@ -21,6 +21,7 @@ import {
   TradeSettlementService,
   SettlementInvariantError,
 } from '../../src/services/settlement/trade-settlement-service.js';
+import { SettlementRecoveryWorker } from '../../src/services/settlement/settlement-recovery-worker.js';
 import { WalletService } from '../../src/services/wallet/index.js';
 
 describe('Step 9.4I — Trade Settlement Deadlock & Serialization Retry Integration Tests', () => {
@@ -959,5 +960,76 @@ describe('Step 9.4I — Trade Settlement Deadlock & Serialization Retry Integrat
 
     const finalSeller = await livePrisma.wallet.findUnique({ where: { id: seller.wallet.id } });
     expect(finalSeller.availableBalance).toBe(5500n);
+  });
+
+  // --------------------------------------------------------------------------
+  // 11. Recurring Settlement Recovery Worker Integration (Real PostgreSQL)
+  // --------------------------------------------------------------------------
+  test('11. SettlementRecoveryWorker processes pending executions and avoids duplicate financial effects', async () => {
+    const buyer = await createUserWithWallet('worker-buy', 5000n, 300n);
+    const seller = await createUserWithWallet('worker-sell', 5000n, 0n);
+
+    // Seed matched trade without settling it yet
+    const { execution } = await seedMatchedTrade({
+      buyer,
+      seller,
+      category: testCategory,
+      event: testEvent,
+      buyerLimitPrice: 100,
+      sellerAskPrice: 100,
+      executionPrice: 100,
+      quantity: 3,
+    });
+
+    // Verify initially unsettled
+    const initialSettlement = await livePrisma.tradeSettlement.findUnique({
+      where: { executionId: execution.id },
+    });
+    expect(initialSettlement).toBeNull();
+
+    const worker = new SettlementRecoveryWorker({
+      settlementService,
+      intervalMs: 1000,
+      batchSize: 500,
+      loggerInstance: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    // Run a single recovery tick
+    worker.isRunning = true;
+    const tickResults = await worker.tick();
+    const settledExecution = tickResults.find((r) => r.settlement?.executionId === execution.id);
+    expect(settledExecution).toBeDefined();
+    expect(settledExecution.isIdempotentReplay).toBe(false);
+
+    // Verify trade settlement row exists in PostgreSQL
+    const createdSettlement = await livePrisma.tradeSettlement.findUnique({
+      where: { executionId: execution.id },
+    });
+    expect(createdSettlement).not.toBeNull();
+    expect(createdSettlement.quantity).toBe(3);
+
+    // Verify seller wallet credited by 300 paise
+    const updatedSeller = await livePrisma.wallet.findUnique({ where: { id: seller.wallet.id } });
+    expect(updatedSeller.availableBalance).toBe(5300n);
+
+    // Run second recovery tick on the same database
+    await worker.tick();
+
+    // Settle attempt directly on settled execution returns idempotent replay
+    const directReplay = await settlementService.settleExecution({ executionId: execution.id });
+    expect(directReplay.isIdempotentReplay).toBe(true);
+
+    // Verify exactly 1 settlement and 2 ledger entries exist
+    const settlementsCount = await livePrisma.tradeSettlement.count({
+      where: { executionId: execution.id },
+    });
+    expect(settlementsCount).toBe(1);
+
+    const ledgerEntriesCount = await livePrisma.walletLedgerEntry.count({
+      where: { executionId: execution.id },
+    });
+    expect(ledgerEntriesCount).toBe(2);
+
+    await worker.stop();
   });
 });
