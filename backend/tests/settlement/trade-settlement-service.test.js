@@ -170,4 +170,61 @@ describe('TradeSettlement accounting', () => {
       expect(callCount).toBe(3);
     });
   });
+
+  describe('recoverUnsettled with keyset pagination', () => {
+    test('enforces batchSize bounds (1 to 500)', async () => {
+      const service = new TradeSettlementService({ prismaClient: {} });
+      await expect(service.recoverUnsettled({ batchSize: 0 })).rejects.toThrow(SettlementInvariantError);
+      await expect(service.recoverUnsettled({ batchSize: 501 })).rejects.toThrow(SettlementInvariantError);
+      await expect(service.recoverUnsettled({ batchSize: -10 })).rejects.toThrow(SettlementInvariantError);
+      await expect(service.recoverUnsettled({ batchSize: 'not-a-number' })).rejects.toThrow(SettlementInvariantError);
+    });
+
+    test('validates afterSequenceNumber parameter format', async () => {
+      const service = new TradeSettlementService({ prismaClient: {} });
+      await expect(service.recoverUnsettled({ batchSize: 10, afterSequenceNumber: -5n })).rejects.toThrow(
+        SettlementInvariantError
+      );
+      await expect(service.recoverUnsettled({ batchSize: 10, afterSequenceNumber: 'abc' })).rejects.toThrow(
+        SettlementInvariantError
+      );
+    });
+
+    test('queries Prisma with sequenceNumber gt cursor and includes sequenceNumber in results', async () => {
+      const mockFindMany = jest.fn().mockResolvedValue([
+        { id: 'exec-1', sequenceNumber: 101n },
+        { id: 'exec-2', sequenceNumber: 102n },
+      ]);
+      const fakePrisma = {
+        execution: { findMany: mockFindMany },
+      };
+
+      const service = new TradeSettlementService({ prismaClient: fakePrisma });
+      service.settleExecution = jest.fn()
+        .mockResolvedValueOnce({ settlement: { id: 'settle-1', executionId: 'exec-1' }, isIdempotentReplay: false })
+        .mockRejectedValueOnce(new SettlementInvariantError('Seller inventory missing'));
+
+      const results = await service.recoverUnsettled({ batchSize: 50, afterSequenceNumber: 100n });
+
+      expect(mockFindMany).toHaveBeenCalledWith({
+        where: {
+          settlement: null,
+          sequenceNumber: { gt: 100n },
+        },
+        select: { id: true, sequenceNumber: true },
+        orderBy: { sequenceNumber: 'asc' },
+        take: 50,
+      });
+
+      expect(results).toHaveLength(2);
+      expect(results[0].executionId).toBe('exec-1');
+      expect(results[0].sequenceNumber).toBe(101n);
+      expect(results[0].settlement.id).toBe('settle-1');
+
+      expect(results[1].executionId).toBe('exec-2');
+      expect(results[1].sequenceNumber).toBe(102n);
+      expect(results[1].settled).toBe(false);
+      expect(results[1].error.message).toContain('Seller inventory missing');
+    });
+  });
 });

@@ -28,8 +28,14 @@ import {
   parseMarketKey,
 } from './market-execution-queue.js';
 import { OrderRepository, MarketStateDivergenceError } from './order-repository.js';
+import {
+  MarketLeaseManager,
+  verifyFencingToken,
+  MarketOwnershipError,
+  FencingViolationError,
+} from './market-lease-manager.js';
 
-export { MarketStateDivergenceError };
+export { MarketStateDivergenceError, MarketOwnershipError, FencingViolationError };
 
 /**
  * Error thrown when an incoming order fails input validation.
@@ -273,23 +279,51 @@ export class PersistentMatchingService {
    * @param {MarketExecutionQueue} [options.queue]
    * @param {MatchingCoordinator} [options.coordinator]
    * @param {MarketStateManager} [options.stateManager]
+   * @param {MarketLeaseManager} [options.leaseManager]
+   * @param {boolean} [options.requireMarketLease]
+   * @param {number} [options.leaseDurationMs]
    */
   constructor({
     repository = new OrderRepository(),
     queue = new MarketExecutionQueue(),
     coordinator = new MatchingCoordinator(),
     stateManager,
+    leaseManager,
+    requireMarketLease,
+    leaseDurationMs,
   } = {}) {
     this.repository = repository;
     this.queue = queue;
     this.coordinator = coordinator;
     this.stateManager = stateManager || queue.getStateManager();
 
+    // Initialize distributed lease manager if database supports raw queries
+    if (leaseManager) {
+      this.leaseManager = leaseManager;
+    } else if (this.repository && this.repository.prisma && typeof this.repository.prisma.$queryRaw === 'function') {
+      this.leaseManager = new MarketLeaseManager({
+        prismaClient: this.repository.prisma,
+        defaultLeaseDurationMs: leaseDurationMs,
+      });
+    } else {
+      this.leaseManager = null;
+    }
+
+    this.requireMarketLease = requireMarketLease !== undefined
+      ? Boolean(requireMarketLease)
+      : (process.env.ENABLE_DISTRIBUTED_MARKET_LEASES === 'true' || process.env.REQUIRE_MARKET_LEASE === 'true');
+
     /**
      * Map of marketKey -> in-memory OrderBook instance.
      * @type {Map<string, import('./order-book.js').OrderBook>}
      */
     this._marketBooks = new Map();
+
+    /**
+     * Map of marketKey -> cached lease details { marketKey, eventId, ticketCategoryId, ownerId, fencingToken, expiresAt, leaseDurationMs }.
+     * @type {Map<string, Object>}
+     */
+    this._marketLeases = new Map();
 
     /**
      * Set of market keys verified as synchronized with PostgreSQL.
@@ -801,19 +835,174 @@ export class PersistentMatchingService {
 
   /**
    * Initializes a market from cold start, reconstructing from PostgreSQL and transitioning to READY.
+   * If requireMarketLease is enabled, acquires distributed lease before reconstruction.
    *
    * @param {string|Object} marketKeyOrConfig
+   * @param {Object} [options]
+   * @param {boolean} [options.acquireLease=true]
+   * @param {number} [options.leaseDurationMs]
    * @returns {Promise<Object>}
    */
-  async initializeAndSynchronizeMarket(marketKeyOrConfig) {
+  async initializeAndSynchronizeMarket(marketKeyOrConfig, { acquireLease = this.requireMarketLease, leaseDurationMs } = {}) {
     const marketKey = this._resolveKey(marketKeyOrConfig);
     const { eventId, ticketCategoryId } = parseMarketKey(marketKey);
+
+    if (acquireLease && this.leaseManager) {
+      return this.acquireMarketOwnership(marketKey, { leaseDurationMs, reconstruct: true });
+    }
 
     if (!this._marketBooks.has(marketKey)) {
       this.registerMarketBook(marketKey, new OrderBook({ eventId, ticketCategoryId }), { synchronized: false });
     }
 
     return this.reconstructMarket(marketKey, { targetState: MarketState.READY });
+  }
+
+  /**
+   * Acquires exclusive distributed ownership for a market, starts autonomous renewal,
+   * and optionally reconstructs the order book from PostgreSQL.
+   *
+   * @param {string|Object} marketKeyOrConfig
+   * @param {Object} [options]
+   * @param {number} [options.leaseDurationMs]
+   * @param {boolean} [options.reconstruct=true]
+   * @returns {Promise<Object>}
+   */
+  async acquireMarketOwnership(marketKeyOrConfig, { leaseDurationMs, reconstruct = true } = {}) {
+    const marketKey = this._resolveKey(marketKeyOrConfig);
+    const { eventId, ticketCategoryId } = parseMarketKey(marketKey);
+
+    if (!this.leaseManager) {
+      throw new MarketOwnershipError(
+        `Cannot acquire market lease for "${marketKey}": no MarketLeaseManager configured`,
+        { code: 'NO_LEASE_MANAGER', marketKey }
+      );
+    }
+
+    const result = await this.leaseManager.acquireLease({
+      eventId,
+      ticketCategoryId,
+      leaseDurationMs,
+    });
+
+    if (!result.acquired) {
+      throw new MarketOwnershipError(
+        `Market lease unavailable for "${marketKey}": owned by instance "${result.ownerId}"`,
+        {
+          code: 'MARKET_LEASE_UNAVAILABLE',
+          marketKey,
+          eventId,
+          ticketCategoryId,
+          ownerId: result.ownerId,
+          fencingToken: result.fencingToken,
+          expiresAt: result.expiresAt,
+          reason: result.reason,
+        }
+      );
+    }
+
+    const leaseInfo = {
+      marketKey,
+      eventId,
+      ticketCategoryId,
+      ownerId: result.ownerId,
+      fencingToken: result.fencingToken,
+      expiresAt: result.expiresAt,
+      leaseDurationMs: leaseDurationMs || this.leaseManager.defaultLeaseDurationMs,
+    };
+    this._marketLeases.set(marketKey, leaseInfo);
+
+    // Start autonomous periodic renewal
+    this.leaseManager.startAutoRenewal(marketKey, {
+      onRenewalFailure: (err) => {
+        this._marketLeases.delete(marketKey);
+        try {
+          this.stateManager.transition(marketKey, MarketState.RECONCILING);
+        } catch {
+          // Ignore if already transitioning
+        }
+      },
+    });
+
+    if (!this._marketBooks.has(marketKey)) {
+      this.registerMarketBook(marketKey, new OrderBook({ eventId, ticketCategoryId }), { synchronized: false });
+    }
+
+    let reconResult = null;
+    if (reconstruct) {
+      reconResult = await this.reconstructMarket(marketKey, { targetState: MarketState.READY });
+    }
+
+    return {
+      marketKey,
+      eventId,
+      ticketCategoryId,
+      ownerId: result.ownerId,
+      fencingToken: result.fencingToken,
+      expiresAt: result.expiresAt,
+      takeover: Boolean(result.takeover),
+      renewed: Boolean(result.renewed),
+      ...(reconResult || {}),
+      reconstruction: reconResult,
+    };
+  }
+
+  /**
+   * Releases exclusive distributed ownership of a market and stops renewal.
+   *
+   * @param {string|Object} marketKeyOrConfig
+   * @returns {Promise<Object>}
+   */
+  async releaseMarketOwnership(marketKeyOrConfig) {
+    const marketKey = this._resolveKey(marketKeyOrConfig);
+    const { eventId, ticketCategoryId } = parseMarketKey(marketKey);
+
+    const lease = this._marketLeases.get(marketKey);
+    this._marketLeases.delete(marketKey);
+
+    let releaseResult = { released: false };
+    if (this.leaseManager) {
+      this.leaseManager.stopAutoRenewal(marketKey);
+      if (lease) {
+        releaseResult = await this.leaseManager.releaseLease({
+          eventId,
+          ticketCategoryId,
+          expectedFencingToken: lease.fencingToken,
+        });
+      }
+    }
+
+    try {
+      this.stateManager.transition(marketKey, MarketState.RECONCILING);
+    } catch {
+      // Ignore transition error
+    }
+
+    return releaseResult;
+  }
+
+  /**
+   * Retrieves active lease information for a market.
+   *
+   * @param {string|Object} marketKeyOrConfig
+   * @returns {Object|null}
+   */
+  getMarketLease(marketKeyOrConfig) {
+    const marketKey = this._resolveKey(marketKeyOrConfig);
+    const lease = this._marketLeases.get(marketKey);
+    if (!lease) return null;
+    return { ...lease };
+  }
+
+  /**
+   * Releases all actively owned market leases on graceful shutdown.
+   *
+   * @returns {Promise<Array<Object>>}
+   */
+  async releaseAllLeases() {
+    this._marketLeases.clear();
+    if (!this.leaseManager) return [];
+    return this.leaseManager.releaseAll();
   }
 
   /**
@@ -857,6 +1046,54 @@ export class PersistentMatchingService {
   isMarketSynchronized(marketKeyOrConfig) {
     const marketKey = this._resolveKey(marketKeyOrConfig);
     return this._synchronizedMarkets.has(marketKey) && !this._corruptedMarkets.has(marketKey);
+  }
+
+  /**
+   * Evaluates the operational readiness and integrity of the matching coordinator:
+   * - Must have state manager and execution queue initialized.
+   * - Must not have any markets flagged as corrupted in `_corruptedMarkets`.
+   * - None of the registered markets may be actively in RECONCILING state.
+   *
+   * @returns {{ ready: boolean, reason?: string, details?: Object }}
+   */
+  checkReadiness() {
+    if (!this.stateManager || !this.queue) {
+      return { ready: false, reason: 'Matching coordinator sub-services not initialized' };
+    }
+    if (this._corruptedMarkets && this._corruptedMarkets.size > 0) {
+      return {
+        ready: false,
+        reason: 'One or more markets are flagged as corrupted or require reconciliation',
+        corruptedCount: this._corruptedMarkets.size,
+      };
+    }
+    if (this.stateManager && typeof this.stateManager.getRegisteredMarkets === 'function') {
+      const registered = this.stateManager.getRegisteredMarkets();
+      for (const key of registered) {
+        const state = this.stateManager.getState(key);
+        if (state === MarketState.RECONCILING) {
+          return {
+            ready: false,
+            reason: `Market "${key}" is currently reconciling`,
+            marketKey: key,
+          };
+        }
+      }
+    }
+    if (this.requireMarketLease && this._marketLeases) {
+      for (const [key, lease] of this._marketLeases.entries()) {
+        const state = this.stateManager ? this.stateManager.getState(key) : null;
+        if (state === MarketState.READY) {
+          if (this.leaseManager && !this.leaseManager.isLeaseActive(key)) {
+            return {
+              ready: false,
+              reason: `Market "${key}" lease is expired or lost`,
+            };
+          }
+        }
+      }
+    }
+    return { ready: true };
   }
 
   /**
@@ -1058,6 +1295,31 @@ export class PersistentMatchingService {
       // 3. Verify market readiness inside serialized boundary
       this.stateManager.assertReady(marketKey);
 
+      // Verify active market lease if distributed coordination is enabled
+      let leaseContext = null;
+      const hasCachedLease = this._marketLeases.has(marketKey);
+      if (this.requireMarketLease || hasCachedLease) {
+        const lease = this._marketLeases.get(marketKey);
+        if (!lease) {
+          throw new MarketOwnershipError(
+            `Cannot submit order for market "${marketKey}": this instance does not hold an active market lease`,
+            { code: 'NO_MARKET_LEASE', marketKey }
+          );
+        }
+        if (this.leaseManager && !this.leaseManager.isLeaseActive(marketKey)) {
+          throw new MarketOwnershipError(
+            `Cannot submit order for market "${marketKey}": market lease has expired`,
+            { code: 'LEASE_EXPIRED', marketKey }
+          );
+        }
+        leaseContext = {
+          ownerId: lease.ownerId,
+          fencingToken: lease.fencingToken,
+          eventId: validatedOrder.eventId,
+          ticketCategoryId: validatedOrder.ticketCategoryId,
+        };
+      }
+
       // Verify in-memory OrderBook is registered
       const book = this._marketBooks.get(marketKey);
       if (!book) {
@@ -1161,8 +1423,20 @@ export class PersistentMatchingService {
           incomingOrderData,
           restingUpdates,
           executionsData,
+          leaseContext,
         });
       } catch (err) {
+        // Handle fencing violation: former owner rejected by database boundary
+        if (err instanceof FencingViolationError || err.name === 'FencingViolationError') {
+          this._marketLeases.delete(marketKey);
+          if (this.leaseManager) {
+            this.leaseManager.stopAutoRenewal(marketKey);
+          }
+          try {
+            this.stateManager.transition(marketKey, MarketState.RECONCILING);
+          } catch {}
+          throw err;
+        }
         // Handle database uniqueness collision (concurrent idempotency retry race)
         if (err.code === 'P2002') {
           if (!isIdempotencyKeyConstraintViolation(err)) {
@@ -1284,6 +1558,31 @@ export class PersistentMatchingService {
       // 1. Verify market readiness
       this.stateManager.assertReady(marketKey);
 
+      // Verify active market lease if distributed coordination is enabled
+      let leaseContext = null;
+      const hasCachedLease = this._marketLeases.has(marketKey);
+      if (this.requireMarketLease || hasCachedLease) {
+        const lease = this._marketLeases.get(marketKey);
+        if (!lease) {
+          throw new MarketOwnershipError(
+            `Cannot cancel order for market "${marketKey}": this instance does not hold an active market lease`,
+            { code: 'NO_MARKET_LEASE', marketKey }
+          );
+        }
+        if (this.leaseManager && !this.leaseManager.isLeaseActive(marketKey)) {
+          throw new MarketOwnershipError(
+            `Cannot cancel order for market "${marketKey}": market lease has expired`,
+            { code: 'LEASE_EXPIRED', marketKey }
+          );
+        }
+        leaseContext = {
+          ownerId: lease.ownerId,
+          fencingToken: lease.fencingToken,
+          eventId: eventId.trim(),
+          ticketCategoryId: ticketCategoryId.trim(),
+        };
+      }
+
       const book = this._marketBooks.get(marketKey);
       if (!book) {
         throw new MarketStateDivergenceError(
@@ -1293,10 +1592,15 @@ export class PersistentMatchingService {
       }
 
       // 2. Execute cancellation inside an atomic transaction
-      return this.repository.prisma.$transaction(async (tx) => {
-        const order = await tx.order.findUnique({
-          where: { id: orderId },
-        });
+      try {
+        return await this.repository.prisma.$transaction(async (tx) => {
+          if (leaseContext) {
+            await verifyFencingToken(tx, leaseContext);
+          }
+
+          const order = await tx.order.findUnique({
+            where: { id: orderId },
+          });
 
         if (!order) {
           throw new OrderValidationError(`Order not found: ${orderId}`, 'orderId');
@@ -1361,6 +1665,18 @@ export class PersistentMatchingService {
           userId: updatedOrder.userId,
         };
       });
+      } catch (err) {
+        if (err instanceof FencingViolationError || err.name === 'FencingViolationError') {
+          this._marketLeases.delete(marketKey);
+          if (this.leaseManager) {
+            this.leaseManager.stopAutoRenewal(marketKey);
+          }
+          try {
+            this.stateManager.transition(marketKey, MarketState.RECONCILING);
+          } catch {}
+        }
+        throw err;
+      }
     });
   }
 }

@@ -14,3 +14,7 @@ export {
   InsufficientFundsError,
   IdempotencyConflictError,
 } from '../wallet/wallet-errors.js';
+
+import { OrderService } from './order-service.js';
+export const orderService = new OrderService();
+export default orderService;

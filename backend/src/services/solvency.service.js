@@ -110,6 +110,26 @@ class SolvencyService {
 
     this.proofs.unshift(proof);
 
+    // Persist to SolvencyProof table in DB (non-blocking fallback)
+    try {
+      await prisma.solvencyProof.create({
+        data: {
+          id: proof.id,
+          userId: options.userId || null,
+          liabilities: proof.liabilities,
+          escrowBalance: proof.escrowBalance,
+          backingAssets: proof.backingAssets,
+          isSolvent: proof.isSolvent,
+          ratio: proof.ratio,
+          proofHash: proof.proofHash,
+          notes: proof.notes,
+          verifiedAt: new Date(proof.verifiedAt),
+        },
+      });
+    } catch {
+      // Non-blocking fallback
+    }
+
     // Persist to monitoring log in DB (non-blocking)
     try {
       await prisma.monitoring.create({

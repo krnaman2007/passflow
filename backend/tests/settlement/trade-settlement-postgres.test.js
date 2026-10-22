@@ -21,6 +21,7 @@ import {
   TradeSettlementService,
   SettlementInvariantError,
 } from '../../src/services/settlement/trade-settlement-service.js';
+import { SettlementRecoveryWorker } from '../../src/services/settlement/settlement-recovery-worker.js';
 import { WalletService } from '../../src/services/wallet/index.js';
 
 describe('Step 9.4I — Trade Settlement Deadlock & Serialization Retry Integration Tests', () => {
@@ -959,5 +960,229 @@ describe('Step 9.4I — Trade Settlement Deadlock & Serialization Retry Integrat
 
     const finalSeller = await livePrisma.wallet.findUnique({ where: { id: seller.wallet.id } });
     expect(finalSeller.availableBalance).toBe(5500n);
+  });
+
+  // --------------------------------------------------------------------------
+  // 11. Recurring Settlement Recovery Worker Integration (Real PostgreSQL)
+  // --------------------------------------------------------------------------
+  test('11. SettlementRecoveryWorker processes pending executions and avoids duplicate financial effects', async () => {
+    const buyer = await createUserWithWallet('worker-buy', 5000n, 300n);
+    const seller = await createUserWithWallet('worker-sell', 5000n, 0n);
+
+    // Seed matched trade without settling it yet
+    const { execution } = await seedMatchedTrade({
+      buyer,
+      seller,
+      category: testCategory,
+      event: testEvent,
+      buyerLimitPrice: 100,
+      sellerAskPrice: 100,
+      executionPrice: 100,
+      quantity: 3,
+    });
+
+    // Verify initially unsettled
+    const initialSettlement = await livePrisma.tradeSettlement.findUnique({
+      where: { executionId: execution.id },
+    });
+    expect(initialSettlement).toBeNull();
+
+    const worker = new SettlementRecoveryWorker({
+      settlementService,
+      intervalMs: 1000,
+      batchSize: 500,
+      loggerInstance: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    // Run a single recovery tick
+    worker.isRunning = true;
+    const tickResults = await worker.tick();
+    const settledExecution = tickResults.find((r) => r.settlement?.executionId === execution.id);
+    expect(settledExecution).toBeDefined();
+    expect(settledExecution.isIdempotentReplay).toBe(false);
+
+    // Verify trade settlement row exists in PostgreSQL
+    const createdSettlement = await livePrisma.tradeSettlement.findUnique({
+      where: { executionId: execution.id },
+    });
+    expect(createdSettlement).not.toBeNull();
+    expect(createdSettlement.quantity).toBe(3);
+
+    // Verify seller wallet credited by 300 paise
+    const updatedSeller = await livePrisma.wallet.findUnique({ where: { id: seller.wallet.id } });
+    expect(updatedSeller.availableBalance).toBe(5300n);
+
+    // Run second recovery tick on the same database
+    await worker.tick();
+
+    // Settle attempt directly on settled execution returns idempotent replay
+    const directReplay = await settlementService.settleExecution({ executionId: execution.id });
+    expect(directReplay.isIdempotentReplay).toBe(true);
+
+    // Verify exactly 1 settlement and 2 ledger entries exist
+    const settlementsCount = await livePrisma.tradeSettlement.count({
+      where: { executionId: execution.id },
+    });
+    expect(settlementsCount).toBe(1);
+
+    const ledgerEntriesCount = await livePrisma.walletLedgerEntry.count({
+      where: { executionId: execution.id },
+    });
+    expect(ledgerEntriesCount).toBe(2);
+
+    await worker.stop();
+  });
+
+  // --------------------------------------------------------------------------
+  // 12. Starvation Prevention: Keyset pagination advances past failing executions
+  // --------------------------------------------------------------------------
+  test('12. Keyset pagination prevents older failing executions from starving newer executions in PostgreSQL', async () => {
+    // Execution 1: Failing trade (insufficient seller inventory)
+    const buyer1 = await createUserWithWallet('starve-buy-1', 5000n, 500n);
+    const seller1 = await createUserWithWallet('starve-sell-1', 5000n, 0n);
+    const { execution: failingExecution } = await seedMatchedTrade({
+      buyer: buyer1,
+      seller: seller1,
+      category: testCategory,
+      event: testEvent,
+      buyerLimitPrice: 100,
+      sellerAskPrice: 100,
+      executionPrice: 100,
+      quantity: 5,
+      sellerReservedInventory: 1, // Insufficient! Will fail invariant check
+    });
+
+    // Execution 2: Valid trade created AFTER failingExecution
+    const buyer2 = await createUserWithWallet('starve-buy-2', 5000n, 400n);
+    const seller2 = await createUserWithWallet('starve-sell-2', 5000n, 0n);
+    const { execution: validExecution } = await seedMatchedTrade({
+      buyer: buyer2,
+      seller: seller2,
+      category: testCategory2,
+      event: testEvent2,
+      buyerLimitPrice: 200,
+      sellerAskPrice: 200,
+      executionPrice: 200,
+      quantity: 2, // 2 * 200 = 400 paise
+      sellerReservedInventory: 2, // Sufficient!
+    });
+
+    expect(BigInt(validExecution.sequenceNumber) > BigInt(failingExecution.sequenceNumber)).toBe(true);
+
+    const worker = new SettlementRecoveryWorker({
+      settlementService,
+      batchSize: 1, // Restrict batch size to 1 to force keyset pagination across ticks
+      intervalMs: 1000,
+      loggerInstance: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    worker.isRunning = true;
+    worker.lastSeenSequenceNumber = BigInt(failingExecution.sequenceNumber) - 1n; // Point cursor right before failing execution
+
+    // Tick 1: picks up failingExecution (batchSize 1). Fails settlement without throwing unhandled error.
+    const tick1Results = await worker.tick();
+    expect(tick1Results).toHaveLength(1);
+    expect(tick1Results[0].executionId).toBe(failingExecution.id);
+    expect(tick1Results[0].settled).toBe(false);
+    expect(worker.lastSeenSequenceNumber).toBe(BigInt(failingExecution.sequenceNumber));
+
+    // Verify failingExecution is NOT settled in PostgreSQL
+    const failingSettlement = await livePrisma.tradeSettlement.findUnique({
+      where: { executionId: failingExecution.id },
+    });
+    expect(failingSettlement).toBeNull();
+
+    // Tick 2: without starvation prevention, batchSize 1 would re-select failingExecution indefinitely.
+    // WITH keyset pagination (gt: failingExecution.sequenceNumber), it advances to validExecution!
+    const tick2Results = await worker.tick();
+    expect(tick2Results).toHaveLength(1);
+    expect(tick2Results[0].executionId).toBe(validExecution.id);
+    expect(tick2Results[0].settlement).toBeDefined();
+    expect(tick2Results[0].isIdempotentReplay).toBe(false);
+    expect(worker.lastSeenSequenceNumber).toBe(BigInt(validExecution.sequenceNumber));
+
+    // Verify validExecution IS settled in PostgreSQL
+    const validSettlement = await livePrisma.tradeSettlement.findUnique({
+      where: { executionId: validExecution.id },
+    });
+    expect(validSettlement).not.toBeNull();
+    expect(validSettlement.quantity).toBe(2);
+
+    // Verify seller2 received 400 paise
+    const updatedSeller2 = await livePrisma.wallet.findUnique({ where: { id: seller2.wallet.id } });
+    expect(updatedSeller2.availableBalance).toBe(5400n);
+
+    // Tick 3: reaches tail or wraps around
+    const tick3Results = await worker.tick();
+    if (tick3Results.length === 0) {
+      expect(worker.lastSeenSequenceNumber).toBeNull();
+    }
+
+    await worker.stop();
+  });
+
+  // --------------------------------------------------------------------------
+  // 13. Concurrent Recovery Workers: Two independent workers race on the same execution
+  // --------------------------------------------------------------------------
+  test('13. Concurrent recovery workers race on the same execution without double settlement or ledger duplication', async () => {
+    const buyer = await createUserWithWallet('race-w-buy', 5000n, 300n);
+    const seller = await createUserWithWallet('race-w-sell', 5000n, 0n);
+
+    const { execution } = await seedMatchedTrade({
+      buyer,
+      seller,
+      category: testCategory,
+      event: testEvent,
+      buyerLimitPrice: 100,
+      sellerAskPrice: 100,
+      executionPrice: 100,
+      quantity: 3,
+    });
+
+    // Create two independent SettlementRecoveryWorker instances
+    const worker1 = new SettlementRecoveryWorker({
+      settlementService,
+      batchSize: 500,
+      loggerInstance: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    const worker2 = new SettlementRecoveryWorker({
+      settlementService,
+      batchSize: 500,
+      loggerInstance: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    worker1.isRunning = true;
+    worker2.isRunning = true;
+
+    // Both workers tick simultaneously against the same PostgreSQL database
+    const [results1, results2] = await Promise.all([worker1.tick(), worker2.tick()]);
+
+    const item1 = results1.find((r) => r.executionId === execution.id || r.settlement?.executionId === execution.id);
+    const item2 = results2.find((r) => r.executionId === execution.id || r.settlement?.executionId === execution.id);
+
+    // At least one worker must have processed the execution
+    expect(item1 || item2).toBeDefined();
+
+    // Verify database state: EXACTLY 1 settlement and 2 ledger entries exist in PostgreSQL
+    const settlementsCount = await livePrisma.tradeSettlement.count({
+      where: { executionId: execution.id },
+    });
+    expect(settlementsCount).toBe(1);
+
+    const ledgerEntries = await livePrisma.walletLedgerEntry.findMany({
+      where: { executionId: execution.id },
+    });
+    expect(ledgerEntries).toHaveLength(2);
+
+    // Verify seller credited exactly once (+300 paise, not +600 paise)
+    const finalSellerWallet = await livePrisma.wallet.findUnique({ where: { id: seller.wallet.id } });
+    expect(finalSellerWallet.availableBalance).toBe(5300n);
+
+    // Verify buyer reserved deducted exactly once (300n -> 0n)
+    const finalBuyerWallet = await livePrisma.wallet.findUnique({ where: { id: buyer.wallet.id } });
+    expect(finalBuyerWallet.reservedBalance).toBe(0n);
+
+    await Promise.all([worker1.stop(), worker2.stop()]);
   });
 });

@@ -22,21 +22,22 @@ model User {
   updatedAt    DateTime   @updatedAt
 
   // Relationships
-
-  // Relationships
-  organizer         Organizer?
-  buyerSeller       BuyerSeller?
-  orders            Order[]
-  tickets           Ticket[]               @relation("UserTickets")
-  ticketOwnerships  TicketOwnership[]      @relation("UserTicketOwnership")
-  transfersSent     TicketTransfer[]       @relation("TransfersSent")
-  transfersReceived TicketTransfer[]       @relation("TransfersReceived")
-  wallet            Wallet?
-  refreshTokens     RefreshToken[]
-  admin             Admin?
-  ticketInventories UserTicketInventory[]
-  inventoryCredits  UserInventoryCredit[]
-
+  organizer            Organizer?
+  buyerSeller          BuyerSeller?
+  orders               Order[]
+  tickets              Ticket[]               @relation("UserTickets")
+  ticketOwnerships     TicketOwnership[]       @relation("UserTicketOwnership")
+  transfersSent        TicketTransfer[]        @relation("TransfersSent")
+  transfersReceived    TicketTransfer[]        @relation("TransfersReceived")
+  wallet               Wallet?
+  refreshTokens        RefreshToken[]
+  admin                Admin?
+  ticketInventories    UserTicketInventory[]
+  inventoryCredits     UserInventoryCredit[]
+  antiBotRules         AntiBotRule[]
+  solvencyProofs       SolvencyProof[]
+  transactionHistories TransactionHistory[]
+  notifications        Notification[]
 }
 
 enum Role {
@@ -126,6 +127,12 @@ enum FinancialOperationStatus {
   FAILED
 }
 
+enum SettlementStatus {
+  PENDING
+  SETTLED
+  MANUAL_REVIEW
+}
+
 model Organizer {
   id                 String             @id @default(uuid())
   userId             String             @unique
@@ -161,9 +168,12 @@ model Event {
   updatedAt     DateTime         @updatedAt
 
   // Relationships
-  categories    TicketCategory[]
-  tickets       Ticket[] @relation("EventTickets")
-  orders        Order[]
+  categories        TicketCategory[]
+  tickets           Ticket[] @relation("EventTickets")
+  orders            Order[]
+  marketLeases      MarketLease[]
+  antiScalpingRules AntiScalpingRule[]
+  dutchAuctions     DutchAuction[]
 }
 
 model TicketCategory {
@@ -184,6 +194,9 @@ model TicketCategory {
   userInventories   UserTicketInventory[]
   inventoryCredits  UserInventoryCredit[]
   tickets           Ticket[] @relation("CategoryTickets")
+  marketLeases      MarketLease[]
+  antiScalpingRules AntiScalpingRule[]
+  dutchAuctions     DutchAuction[]
 }
 
 model TicketInventory {
@@ -245,6 +258,7 @@ model Order {
   idempotencyKey    String?        // Client-provided deduplication token
   stoppedReason     String?        // Recorded reason matching stopped (e.g. 'SELF_TRADE_PREVENTION')
   sequenceNumber    BigInt         @unique @default(autoincrement())
+  fencingToken      BigInt?        // Monotonic lease fencing token under which order was matched
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
 
@@ -264,24 +278,31 @@ model Order {
 }
 
 model Execution {
-  id              String   @id @default(uuid())
-  incomingOrderId String
-  incomingOrder   Order    @relation("IncomingOrderExecutions", fields: [incomingOrderId], references: [id], onDelete: Restrict)
-  restingOrderId  String
-  restingOrder    Order    @relation("RestingOrderExecutions", fields: [restingOrderId], references: [id], onDelete: Restrict)
-  price           Int      // Integer execution price (passive resting order price in ticks/cents)
-  quantity        Int      // Executed quantity
-  sequenceNumber  BigInt   @default(autoincrement())
-  executedAt      DateTime @default(now())
+  id               String           @id @default(uuid())
+  incomingOrderId  String
+  incomingOrder    Order            @relation("IncomingOrderExecutions", fields: [incomingOrderId], references: [id], onDelete: Restrict)
+  restingOrderId   String
+  restingOrder     Order            @relation("RestingOrderExecutions", fields: [restingOrderId], references: [id], onDelete: Restrict)
+  price            Int              // Integer execution price (passive resting order price in ticks/cents)
+  quantity         Int              // Executed quantity
+  sequenceNumber   BigInt           @default(autoincrement())
+  settlementStatus SettlementStatus @default(PENDING)
+  retryCount       Int              @default(0)
+  lastAttemptedAt  DateTime?
+  lastFailedAt     DateTime?
+  nextRetryAt      DateTime?        @default(now())
+  lastErrorCode    String?
+  executedAt       DateTime         @default(now())
 
   // Relationships
-  ledgerEntries   WalletLedgerEntry[]
-  settlement      TradeSettlement?
+  ledgerEntries    WalletLedgerEntry[]
+  settlement       TradeSettlement?
 
-  // Indexes for order history reconstruction and audit
+  // Indexes for order history reconstruction, recovery, and audit
   @@index([incomingOrderId])
   @@index([restingOrderId])
   @@index([sequenceNumber])
+  @@index([settlementStatus, nextRetryAt, sequenceNumber])
 }
 
 // One immutable, completed accounting result per execution.  This is both the
@@ -304,6 +325,25 @@ model TradeSettlement {
   createdAt             DateTime  @default(now())
 
   @@index([createdAt])
+}
+
+// Database-backed distributed market lease for exclusive market ownership and fencing
+model MarketLease {
+  id               String         @id @default(uuid())
+  eventId          String
+  event            Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  ticketCategoryId String
+  ticketCategory   TicketCategory @relation(fields: [ticketCategoryId], references: [id], onDelete: Cascade)
+  ownerId          String
+  fencingToken     BigInt         @default(1)
+  leaseDurationMs  Int            @default(10000) // Default 10s duration
+  expiresAt        DateTime
+  acquiredAt       DateTime       @default(now())
+  renewedAt        DateTime       @default(now())
+
+  @@unique([eventId, ticketCategoryId])
+  @@index([ownerId])
+  @@index([expiresAt])
 }
 
 model Wallet {
@@ -588,5 +628,135 @@ model Monitoring {
   @@index([status])
   @@index([createdAt])
 }
+
+// ==========================================
+// Supporting Modules (Models from Specification)
+// ==========================================
+
+model AntiScalpingRule {
+  id             String          @id @default(uuid())
+  eventId        String
+  event          Event           @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  categoryId     String?
+  category       TicketCategory? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  maxResalePrice Decimal         @db.Decimal(12, 2)
+  isActive       Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([eventId])
+  @@index([categoryId])
+  @@index([isActive])
+}
+
+enum AntiBotStatus {
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+}
+
+model AntiBotRule {
+  id        String        @id @default(uuid())
+  userId    String?
+  user      User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ruleType  String
+  limit     Int
+  status    AntiBotStatus @default(ACTIVE)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([ruleType])
+  @@index([status])
+}
+
+enum NotificationStatus {
+  UNREAD
+  READ
+}
+
+model Notification {
+  id        String             @id @default(uuid())
+  userId    String
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  message   String
+  status    NotificationStatus @default(UNREAD)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model TransactionHistory {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  amount    Decimal  @db.Decimal(12, 2)
+  status    String   @default("COMPLETED")
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+enum DutchAuctionStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+  EXPIRED
+}
+
+model DutchAuction {
+  id           String             @id @default(uuid())
+  eventId      String
+  event        Event              @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  categoryId   String
+  category     TicketCategory     @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  startPrice   Decimal            @db.Decimal(12, 2)
+  minPrice     Decimal            @db.Decimal(12, 2)
+  currentPrice Decimal            @db.Decimal(12, 2)
+  startTime    DateTime
+  endTime      DateTime
+  status       DutchAuctionStatus @default(ACTIVE)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  @@index([eventId])
+  @@index([categoryId])
+  @@index([status])
+}
+
+model PerformanceMetrics {
+  id           String   @id @default(uuid())
+  ordersPerSec Float
+  avgLatency   Float
+  throughput   Float
+  errorRate    Float
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model SolvencyProof {
+  id            String   @id @default(uuid())
+  userId        String?
+  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  liabilities   Decimal  @db.Decimal(14, 2)
+  escrowBalance Decimal  @db.Decimal(14, 2)
+  backingAssets Decimal  @db.Decimal(14, 2)
+  isSolvent     Boolean  @default(true)
+  ratio         Float?
+  proofHash     String?
+  notes         String?
+  verifiedAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  @@index([verifiedAt])
+}
+
 
 

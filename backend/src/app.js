@@ -8,6 +8,10 @@ import organizerRoutes from './routes/organizer.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import solvencyRoutes from './routes/solvency.routes.js';
 import marketRoutes from './routes/market.routes.js';
+import orderRoutes from './routes/order.routes.js';
+import historyRoutes from './routes/history.routes.js';
+import notificationRoutes from './routes/notification.routes.js';
+import dutchAuctionRoutes from './routes/dutch-auction.routes.js';
 import errorHandler from './middleware/errorHandler.js';
 
 const app = express();
@@ -16,6 +20,8 @@ const app = express();
 app.use(cors({ origin: config.frontendUrl, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+import { evaluateReadiness } from './services/readiness.service.js';
 
 // Liveness Check Route for deployment (GET /health, /api/health)
 const healthCheckHandler = (req, res) => {
@@ -28,6 +34,15 @@ const healthCheckHandler = (req, res) => {
 app.get('/health', healthCheckHandler);
 app.get('/api/health', healthCheckHandler);
 app.get('/api/v1/health', healthCheckHandler);
+
+// Deep Readiness Check Route for deployment (GET /api/v1/health/ready, /health/ready)
+const readinessCheckHandler = async (req, res) => {
+  const result = await evaluateReadiness();
+  res.status(result.statusCode).json(result.body);
+};
+app.get('/health/ready', readinessCheckHandler);
+app.get('/api/health/ready', readinessCheckHandler);
+app.get('/api/v1/health/ready', readinessCheckHandler);
 
 // Authentication Routes
 app.use('/auth', authRoutes);
@@ -52,6 +67,23 @@ app.use('/api/v1/solvency', solvencyRoutes);
 // Market Data & Analytics Routes (Public)
 app.use('/market', marketRoutes);
 app.use('/api/v1/market', marketRoutes);
+
+// Secondary Market Order Routes (Authenticated)
+app.use('/orders', orderRoutes);
+app.use('/api/v1/orders', orderRoutes);
+
+// History & Transaction Routes (Authenticated)
+app.use('/history', historyRoutes);
+app.use('/api/v1/history', historyRoutes);
+
+// User Notification Routes (Authenticated)
+app.use('/notifications', notificationRoutes);
+app.use('/api/v1/notifications', notificationRoutes);
+
+// Dutch Auction Routes
+app.use('/auctions', dutchAuctionRoutes);
+app.use('/api/v1/auctions', dutchAuctionRoutes);
+
 
 // Event & Category Routes
 app.use(eventRoutes);

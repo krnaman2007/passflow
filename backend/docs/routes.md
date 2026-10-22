@@ -1647,8 +1647,367 @@ model TradeSettlement {
 
 #### 5.18.10 Settlement Dispatch and Recovery Boundaries
 - `OrderService` dispatches settlement only after matching has committed an execution. An idempotent order replay re-dispatches its persisted executions.
-- The server runs a bounded startup scan of unsettled executions (100 maximum). It is safe across instances because settlement claims the execution row in PostgreSQL.
-- Startup recovery is not a continuous scheduler. A permanently running deployment needs an external, bounded job to call `recoverUnsettled`; neither matching nor the process-local market queue provides distributed recovery coordination.
+- The server runs a bounded startup scan of unsettled executions (100 maximum) during initialization. It is safe across instances because settlement claims the execution row in PostgreSQL.
+- In addition to startup recovery, Step 9.5 introduces a recurring recovery worker (`SettlementRecoveryWorker`) to continuously recover executions interrupted by crashes or transient failures.
+
+#### 5.18.11 Step 9.5 Recurring Settlement Recovery Worker
+- **Module**: `backend/src/services/settlement/settlement-recovery-worker.js` (exported from `backend/src/services/settlement/index.js`).
+- **Configuration**:
+  - `intervalMs`: Polling interval in milliseconds via `SETTLEMENT_RECOVERY_INTERVAL_MS` (default: 10,000ms / 10s).
+  - `batchSize`: Maximum executions per recovery tick via `SETTLEMENT_RECOVERY_BATCH_SIZE` (default: 100, clamped to [1, 500]).
+- **Concurrency & Overlapping Tick Protection**:
+  - Single active polling loop per Node.js process. An internal `isTickInProgress` guard prevents concurrent tick execution within the same process.
+  - Cross-process and cross-instance safety: multiple worker processes safely race and serialize on database-level row locks (`SELECT * FROM "Execution" WHERE id = ... FOR UPDATE`) inside Serializable PostgreSQL transactions.
+  - Idempotent settlement: completed settlements return `{ isIdempotentReplay: true }` without duplicating financial ledger entries or ticket transfers.
+- **Error Handling & Failure Policy**:
+  - Unhandled tick exceptions are caught, logged with structured metadata, and do NOT crash the worker or stop future polling ticks.
+  - Per-execution errors during a batch are returned as `{ executionId, settled: false, error }`, permitting healthy executions in the same batch to settle successfully.
+- **Lifecycle Integration**:
+  - Starts after database connection and startup recovery in `server.js`.
+  - Graceful shutdown on `SIGTERM` and `SIGINT`: `stop({ timeoutMs: 5000 })` cancels pending timers and awaits completion of any in-flight tick within a bounded 5s window.
+- **Operational Starvation Mitigation (Step 9.6 Keyset Pagination)**:
+  - Addressed via keyset pagination cursor rotation: `recoverUnsettled({ batchSize, afterSequenceNumber })`.
+  - When a batch contains executions with permanent failures, the worker advances `lastSeenSequenceNumber` to the highest sequence number in the batch.
+  - Subsequent ticks query `sequenceNumber > lastSeenSequenceNumber`, allowing newer eligible executions to be examined and settled even if older executions repeatedly fail.
+  - When the tail of the sequence stream is reached (no newer unsettled executions returned), `lastSeenSequenceNumber` wraps around to `null`, re-evaluating earlier unsettled executions.
+
+#### 5.18.12 Step 9.6 Keyset Pagination & Proposed Future Schema Migration
+- **Keyset Starvation Prevention**:
+  - `TradeSettlementService.recoverUnsettled({ batchSize, afterSequenceNumber })` accepts an optional `afterSequenceNumber` cursor (BigInt/integer) and queries `where: { settlement: null, sequenceNumber: { gt: afterSequenceNumber } }`.
+  - Results return `{ executionId, sequenceNumber, settled, ... }` for deterministic cursor advancement in `SettlementRecoveryWorker`.
+  - Wrap-around ensures all sequence ranges are swept periodically without stalling on corrupt executions.
+- **Proposed Future Schema Migration (Dead-Letter Queue / Backoff)**:
+  - *Current Status*: Keyset pagination prevents newer executions from being starved without altering the database schema.
+  - *Future Migration Recommendation*: To avoid re-attempting permanently invalid executions on every wrap-around cycle, a future migration should add:
+    - `retryCount Int @default(0)` on `Execution`
+    - `lastSettlementAttemptAt DateTime?` on `Execution`
+    - `settlementStatus ExecutionSettlementStatus @default(PENDING)` (enum: `PENDING`, `SETTLED`, `FAILED_DEAD_LETTER`)
+  - With these fields, executions exceeding `MAX_RECOVERY_ATTEMPTS` (e.g. 10) can be transitioned to `FAILED_DEAD_LETTER` for administrative review, completely removing them from the automated recovery query.
+
+#### 5.18.13 Step 9.8 End-to-End Financial Lifecycle Integration Audit
+- **Audit Scope & Scope Boundaries**:
+  - Full lifecycle audit tracing buy/sell placement, reservation, matching, cancellation, settlement, recovery, and reconciliation.
+  - Integration verified against real PostgreSQL database (`passflow_isolated_validation`).
+- **Defect Identified & Resolved**:
+  - *Defect*: In `OrderService.cancelLimitOrder` and `reconcileOrderReservations`, the wallet hold lookup filtered by `status: { in: ['ACTIVE', 'PARTIALLY_RELEASED'] }`.
+  - *Root Cause*: When a buy order is partially matched and settled, `TradeSettlementService` transitions the hold to `status: 'PARTIALLY_SETTLED'`. When the buyer subsequently cancelled the remaining unfilled quantity, `cancelLimitOrder` could not find the hold, failing to release the remaining reserved funds and leaving them trapped in the hold indefinitely.
+  - *Fix*: Updated `OrderService` hold lookups to `status: { in: ['ACTIVE', 'PARTIALLY_RELEASED', 'PARTIALLY_SETTLED'] }`, matching `WalletService.releaseHold()` and ensuring clean release of the unfilled funds back to available balance.
+- **Accounting & Concurrency Invariants Verified**:
+  - Full conservation of money: Buyer available + Seller available + active holds = initial deposited money.
+  - Full conservation of tickets: Buyer owned + Seller available + Seller reserved = initial inventory.
+  - Price improvement correctly refunded: Exact difference between limit price and execution price refunded to buyer's available balance upon settlement.
+  - Concurrent fund & inventory races: Concurrent buy orders competing for insufficient funds and concurrent sell orders competing for insufficient inventory serialize cleanly with zero negative or oversold balances.
+  - Process restart & recovery: Executions committed during matching but unhandled by immediate settlement dispatch are safely settled by `SettlementRecoveryWorker` without duplicate ledger mutations or double-transfers.
+
+#### 5.18.14 Step 9.9 Production Readiness and API Boundary Audit
+- **Audit Objective & Scope**:
+  - Audit of the boundary between PassFlow's financial engines (`OrderService`, `WalletService`, `TradeSettlementService`, `PersistentMatchingService`) and the HTTP/Express API layer.
+  - Verification of authentication, authorization, ownership enforcement, BigInt serialization, error envelopes, single-instance constraints, and health probes.
+- **Key Audit Findings & Invariants**:
+  1. *Response Formatting & BigInt Serialization*: `formatSafeUser()` sanitizes `passwordHash` and safely serializes wallet BigInts (`availableBalance`, `reservedBalance`, `version`) to strings, eliminating `TypeError` during `JSON.stringify()`.
+  2. *Centralized Error Handling & Secret Protection*: `errorHandler` formats all operational and validation errors into `{ success: false, error: { code, message } }`. Internal stack traces are suppressed in production.
+  3. *Zero-Surface Internal Settlement*: Settlement and recovery operations have no public HTTP endpoints and are triggered strictly through post-matching transactions and `SettlementRecoveryWorker`.
+  4. *API Inventory & Deferred Routes*:
+     - Core financial engines (`OrderService.placeLimitOrder`, `OrderService.cancelLimitOrder`, `WalletService` mutations, `UserTicketInventory`) are fully operational and tested at the service level. Dedicated secondary-market public HTTP routes (`/orders`, `/wallets`) have not yet been exposed and are deferred to the upcoming API routing milestone.
+     - Public routes currently active: `/health` (shallow liveness), `/market/*` (depth, trades, summary), `/events/*` (event & category management with organizer ownership gating), `/users/me` (profile with sanitized wallet summary).
+  5. *Operational & Deployment Constraints*:
+     - **Single-Instance Constraint**: In-memory `MarketExecutionQueue` requires PassFlow to run as a single-instance service until database lease fencing (`pg_try_advisory_lock` / `MarketLease`) is implemented. Multi-instance matching without fencing will cause dual-master order book divergence.
+     - **Health vs Readiness Probes**: `/health` functions as a shallow liveness probe (Node process up). A deep readiness probe testing database connectivity and order book synchronization should be adopted for production container orchestrators.
+     - **Unapplied Teammate Migrations**: Confirmed that `RefreshToken`, `Admin`, `ReconciliationReport`, and `PrimaryPurchase` models exist in `schema.prisma` but have unapplied migrations owned by other workstreams. The core financial schema (10 migrations) is 100% migrated and verified.
+
+#### 5.18.15 Step 9.10 Secondary Market Order API Integration
+- **Endpoints Exposed**:
+  - `POST /api/v1/orders` (also mounted at `/orders` for backward compatibility)
+  - `DELETE /api/v1/orders/:id` (also mounted at `/orders/:id` for backward compatibility)
+- **Authentication & Ownership**:
+  - Requires `authenticateToken` middleware with valid Bearer JWT. Unauthenticated requests are rejected with `401 UNAUTHORIZED`.
+  - `userId` is strictly derived from `req.user.id`. The request body is strictly validated using Zod (`.strict()`) and explicitly rejects client-supplied `userId` or unknown fields with `400 VALIDATION_ERROR`.
+  - Order cancellation enforces strict ownership: a user cannot cancel an order belonging to another user. Attempting to do so returns `403 FORBIDDEN` (`You do not have permission to cancel this order`).
+- **1. Place Limit Order (`POST /api/v1/orders`)**:
+  - **Request Body Fields & Validation (`placeLimitOrderSchema`)**:
+    - `eventId`: Required non-empty string.
+    - `ticketCategoryId`: Required non-empty string.
+    - `side`: Required enum (`"BUY"` or `"SELL"`).
+    - `price`: Required positive integer (stored in minor units/cents). Floating-point values (e.g. `10.5`) and non-integers are rejected (`price must be an integer`). Must be `<= 100,000,000` (safe monetary boundary).
+    - `quantity`: Required positive integer. Must be `<= 1,000,000`.
+    - `idempotencyKey`: Optional string (min 8, max 128 chars). Can also be provided via `Idempotency-Key` or `X-Idempotency-Key` HTTP headers.
+  - **Business Delegation**: Controller delegates market validation, wallet hold reservation, ticket inventory verification, and matching entirely to `OrderService.placeLimitOrder()`.
+  - **Success Response Shape (`201 Created` / `200 OK` for duplicate)**:
+    - Envelope: `{ success: true, data: { order, isDuplicate, executions, executionSummary } }`
+    - Sanitized Order Representation: Strips internal `holdId`. BigInt fields (such as `sequenceNumber`) are safely serialized to strings (`sequenceNumber: "1"` or `null`).
+  - **Error Mappings**:
+    - `400 VALIDATION_ERROR`: Malformed body, float price, invalid side, missing required fields.
+    - `401 UNAUTHORIZED`: Missing or invalid Bearer token.
+    - `404 EVENT_NOT_FOUND` / `CATEGORY_NOT_FOUND`: Target event or ticket category does not exist.
+    - `409 IDEMPOTENCY_CONFLICT`: Idempotency key reused with mismatched order parameters.
+    - `422 INSUFFICIENT_FUNDS`: Buyer's wallet has insufficient available balance for price * quantity.
+    - `422 INSUFFICIENT_INVENTORY`: Seller does not hold sufficient available tickets in `UserTicketInventory`.
+    - `503 MARKET_UNAVAILABLE`: Market order book queue unavailable or closed.
+    - `504 GATEWAY_TIMEOUT`: Order matching execution queue timeout.
+- **2. Cancel Limit Order (`DELETE /api/v1/orders/:id`)**:
+  - **Request Parameters & Validation (`cancelOrderParamsSchema`)**:
+    - `id`: Required non-empty string parameter.
+    - Idempotency key derived from `Idempotency-Key` / `X-Idempotency-Key` header, body/query, or deterministically defaulted to `cancel:${orderId}`.
+  - **Business Delegation**: Controller delegates cancellation and reservation release to `OrderService.cancelLimitOrder()`.
+  - **Success Response Shape (`200 OK`)**:
+    - Envelope: `{ success: true, data: { orderId, isCancelled, isDuplicate, cancelledQuantity, remainingQuantity, status } }`
+    - Strips all internal wallet hold and ledger accounting details.
+  - **Error Mappings**:
+    - `400 VALIDATION_ERROR`: Invalid or malformed order ID.
+    - `401 UNAUTHORIZED`: Missing or invalid Bearer token.
+    - `403 FORBIDDEN`: Order belongs to a different user.
+    - `404 ORDER_NOT_FOUND`: Order does not exist.
+    - `409 INVALID_STATE_TRANSITION`: Order is already in a non-cancellable terminal state (`FILLED`).
+- **Security & Integrity Invariants**:
+  - No direct database or wallet mutations in the controller.
+  - Centralized error handler protects internal stack traces and raw SQL errors from leaking to API consumers.
+  - Verified with 18 integration and unit tests in `backend/tests/order/order-api.test.js`.
+
+#### 5.18.16 Step 9.11 Production Readiness & End-to-End Integration Audit
+- **Audit Objective & Scope**:
+  - End-to-end audit of the secondary-market lifecycle across HTTP layer (`OrderController`, `orderRoutes`, `order.schema.js`), financial engine (`OrderService`), persistent matching engine (`PersistentMatchingService`, `OrderBook`, `MarketExecutionQueue`), settlement service (`TradeSettlementService`), and background worker (`SettlementRecoveryWorker`).
+- **HTTP Boundary Refinement**:
+  - `placeLimitOrderSchema` and `OrderController` updated to resolve `idempotencyKey` interchangeably from the request body or standard `Idempotency-Key` / `X-Idempotency-Key` HTTP headers. Missing keys across both body and headers are rejected with `400 VALIDATION_ERROR`.
+  - Authenticated principal derivation (`userId = req.user.id`) and Zod `.strict()` validation protect against client-supplied `userId` overrides.
+- **Financial Invariants (100% Verified)**:
+  1. *Minor Units & BigInt*: All monetary values are strictly positive integers (paise) bounded by `MAX_PAISE = 10_000_000_000_000n`.
+  2. *Matching Isolation*: Matching engine calculates pure plans and writes orders/executions without touching wallet balances or ticket inventories.
+  3. *Execution != Settlement*: Executions are persisted prior to settlement; settlement occurs atomically via `TradeSettlementService` in `Serializable` transactions.
+  4. *Buyer Hold Consumption & Price Improvement*: For execution price `<= limit price`, buyer reserved balance is reduced by `limitPrice * qty`; price improvement `(limitPrice - execPrice) * qty` is returned to `availableBalance`.
+  5. *Seller Proceeds*: Seller receives exact execution value `execPrice * qty` with zero platform fees.
+  6. *Partial Fills & Cancellations*: Unfilled reservations remain held; cancellation releases strictly the unfilled remainder `price * remainingQuantity`.
+  7. *Ledger Immutability*: All balance transitions create append-only `WalletLedgerEntry` rows guarded by foreign key `RESTRICT` constraints and unique idempotency keys.
+  8. *Inventory Safety*: Ticket inventory reservations acquire row-level locks (`SELECT FOR UPDATE`), preventing overselling or duplicate crediting.
+- **Concurrency & Idempotency Architecture**:
+  - *Database Level (Cross-Process & Durable)*: `Order(userId, idempotencyKey)`, `FinancialOperation(idempotencyKey)`, and `TradeSettlement(executionId)` compound unique constraints prevent duplicate orders, double-reservations, and double-settlements even across process restarts.
+  - *Process-Local Level*: `MarketExecutionQueue` enforces in-memory FIFO serialization per market. Does not provide cross-instance distributed locking.
+- **Operational & Deployment Limitations**:
+  - **Single-Instance Deployment Invariant**: PassFlow must remain a single-instance service until distributed advisory lease fencing (`pg_try_advisory_lock` / `MarketLease`) is implemented to prevent dual-master order book divergence.
+  - **Readiness vs Liveness**: `/health` functions solely as a shallow liveness probe (Node event loop responsive). A dedicated deep readiness probe (`/ready`) that verifies PostgreSQL connectivity and order book sync is recommended.
+  - **Startup Ordering**: In `server.js`, `await checkDatabaseConnections()` and `await recoverSettlements()` should run before `server.listen()` opens network sockets.
+  - **In-Memory Recovery Cursor**: `SettlementRecoveryWorker` maintains its sequence cursor in memory. Persistent failure starvation prevention remains bounded to single-batch keyset pagination until a durable dead-letter schema migration is applied.
+
+#### 5.18.17 Step 9.12 Deep Readiness Probe & Safe Startup Sequencing
+- **Endpoints Exposed**:
+  - `GET /api/v1/health/ready` (also mounted at `/health/ready` and `/api/health/ready` for cluster ingress compatibility)
+- **Authentication & Access**:
+  - Public / Unauthenticated (intended for deployment load balancers, Kubernetes readiness probes, and AWS ECS health checks).
+- **Readiness Verification Conditions**:
+  1. *Database Connectivity*: Executes a lightweight, bounded query (`SELECT 1`) via Prisma with a 3000ms timeout. Fails immediately if the database is unreachable or times out, without hanging readiness probes.
+  2. *Startup Initialization Completion*: Verifies `appLifecycleState.isInitialized()`. Returns 503 if the server has not finished establishing connections, running startup settlement recovery, or verifying matching readiness.
+  3. *Graceful Shutdown Status*: Returns 503 immediately if `gracefulShutdown()` has been triggered, allowing load balancers to deregister the pod before in-flight connections close.
+  4. *Matching Coordinator Health*: Queries `orderService.matchingService.checkReadiness()`. Verifies that no markets are quarantined in `_corruptedMarkets` and no markets are in `MarketState.RECONCILING`.
+- **Response Contracts**:
+  - **Success (`200 OK`)**:
+    ```json
+    {
+      "status": "ready",
+      "timestamp": "2026-10-22T13:25:00.000Z",
+      "checks": {
+        "database": "healthy",
+        "startup": "completed",
+        "matching": "ready"
+      }
+    }
+    ```
+  - **Failure (`503 Service Unavailable`)**:
+    ```json
+    {
+      "status": "not_ready",
+      "timestamp": "2026-10-22T13:25:00.000Z",
+      "checks": {
+        "database": "unhealthy",
+        "startup": "in_progress",
+        "matching": "degraded"
+      }
+    }
+    ```
+- **Information Protection**:
+  - Response never leaks raw SQL error text, PostgreSQL connection strings, credentials, or internal stack traces.
+- **Liveness Compatibility**:
+  - Existing `/health`, `/api/health`, and `/api/v1/health` endpoints remain shallow liveness probes returning `{ status: 'ok', message: 'Backend server is running' }` (`200 OK`) without blocking on database locks.
+- **Safe Startup Sequence (`server.js`)**:
+  - Re-ordered to strictly prevent socket binding before backend readiness:
+    1. Verify database connectivity via active bounded query (`checkDatabaseConnections({ throwOnError: true, timeoutMs: 5000 })`).
+    2. Execute bounded startup settlement recovery (`recoverSettlements()`).
+    3. Verify matching coordinator readiness.
+    4. Start periodic background settlement recovery worker (`settlementRecoveryWorker.start()`).
+    5. Mark `appLifecycleState.setInitialized(true)`.
+    6. Call `server.listen(config.port)` only after all prerequisites succeed.
+  - Failures during startup abort execution and exit cleanly without accepting API traffic.
+
+#### 5.18.18 Step 9.13 Durable Settlement Recovery and Retry Management
+- **Durable Recovery Schema (`Execution` Model)**:
+  - Added durable recovery state fields directly to `Execution` via migration `20261022200000_add_execution_settlement_recovery_state`:
+    - `settlementStatus`: enum `SettlementStatus` (`PENDING`, `SETTLED`, `MANUAL_REVIEW`, default `PENDING`).
+    - `retryCount`: `Int` (default `0`).
+    - `lastAttemptedAt`: `DateTime?` timestamp of last settlement execution attempt.
+    - `lastFailedAt`: `DateTime?` timestamp of most recent failure.
+    - `nextRetryAt`: `DateTime?` (default `CURRENT_TIMESTAMP`) eligible timestamp for next retry.
+    - `lastErrorCode`: `String?` sanitized, bounded error classification code.
+    - Composite index: `@@index([settlementStatus, nextRetryAt, sequenceNumber])` supporting bounded FIFO due queries.
+  - Existing executions backfilled: executions with committed `TradeSettlement` records transitioned to `SETTLED`.
+- **Retry Classification & Backoff Policy**:
+  - *Transient Failures*:
+    - PostgreSQL SQLSTATE `40001` (serialization failure), SQLSTATE `40P01` (deadlock detected), Prisma `P2034` (write conflict), and transient connection pool timeouts.
+    - Handled via bounded exponential backoff with jitter: `min(maxBackoffMs, baseBackoffMs * 2^(attempt - 1)) + jitter`.
+    - Default configuration: `baseBackoffMs = 1000ms`, `maxBackoffMs = 60000ms`, `maxAutoRetries = 5`.
+    - Persists `nextRetryAt = NOW() + delayMs` and sanitized error code (`SERIALIZATION_FAILURE`, `DEADLOCK_DETECTED`, `DATABASE_CONNECTIVITY`, `PRISMA_WRITE_CONFLICT`).
+  - *Permanent / Invariant Failures*:
+    - `SettlementInvariantError` (e.g. buyer hold missing or insufficient, seller reserved inventory insufficient, price exceeds limit, market mismatch).
+    - Moved immediately to `MANUAL_REVIEW` status; `nextRetryAt` set to `null`; `lastErrorCode = 'SETTLEMENT_INVARIANT'`.
+  - *Retry Exhaustion*:
+    - When `retryCount >= maxAutoRetries`, execution transitions to `MANUAL_REVIEW` with `lastErrorCode = 'MAX_RETRIES_EXCEEDED'`.
+  - *Sanitized Error Metadata*:
+    - Error codes are strictly bounded string enums. Raw stack traces, SQL queries, credentials, and wallet balances are never persisted in recovery metadata.
+- **Recovery Worker Scheduling & Starvation Prevention**:
+  - Worker queries PostgreSQL directly for due executions:
+    `WHERE "settlementStatus" = 'PENDING' AND "settlement" IS NULL AND ("nextRetryAt" IS NULL OR "retryCount" = 0 OR "nextRetryAt" <= NOW()) ORDER BY "sequenceNumber" ASC LIMIT batchSize`.
+  - *Strict Scheduling Boundaries (Step 9.13A Audit)*: The initial one-second scheduling tolerance was audited and removed. Due filtering strictly checks `nextRetryAt <= NOW()` to prevent premature retries. First-attempt executions (`retryCount = 0`) are immediately eligible.
+  - Eliminates reliance on volatile in-memory cursor for correctness.
+  - *Starvation Protection*: Failing executions wait out their backoff delay in the future (`nextRetryAt > NOW()`), allowing newly arriving executions to be settled immediately. When their backoff expires, their low `sequenceNumber` gives them top FIFO priority.
+  - *Restart Safety*: Process restart reloads exact retry count, scheduling, and manual-review state directly from PostgreSQL.
+- **Concurrency & Idempotency Guarantees**:
+  - Competing workers or parallel retries serialize on the durable `Execution` row lock (`SELECT FOR UPDATE`).
+  - If a worker encounters an already settled execution, `_assertExistingSettlement` returns `{ settlement, isIdempotentReplay: true }` with zero duplicate ledger movements or wallet balance mutations.
+  - `recordSettlementFailure` executes in an atomic transaction; if an execution is already `SETTLED`, it never overwrites the settlement status or retry count.
+  - *Stale Worker & Manual Review Protection (Step 9.13A Audit)*:
+    - If an execution is in `MANUAL_REVIEW`, a late failure handler cannot overwrite or revert it to `PENDING`.
+    - If another worker has already recorded an attempt at or after `now` (`lastAttemptedAt > now`), stale worker failure recording aborts without overwriting newer retry metadata.
+- **Controlled Operator Interface**:
+  - Internal service method: `tradeSettlementService.requeueExecution({ executionId, resetRetryCount = false })`.
+  - Transitions `MANUAL_REVIEW` executions back to `PENDING` with `nextRetryAt = NOW()`.
+  - Idempotent: returns `{ requeued: false }` if already `PENDING` or `SETTLED` (verified against `TradeSettlement` existence).
+  - No public or unauthenticated HTTP endpoint exposed.
+- **Structured Observability**:
+  - Standardized structured log events emitted:
+    - `Settlement recovery attempt started`: includes `executionId`, `sequenceNumber`, `retryCount`.
+    - `Settlement succeeded`: includes `executionId`, `isIdempotentReplay`.
+    - `Settlement retry scheduled`: includes `executionId`, `retryCount`, `errorCode`, `nextRetryAt`.
+    - `Settlement execution moved to manual review`: includes `executionId`, `retryCount`, `errorCode`, `reason`.
+    - `Settlement recovery batch summary`: includes `processedCount`, `succeededCount`, `failedCount`.
+    - `Settlement recovery worker error`: includes sanitized error message.
+  - Internal worker diagnostics exposed via `settlementRecoveryWorker.getStatus()` and `tradeSettlementService.getExecutionRecoveryState({ executionId })`.
+
+#### 5.18.19 Step 9.14 Distributed Market Leases and Fenced Worker Coordination
+- **Distributed Market Lease Schema (`MarketLease` Model & Migration)**:
+  - Added `MarketLease` model via migration `20261022210000_add_market_lease_and_fencing`:
+    - `id`: UUID primary key.
+    - `eventId`: UUID referencing `Event.id` (`onDelete: Cascade`).
+    - `ticketCategoryId`: UUID referencing `TicketCategory.id` (`onDelete: Cascade`).
+    - `ownerId`: `String` identifying the active worker/coordinator instance holding the lease.
+    - `fencingToken`: `BigInt` strictly monotonically increasing fencing token protecting database persistence boundaries.
+    - `leaseDurationMs`: `Int` lease validity window in milliseconds.
+    - `acquiredAt`: `DateTime` initial acquisition timestamp.
+    - `renewedAt`: `DateTime` last successful renewal timestamp.
+    - `expiresAt`: `DateTime` lease expiration timestamp.
+    - Constraints: `@@unique([eventId, ticketCategoryId])` ensuring exactly one lease record per secondary market. Indexes on `ownerId` and `expiresAt` for fast renewal and takeover queries.
+  - Added `fencingToken`: `BigInt?` column on `Order` recording the fencing token under which each order was admitted and persisted.
+- **Market Lease Manager (`MarketLeaseManager`)**:
+  - Located at `backend/src/services/matching/market-lease-manager.js`.
+  - *Atomic Acquisition*:
+    - Uses PostgreSQL transaction with `INSERT ... ON CONFLICT ("eventId", "ticketCategoryId") DO NOTHING` followed by `SELECT ... FOR UPDATE`.
+    - If no lease exists: inserts new lease with `fencingToken = 1n`.
+    - If lease exists and is held by the same `ownerId`: renews lease and preserves current `fencingToken`.
+    - If lease exists but is held by another instance and `expiresAt <= NOW()`: executes safe takeover, updates `ownerId`, increments `fencingToken = fencingToken + 1n`, and resets expiration.
+    - If lease exists and is active (`expiresAt > NOW()`): rejects acquisition attempt (`MarketOwnershipError`).
+  - *Heartbeat Auto-Renewal Loop*:
+    - Computes renewal cadence at ~50% of `leaseDurationMs`.
+    - Renewals execute atomically with `SELECT ... FOR UPDATE`: checks `ownerId`, expected `fencingToken`, and non-expiration.
+    - If renewal fails due to takeover, expiration, or database failure, invokes `onRenewalFailure` callback, purges active lease, and terminates the timer.
+  - *Voluntary Graceful Release*:
+    - Immediately expires lease in database using PostgreSQL `NOW() - make_interval(secs => 1.0)`.
+    - Preserves historical fencing token so the next successor can increment monotonically.
+- **Fencing Token Verification at Database Boundary**:
+  - Implemented in `verifyFencingToken(tx, leaseContext)`:
+    - Runs inside the same atomic PostgreSQL transaction as order matching or cancellation persistence (`SELECT ... FOR UPDATE` on `MarketLease`).
+    - Evaluates expiration directly inside the PostgreSQL engine: `("expiresAt" <= NOW()) as "isExpired"` to eliminate client-server clock skew discrepancies.
+    - Verifies that:
+      1. Lease row exists for the target market.
+      2. `ownerId` matches the executing instance.
+      3. `fencingToken` matches the expected token.
+      4. Lease has not expired.
+    - If any check fails, rolls back the transaction and throws `FencingViolationError`.
+    - In `OrderRepository.persistMatchingTransaction`: stamps incoming order with `incomingOrderData.fencingToken = BigInt(leaseContext.fencingToken)`.
+- **Persistent Matching Service Integration & Fault Isolation**:
+  - `PersistentMatchingService` enforces `requireMarketLease: true`.
+  - When submitting or cancelling limit orders:
+    - Verifies active local lease before entering execution queue.
+    - Passes `leaseContext` to `OrderRepository.persistMatchingTransaction` or cancellation transaction.
+    - If `FencingViolationError` occurs during write persistence:
+      - Trapped by `_handleFencingViolation(marketKey, err)`.
+      - Local lease cache is cleared and auto-renewal timer is stopped.
+      - Market state is quarantined to `RECONCILING` (`MarketState.RECONCILING`), preventing further in-memory mutations.
+  - Crash recovery & takeover:
+    - Successor instance acquires market lease (incrementing fencing token) and calls `syncMarketOrders(eventId, ticketCategoryId)` to deterministically reconstruct the in-memory order book from PostgreSQL before processing new orders.
+    - Stale former owner cannot write to the database because its fencing token is strictly less than the successor's token.
+- **Readiness Probe & Graceful Shutdown**:
+  - `PersistentMatchingService.checkReadiness()` verifies lease health:
+    - If any active market in `READY` state has an expired or lost lease, readiness returns `{ ready: false, reason: 'Market "..." lease is expired or lost' }`.
+    - Deep readiness endpoint (`/ready`) returns `503 Service Unavailable` with `status: "not_ready"` and `checks.matching: "degraded"`.
+    - Readiness probe strictly redacts internal fencing tokens and owner IDs to prevent information disclosure.
+  - `server.js` graceful shutdown handler calls `orderService.matchingService.releaseAllLeases()` before disconnecting database pools, releasing ownership cleanly for peer instances.
+- **Automated Test Coverage**:
+  - Suite: `backend/tests/matching/distributed-market-leases.test.js` (12 tests, 100% pass against isolated PostgreSQL):
+    1. Two instances competing for the same market (mutual exclusion).
+    2. Two different markets acquiring ownership independently without cross-market interference.
+    3. Lease expiration and safe takeover with monotonic fencing tokens.
+    4. Former owner attempting writes after newer fencing token is rejected at DB persistence boundary.
+    5. Lease renewal racing with expiration or takeover.
+    6. Database failure during renewal triggers failure callback and state transition.
+    7. Process crash and restart with persistent market reconstruction.
+    8. Order placement and cancellation under ownership changes.
+    9. Duplicate submission and idempotent execution behavior under lease ownership.
+    10. Price-time priority preserved under serialized concurrent submissions.
+    11. Existing settlement, wallet-conservation, and recovery regressions.
+    12. Graceful shutdown and readiness behavior when ownership is lost.
+
+#### 5.18.20 Step 9.15 Distributed Market Coordination Safety Audit
+- **Mutation-Path Inventory & Fencing Protection**:
+  - Audited all candidate mutation paths across `backend/src/`:
+    1. *Order Placement (`placeLimitOrder` / `submitLimitOrder` / `persistMatchingTransaction`)*:
+       - Mutates: creates `Order`, updates resting `Order` records (`remainingQuantity`, `status`), creates `Execution` records.
+       - Changes market state: Yes.
+       - Requires market ownership: Yes (`requireMarketLease: true`).
+       - Fencing boundary: `verifyFencingToken(tx, leaseContext)` executes `SELECT ... FOR UPDATE` on `MarketLease` within the atomic matching transaction.
+       - Stale owner writes: Strictly blocked; rolls back transaction with `FencingViolationError`.
+    2. *Order Cancellation (`cancelLimitOrder`)*:
+       - Mutates: updates target `Order` status to `CANCELLED`, removes from in-memory book, releases unfilled reservation.
+       - Changes market state: Yes.
+       - Requires market ownership: Yes.
+       - Fencing boundary: `verifyFencingToken(tx, leaseContext)` executes inside `this.repository.prisma.$transaction` before updating the order row.
+       - Stale owner writes: Strictly blocked; rolls back transaction.
+    3. *Book Reconstruction (`reconstructMarket` / `reconcileMarket` / `_reconstructBookUnderQueue`)*:
+       - Mutates: in-memory `OrderBook` only; zero database writes.
+       - Requires market ownership: Yes; called upon acquiring market lease or reconciling ambiguous submission.
+       - Stale owner writes: Even if stale memory is populated, subsequent database writes are blocked at the fencing boundary.
+    4. *Trade Settlement (`settleExecution` / `recoverUnsettled`)*:
+       - Mutates: `Execution.settlementStatus = 'SETTLED'`, `WalletLedgerEntry`, `Wallet`, `WalletHold`, `TradeSettlement`, `UserTicketInventory`.
+       - Changes market state: No. Post-matching asynchronous clearing decoupled from matching coordinator ownership.
+       - Concurrency protection: Serialized on `Execution` row lock (`SELECT FOR UPDATE`). Idempotent replay prevents double-crediting.
+    5. *Order Reservation Reconciliation (`reconcileOrderReservations`)*:
+       - Observational audit: verifies active holds and seller inventory against database state. Does not mutate market orders or book state.
+    6. *Primary Inventory Credit (`creditUserTicketInventory`)*:
+       - Primary issuance to user balance; decoupled from secondary matching markets.
+- **PostgreSQL Concurrency & Fencing Guarantees**:
+  - *Exclusive Row Lock Serialization*: `verifyFencingToken` and `acquireLease` both acquire exclusive `SELECT ... FOR UPDATE` row locks on the identical `MarketLease` record. A matching persistence transaction locking the lease row before nominal expiry blocks any concurrent takeover attempt in PostgreSQL until commit.
+  - *Monotonic Fencing*: Consecutive takeovers strictly increment `fencingToken = fencingToken + 1n`. Stale owners attempting writes are rejected with `FencingViolationError`.
+  - *Clock Skew Elimination*: Expiration is evaluated natively in PostgreSQL via `("expiresAt" <= NOW()) as "isExpired"`.
+  - *Fail-Closed Outage Handling*: Database disconnections during renewal invoke `onRenewalFailure`, clear cached lease, transition market to `RECONCILING`, reject new orders, and cause `/ready` probe to report 503 degraded.
+- **Environment & Deployment Configuration**:
+  - Supported `ENABLE_DISTRIBUTED_MARKET_LEASES=true` in `PersistentMatchingService` and `config/index.js` to enable automatic distributed lease enforcement in multi-node deployments.
+  - Defaults to `false` for standalone single-instance backward compatibility.
+  - Verified no `.env` files or credentials are tracked in Git.
+- **Audit Verification Results**:
+  - New Dedicated Audit Suite: `backend/tests/matching/distributed-market-coordination-audit.test.js` (10 tests, 100% pass).
+  - Step 9.14 Integration Suite: `backend/tests/matching/distributed-market-leases.test.js` (12 tests, 100% pass).
+  - Complete Core Backend Regression: 24 test suites, 427 tests passed, 0 failures.
+
+
+
+
+
+
 
 
 

@@ -127,4 +127,11 @@ export const updateAntiBotRuleSchema = z.object({
   enabled: z.boolean().optional(),
 });
 
+export {
+  antiScalpingRuleSchema,
+  antiBotRuleSchema,
+  antiBotStatusEnum,
+} from './rules.schema.js';
+
 export default adminSchema;
+
