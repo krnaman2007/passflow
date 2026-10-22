@@ -13,6 +13,10 @@ import {
   updateAntiBotRuleSchema,
 } from '../schemas/admin.schema.js';
 import { queryAuditLogsSchema } from '../schemas/audit-log.schema.js';
+import {
+  runReconciliationSchema,
+  queryReconciliationSchema,
+} from '../schemas/reconciliation.schema.js';
 
 const router = Router();
 
@@ -115,5 +119,27 @@ router.get('/reports', adminController.getReports);
  * @access  Admin
  */
 router.get('/audit-logs', validate(queryAuditLogsSchema, 'query'), adminController.getAuditLogs);
+
+/**
+ * @route   POST /admin/reconciliation/run
+ * @desc    Generate reconciliation report.
+ * @access  Admin
+ */
+router.post(
+  '/reconciliation/run',
+  validate(runReconciliationSchema),
+  adminController.runReconciliation
+);
+
+/**
+ * @route   GET /admin/reconciliation
+ * @desc    Reports and discrepancies.
+ * @access  Admin
+ */
+router.get(
+  '/reconciliation',
+  validate(queryReconciliationSchema, 'query'),
+  adminController.getReconciliationReports
+);
 
 export default router;
