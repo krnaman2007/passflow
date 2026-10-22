@@ -1,6 +1,24 @@
 import dutchAuctionService from '../services/dutch-auction.service.js';
 
 /**
+ * POST /auctions
+ * Create a new Dutch auction (Organizer only).
+ */
+export const createAuction = async (req, res, next) => {
+  try {
+    const organizerId = req.user?.organizer?.id;
+    const auction = await dutchAuctionService.createAuction(req.body, organizerId, req.user?.role);
+    res.status(201).json({
+      success: true,
+      message: 'Dutch auction created successfully',
+      data: auction,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
  * GET /auctions/:id
  * Retrieve Dutch auction details with current dynamic price.
  */
@@ -54,7 +72,9 @@ export const purchase = async (req, res, next) => {
 };
 
 export default {
+  createAuction,
   getAuction,
   getCurrentPrice,
   purchase,
 };
+

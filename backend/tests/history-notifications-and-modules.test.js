@@ -177,6 +177,32 @@ describe('History, Notifications & Supporting Modules Endpoints & Services', () 
       expect(result.currentPrice).toBeLessThanOrEqual(310);
     });
 
+    it('POST /auctions should reject unauthorized request without token (401)', async () => {
+      await request(app).post('/auctions').send({}).expect(401);
+    });
+
+    it('POST /auctions should reject regular user without organizer profile (403)', async () => {
+      const futureStart = new Date(Date.now() + 60000).toISOString();
+      const futureEnd = new Date(Date.now() + 3600000).toISOString();
+      await request(app)
+        .post('/auctions')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({
+          eventId: '123e4567-e89b-12d3-a456-426614174001',
+          categoryId: '123e4567-e89b-12d3-a456-426614174002',
+          startPrice: 500,
+          minPrice: 100,
+          startTime: futureStart,
+          endTime: futureEnd,
+        })
+        .expect(403);
+    });
+
+    it('GET /auctions/:id should return 404 for non-existent auction', async () => {
+      const fakeId = '123e4567-e89b-12d3-a456-426614174099';
+      await request(app).get(`/auctions/${fakeId}`).expect(404);
+    });
+
     it('GET /auctions/:id/price should return 404 for non-existent auction', async () => {
       const fakeId = '123e4567-e89b-12d3-a456-426614174099';
       await request(app).get(`/auctions/${fakeId}/price`).expect(404);

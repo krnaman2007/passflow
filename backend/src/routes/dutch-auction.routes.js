@@ -1,8 +1,23 @@
 import { Router } from 'express';
-import { authenticateUser } from '../middleware/auth.js';
+import { authenticateUser, requireOrganizer } from '../middleware/auth.js';
+import { validate } from '../middleware/validate.js';
+import { createDutchAuctionSchema } from '../schemas/dutch-auction.schema.js';
 import * as dutchAuctionController from '../controllers/dutch-auction.controller.js';
 
 const router = Router();
+
+/**
+ * @route   POST /auctions
+ * @desc    Create auction: startPrice, minPrice, start/end time
+ * @access  Private (Organizer)
+ */
+router.post(
+  '/',
+  authenticateUser,
+  requireOrganizer,
+  validate(createDutchAuctionSchema),
+  dutchAuctionController.createAuction
+);
 
 /**
  * @route   GET /auctions/:id

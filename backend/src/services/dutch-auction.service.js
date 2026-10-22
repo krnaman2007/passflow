@@ -8,6 +8,56 @@ import { AppError } from '../middleware/errorHandler.js';
  */
 class DutchAuctionService {
   /**
+   * Create a new Dutch auction for an event ticket category.
+   *
+   * @param {object} data - { eventId, categoryId, startPrice, minPrice, startTime, endTime }
+   * @param {string} [organizerId] - Organizer ID of the requester
+   * @param {string} [role] - User role
+   * @returns {Promise<object>}
+   */
+  async createAuction(data, organizerId, role) {
+    const event = await prisma.event.findUnique({
+      where: { id: data.eventId },
+    });
+
+    if (!event) {
+      throw new AppError('Event not found', 404, 'EVENT_NOT_FOUND');
+    }
+
+    // If requester is not admin, verify event ownership
+    if (role !== 'ADMIN' && organizerId && event.organizerId !== organizerId) {
+      throw new AppError('You can only create auctions for your own events', 403, 'FORBIDDEN');
+    }
+
+    const category = await prisma.ticketCategory.findUnique({
+      where: { id: data.categoryId },
+    });
+
+    if (!category || category.eventId !== data.eventId) {
+      throw new AppError('Ticket category not found for this event', 404, 'CATEGORY_NOT_FOUND');
+    }
+
+    const auction = await prisma.dutchAuction.create({
+      data: {
+        eventId: data.eventId,
+        categoryId: data.categoryId,
+        startPrice: data.startPrice,
+        minPrice: data.minPrice,
+        currentPrice: data.startPrice,
+        startTime: new Date(data.startTime),
+        endTime: new Date(data.endTime),
+        status: 'ACTIVE',
+      },
+      include: {
+        event: { select: { id: true, name: true, location: true, dateTime: true } },
+        category: { select: { id: true, name: true, originalPrice: true } },
+      },
+    });
+
+    return auction;
+  }
+
+  /**
    * Computes the price at the current time for a Dutch auction.
    *
    * @param {object|string} auctionOrId - Auction object or auction UUID
