@@ -6,6 +6,7 @@ import authRoutes from './routes/auth.routes.js';
 import userRoutes from './routes/user.routes.js';
 import organizerRoutes from './routes/organizer.routes.js';
 import adminRoutes from './routes/admin.routes.js';
+import solvencyRoutes from './routes/solvency.routes.js';
 import errorHandler from './middleware/errorHandler.js';
 
 const app = express();
@@ -15,14 +16,17 @@ app.use(cors({ origin: config.frontendUrl, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Health Check Route
-app.get('/api/health', (req, res) => {
-  res.json({
+// Liveness Check Route for deployment (GET /health, /api/health)
+const healthCheckHandler = (req, res) => {
+  res.status(200).json({
     status: 'ok',
     message: 'Backend server is running',
     timestamp: new Date().toISOString(),
   });
-});
+};
+app.get('/health', healthCheckHandler);
+app.get('/api/health', healthCheckHandler);
+app.get('/api/v1/health', healthCheckHandler);
 
 // Authentication Routes
 app.use('/auth', authRoutes);
@@ -39,6 +43,10 @@ app.use('/api/v1/organizers', organizerRoutes);
 // Admin Routes
 app.use('/admin', adminRoutes);
 app.use('/api/v1/admin', adminRoutes);
+
+// Solvency Verification Routes (Public)
+app.use('/solvency', solvencyRoutes);
+app.use('/api/v1/solvency', solvencyRoutes);
 
 // Event & Category Routes
 app.use('/api/v1', eventRoutes);

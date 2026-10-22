@@ -17,6 +17,8 @@ import {
   runReconciliationSchema,
   queryReconciliationSchema,
 } from '../schemas/reconciliation.schema.js';
+import { queryMonitoringLogsSchema } from '../schemas/monitoring.schema.js';
+import { generateSolvencyProofSchema } from '../schemas/solvency.schema.js';
 
 const router = Router();
 
@@ -140,6 +142,42 @@ router.get(
   '/reconciliation',
   validate(queryReconciliationSchema, 'query'),
   adminController.getReconciliationReports
+);
+
+/**
+ * @route   GET /admin/monitoring/health
+ * @desc    DB, Redis, WebSocket, engine status.
+ * @access  Admin
+ */
+router.get('/monitoring/health', adminController.getMonitoringHealth);
+
+/**
+ * @route   GET /admin/monitoring/logs
+ * @desc    System logs.
+ * @access  Admin
+ */
+router.get(
+  '/monitoring/logs',
+  validate(queryMonitoringLogsSchema, 'query'),
+  adminController.getMonitoringLogs
+);
+
+/**
+ * @route   GET /admin/metrics
+ * @desc    PerformanceMetrics: orders/sec, latency, errors.
+ * @access  Admin
+ */
+router.get('/metrics', adminController.getMetrics);
+
+/**
+ * @route   POST /admin/solvency/generate
+ * @desc    Create SolvencyProof.
+ * @access  Admin
+ */
+router.post(
+  '/solvency/generate',
+  validate(generateSolvencyProofSchema),
+  adminController.generateSolvencyProof
 );
 
 export default router;
