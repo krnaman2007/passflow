@@ -54,8 +54,24 @@ export const getRecentTrades = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /market/summary
+ * Public: Top events by volume / price movement.
+ */
+export const getMarketSummary = async (req, res, next) => {
+  try {
+    const query = req.validatedQuery || req.query;
+    const data = await marketService.getMarketSummary(query);
+
+    res.status(200).json(successResponse(data));
+  } catch (err) {
+    next(err);
+  }
+};
+
 export default {
   getMarketData,
   getMarketDepth,
   getRecentTrades,
+  getMarketSummary,
 };

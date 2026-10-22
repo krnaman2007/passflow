@@ -5,9 +5,21 @@ import {
   marketParamsSchema,
   queryMarketDepthSchema,
   queryTradeFeedSchema,
+  queryMarketSummarySchema,
 } from '../schemas/market.schema.js';
 
 const router = Router();
+
+/**
+ * @route   GET /market/summary
+ * @desc    Top events by volume / price movement.
+ * @access  Public
+ */
+router.get(
+  '/summary',
+  validate(queryMarketSummarySchema, 'query'),
+  marketController.getMarketSummary
+);
 
 /**
  * @route   GET /market/:eventId/:categoryId/depth

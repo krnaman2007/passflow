@@ -54,6 +54,7 @@ app.use('/market', marketRoutes);
 app.use('/api/v1/market', marketRoutes);
 
 // Event & Category Routes
+app.use(eventRoutes);
 app.use('/api/v1', eventRoutes);
 app.use('/api', eventRoutes);
 
