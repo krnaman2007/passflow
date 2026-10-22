@@ -1450,6 +1450,108 @@ model TradeSettlement {
 - Inverse relation added to `Execution`: `settlement TradeSettlement?`.
 - Zero changes to existing fields or tables; 100% additive. No migration applied in Step 9.4A.
 
+---
+
+### 5.18 Step 9.4B Audit: Final Settlement Readiness & Concurrency Invariants
+
+#### 5.18.1 Finalized Buyer Hold Accounting & Invariant Derivations
+- **Core Quantities**:
+  - Execution Quantity: $Q = \text{execution.quantity}$ (positive integer tickets)
+  - Execution Price: $P_{\text{exec}} = \text{execution.price}$ (paise per ticket)
+  - Buyer Limit Price: $P_{\text{bid}} = \text{buyerOrder.price}$ (paise per ticket)
+  - Obligation Amounts:
+    - $\text{tradeCost} = P_{\text{exec}} \times Q \text{ paise}$
+    - $\text{buyerReservedConsumed} = P_{\text{bid}} \times Q \text{ paise}$
+    - $\text{priceImprovement} = \text{buyerReservedConsumed} - \text{tradeCost} = (P_{\text{bid}} - P_{\text{exec}}) \times Q \ge 0 \text{ paise}$
+- **Precise Account and Hold Mutations**:
+  - `WalletHold.remainingAmount`: Decreases by **$\text{buyerReservedConsumed}$** ($P_{\text{bid}} \times Q$).
+  - `Wallet.reservedBalance`: Decreases by **$\text{buyerReservedConsumed}$** ($P_{\text{bid}} \times Q$).
+  - `Wallet.availableBalance`: Increases by **$\text{priceImprovement}$** ($(P_{\text{bid}} - P_{\text{exec}}) \times Q$).
+  - `WalletLedgerEntry` 1 (`TRADE_SETTLEMENT_DEBIT`):
+    - `amount`: $\text{tradeCost}$
+    - `availableDelta`: $0$
+    - `reservedDelta`: $-\text{tradeCost}$
+  - `WalletLedgerEntry` 2 (`ORDER_RELEASE`, only if $\text{priceImprovement} > 0$):
+    - `amount`: $\text{priceImprovement}$
+    - `availableDelta`: $+\text{priceImprovement}$
+    - `reservedDelta`: $-\text{priceImprovement}$
+- **Mathematical Necessity of Decrementing Hold by $\text{buyerReservedConsumed}$**:
+  When the buy order was placed, the hold reserved $P_{\text{bid}} \times Q$ from available to reserved balance. If the hold decreased only by $\text{tradeCost}$, the unspent $\text{priceImprovement}$ would remain trapped inside `remainingAmount` even though it has already been refunded to `availableBalance`. This would corrupt the invariant $\text{hold.remainingAmount} \le \text{wallet.reservedBalance}$, prevent the hold from ever reaching `SETTLED` (`remainingAmount === 0`) upon full execution, and cause subsequent cancellations or reconciliation to double-refund the price improvement.
+- **Disjoint Consumption Across Repeated Executions**:
+  For an order of size $Q_0$, initial hold is $H_0 = P_{\text{bid}} \times Q_0$.
+  For $k$ successive executions $E_1 \dots E_k$ with quantities $q_1 \dots q_k$:
+  $$H_m = P_{\text{bid}} \times \left(Q_0 - \sum_{i=1}^m q_i\right) = P_{\text{bid}} \times Q_{\text{remaining}}$$
+  Each fill consumes strictly $P_{\text{bid}} \times q_i$, guaranteeing non-overlapping partitions. If cancelled with remainder $Q_{\text{rem}}$, cancellation releases only $P_{\text{bid}} \times Q_{\text{rem}}$, preserving exactly the reservation required for in-flight executions.
+
+#### 5.18.2 Shared-Hold Concurrency & Inter-Service Lock-Order Alignment
+- **Lock Ordering Verification Against Existing Paths**:
+  - `WalletService.releaseHold`: Acquires `SELECT * FROM "Wallet" WHERE id = $walletId FOR UPDATE` **first**, then updates `WalletHold`.
+  - `WalletService.reserveFunds`: Acquires `SELECT * FROM "Wallet" WHERE id = $walletId FOR UPDATE` **first**, then creates `WalletHold`.
+  - `OrderService.placeLimitOrder`: For BUY, calls `reserveFunds` (locks `Wallet` first). For ASK, locks `UserTicketInventory` (no wallet lock).
+  - `OrderService.cancelLimitOrder`: Calls `matchingService.cancelLimitOrder` under `MarketExecutionQueue`, then for BUY calls `releaseHold` (locks `Wallet` first).
+- **Lock Inversion Prevention**:
+  If Settlement locked `WalletHold` first and then `Wallet`, a deadlock would occur against `releaseHold` (Settlement holds `WalletHold`, waits on `Wallet`; `releaseHold` holds `Wallet`, waits on `WalletHold`).
+  **Enforced Settlement Lock Order**:
+  1. `Wallet` (ordered by `id ASC`)
+  2. `UserTicketInventory` (ordered by `userId ASC`)
+  3. `WalletHold` (`SELECT * FROM "WalletHold" WHERE id = $buyerHoldId FOR UPDATE`)
+  This guarantees that all services acquire `Wallet` **before** `WalletHold`, eliminating lock-order inversion.
+
+#### 5.18.3 Concurrency-Safe Inventory Accounting
+- **Inventory Deltas for Quantity $Q$**:
+  - Seller: $\Delta \text{reservedQuantity} = -Q$, $\Delta \text{totalQuantity} = -Q$, $\Delta \text{availableQuantity} = 0$.
+  - Buyer: $\Delta \text{availableQuantity} = +Q$, $\Delta \text{totalQuantity} = +Q$, $\Delta \text{reservedQuantity} = 0$.
+- **Database CHECK Constraint Verification**:
+  - Seller: $R_s - Q \ge 0$, $A_s \ge 0$, $T_s - Q \ge 0$, and $A_s + (R_s - Q) \le T_s - Q \implies A_s + R_s \le T_s$.
+  - Buyer: $A_b + Q \ge 0$, $R_b \ge 0$, $T_b + Q \ge 0$, and $(A_b + Q) + R_b \le T_b + Q \implies A_b + R_b \le T_b$.
+  All 4 CHECK constraints on `UserTicketInventory` remain satisfied at every step.
+- **Missing Row Handling**:
+  Buyer rows are created atomically via `INSERT INTO "UserTicketInventory" ... ON CONFLICT ("userId", "ticketCategoryId") DO NOTHING` in sorted `userId` order before locking.
+
+#### 5.18.4 Ambiguous-Commit Recovery Protocol (Fail-Closed)
+1. **In-Flight Transaction**: Recovery attempts `SELECT FOR UPDATE` on the parent execution/wallet rows, which blocks until the in-flight commit completes or aborts.
+2. **Lost Connection During Commit**: Catch `isAmbiguousCommitError`; query `TradeSettlement.findUnique({ where: { executionId } })`. If present, return `{ isDuplicate: true, settlement }`.
+3. **Response Lost After Commit**: Client retries using `settle:exec:${execution.id}`; detected by unique constraint and returned safely with zero balance mutations.
+4. **Definitive Rollback**: Verified only when `TradeSettlement` is null **AND** `WalletLedgerEntry` count for `executionId` is zero. Safe to retry.
+5. **Uncertain Database State**: Fail closed. Quarantine the market, preserve reservations, and alert operators. Never release holds on ambiguity.
+
+#### 5.18.5 Queue/Worker Architecture & Reconciled 30-Second Sweeper Policy
+- **Selected Initial Architecture**: **Hybrid Decoupled Settlement Architecture (Event-Driven Dispatch + Periodic Durable Discovery Sweeper)**.
+- **Trade-off Analysis**:
+  - Executing settlement synchronously inside the matching queue blocks the matching engine and leaves executions orphaned if the process crashes between matching commit and settlement.
+  - Decoupling matching persistence from settlement preserves matching throughput.
+- **Operational Lifecycle**:
+  1. *Immediate Path*: Matching engine commits `Execution` and fires in-memory `execution.matched` event to trigger settlement asynchronously under `MarketExecutionQueue.execute(marketKey)`.
+  2. *Durable Sweeper*: Background task runs every 30 seconds to discover executions with age $> 30\text{ seconds}$ lacking `TradeSettlement`:
+     ```sql
+     SELECT e.id, o."eventId", o."ticketCategoryId"
+     FROM "Execution" e
+     JOIN "Order" o ON e."incomingOrderId" = o."id"
+     WHERE e."executedAt" < NOW() - INTERVAL '30 seconds'
+       AND NOT EXISTS (SELECT 1 FROM "TradeSettlement" ts WHERE ts."executionId" = e."id")
+     ORDER BY e."sequenceNumber" ASC
+     LIMIT 50;
+     ```
+  3. *Unified Safety Window Policy (30 seconds)*: The 30-second threshold is strictly aligned across Section 5.17.6 and 5.18.5. Because Prisma transactions have a maximum timeout of 10s, a 30s window guarantees that any in-flight transaction from the initial match event has completely terminated (committed or aborted), eliminating lock contention against active connections.
+  4. *Concurrency Protection*: `@unique([executionId])` prevents duplicate execution by competing event handlers or sweeper runs.
+
+#### 5.18.6 Execution History Preservation & Foreign Key Policy (Audit Finding)
+- **Cascade Deletion Vulnerability**:
+  - Existing migration `20261021161148` defines `Execution_incomingOrderId_fkey` and `Execution_restingOrderId_fkey` with `ON DELETE CASCADE`.
+  - While settled executions are protected from deletion by `WalletLedgerEntry_executionId_fkey` (`ON DELETE RESTRICT`), unsettled executions could be destroyed if a parent `Order` is deleted before settlement commits.
+- **Recommended Schema Correction for Step 9.4 Implementation**:
+  - In the upcoming Step 9.4 additive migration, alter `Execution` foreign keys to `Order` to `ON DELETE RESTRICT`:
+    ```sql
+    ALTER TABLE "Execution" DROP CONSTRAINT "Execution_incomingOrderId_fkey";
+    ALTER TABLE "Execution" ADD CONSTRAINT "Execution_incomingOrderId_fkey" FOREIGN KEY ("incomingOrderId") REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+    ALTER TABLE "Execution" DROP CONSTRAINT "Execution_restingOrderId_fkey";
+    ALTER TABLE "Execution" ADD CONSTRAINT "Execution_restingOrderId_fkey" FOREIGN KEY ("restingOrderId") REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+    ```
+  - This guarantees that completed trade execution history can never be cascade-deleted.
+
+
+
 
 
 
