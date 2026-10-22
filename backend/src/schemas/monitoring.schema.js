@@ -75,4 +75,19 @@ export const systemHealthResponseSchema = z.object({
   }),
 });
 
+/**
+ * PerformanceMetrics Model Schema
+ * Engine / API performance figures.
+ * Fields: id, ordersPerSec, avgLatency, throughput, errorRate, createdAt
+ */
+export const performanceMetricsSchema = z.object({
+  id: z.string().optional(),
+  ordersPerSec: z.coerce.number().nonnegative(),
+  avgLatency: z.coerce.number().nonnegative(),
+  throughput: z.coerce.number().nonnegative(),
+  errorRate: z.coerce.number().nonnegative(),
+  createdAt: z.coerce.date().default(() => new Date()),
+});
+
 export default monitoringSchema;
+

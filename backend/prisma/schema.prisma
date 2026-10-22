@@ -22,14 +22,18 @@ model User {
   updatedAt    DateTime   @updatedAt
 
   // Relationships
-  organizer    Organizer?
-  buyerSeller  BuyerSeller?
-  orders       Order[]
-  wallet       Wallet?
-  refreshTokens RefreshToken[]
-  admin        Admin?
-  ticketInventories UserTicketInventory[]
-  inventoryCredits  UserInventoryCredit[]
+  organizer            Organizer?
+  buyerSeller          BuyerSeller?
+  orders               Order[]
+  wallet               Wallet?
+  refreshTokens        RefreshToken[]
+  admin                Admin?
+  ticketInventories    UserTicketInventory[]
+  inventoryCredits     UserInventoryCredit[]
+  notifications        Notification[]
+  antiBotRules         AntiBotRule[]
+  solvencyProofs       SolvencyProof[]
+  transactionHistories TransactionHistory[]
 }
 
 enum Role {
@@ -160,9 +164,11 @@ model Event {
   updatedAt     DateTime         @updatedAt
 
   // Relationships
-  categories    TicketCategory[]
-  orders        Order[]
-  marketLeases  MarketLease[]
+  categories        TicketCategory[]
+  orders            Order[]
+  marketLeases      MarketLease[]
+  antiScalpingRules AntiScalpingRule[]
+  dutchAuctions     DutchAuction[]
 }
 
 model TicketCategory {
@@ -183,6 +189,8 @@ model TicketCategory {
   userInventories   UserTicketInventory[]
   inventoryCredits  UserInventoryCredit[]
   marketLeases      MarketLease[]
+  antiScalpingRules AntiScalpingRule[]
+  dutchAuctions     DutchAuction[]
 }
 
 model TicketInventory {
@@ -510,5 +518,135 @@ model Monitoring {
   @@index([status])
   @@index([createdAt])
 }
+
+// ==========================================
+// Supporting Modules (Models from Specification)
+// ==========================================
+
+model AntiScalpingRule {
+  id             String          @id @default(uuid())
+  eventId        String
+  event          Event           @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  categoryId     String?
+  category       TicketCategory? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  maxResalePrice Decimal         @db.Decimal(12, 2)
+  isActive       Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([eventId])
+  @@index([categoryId])
+  @@index([isActive])
+}
+
+enum AntiBotStatus {
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+}
+
+model AntiBotRule {
+  id        String        @id @default(uuid())
+  userId    String?
+  user      User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ruleType  String
+  limit     Int
+  status    AntiBotStatus @default(ACTIVE)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([ruleType])
+  @@index([status])
+}
+
+enum NotificationStatus {
+  UNREAD
+  READ
+}
+
+model Notification {
+  id        String             @id @default(uuid())
+  userId    String
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  message   String
+  status    NotificationStatus @default(UNREAD)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model TransactionHistory {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  amount    Decimal  @db.Decimal(12, 2)
+  status    String   @default("COMPLETED")
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+enum DutchAuctionStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+  EXPIRED
+}
+
+model DutchAuction {
+  id           String             @id @default(uuid())
+  eventId      String
+  event        Event              @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  categoryId   String
+  category     TicketCategory     @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  startPrice   Decimal            @db.Decimal(12, 2)
+  minPrice     Decimal            @db.Decimal(12, 2)
+  currentPrice Decimal            @db.Decimal(12, 2)
+  startTime    DateTime
+  endTime      DateTime
+  status       DutchAuctionStatus @default(ACTIVE)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  @@index([eventId])
+  @@index([categoryId])
+  @@index([status])
+}
+
+model PerformanceMetrics {
+  id           String   @id @default(uuid())
+  ordersPerSec Float
+  avgLatency   Float
+  throughput   Float
+  errorRate    Float
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model SolvencyProof {
+  id            String   @id @default(uuid())
+  userId        String?
+  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  liabilities   Decimal  @db.Decimal(14, 2)
+  escrowBalance Decimal  @db.Decimal(14, 2)
+  backingAssets Decimal  @db.Decimal(14, 2)
+  isSolvent     Boolean  @default(true)
+  ratio         Float?
+  proofHash     String?
+  notes         String?
+  verifiedAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  @@index([verifiedAt])
+}
+
 
 
