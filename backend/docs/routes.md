@@ -79,6 +79,12 @@ This document tracks active API routes and planned route additions as the PassFl
 | `GET` | `/solvency/verify` *(also `/api/v1/solvency/verify`)* | Verify platform solvency (backing assets cover user liabilities) | Public | None | `{"success": true, "data": {"isSolvent": true, "verified": true, "proof": {...}}}` | Active |
 | `GET` | `/health` *(also `/api/health`, `/api/v1/health`)* | Liveness check for cloud deployment and load balancers | Public | None | `{"status": "ok", "message": "Backend server is running", "timestamp": "..."}` | Active |
 
+### Market Data & Analytics
+
+| Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `GET` | `/market/:eventId/:categoryId` *(also `/api/v1/market/:eventId/:categoryId`)* | MarketData snapshot: best bid/ask, last traded price, volume, spread | Public | None | `{"success": true, "data": {"id": "...", "eventId": "...", "categoryId": "...", "bestBid": 1500, "bestAsk": 1600, "lastPrice": 1550, "volume": 25, "spread": 100, "updatedAt": "..."}}` | Active |
+
 ---
 
 ## 2. Active Real-Time / WebSocket Events
