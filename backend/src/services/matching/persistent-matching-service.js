@@ -1252,4 +1252,116 @@ export class PersistentMatchingService {
       };
     });
   }
+
+  /**
+   * Cancels an open or partially filled limit order under MarketExecutionQueue serialization.
+   * Updates PostgreSQL status to CANCELLED and removes unfilled resting quantity from the in-memory OrderBook.
+   *
+   * @param {Object} params
+   * @param {string} params.eventId
+   * @param {string} params.ticketCategoryId
+   * @param {string} params.orderId
+   * @param {string} params.userId
+   * @returns {Promise<Object>} Cancellation result.
+   */
+  async cancelLimitOrder({ eventId, ticketCategoryId, orderId, userId }) {
+    if (!eventId || typeof eventId !== 'string' || !eventId.trim()) {
+      throw new OrderValidationError('eventId must be a non-empty string', 'eventId');
+    }
+    if (!ticketCategoryId || typeof ticketCategoryId !== 'string' || !ticketCategoryId.trim()) {
+      throw new OrderValidationError('ticketCategoryId must be a non-empty string', 'ticketCategoryId');
+    }
+    if (!orderId || typeof orderId !== 'string' || !orderId.trim()) {
+      throw new OrderValidationError('orderId must be a non-empty string', 'orderId');
+    }
+    if (!userId || typeof userId !== 'string' || !userId.trim()) {
+      throw new OrderValidationError('userId must be a non-empty string', 'userId');
+    }
+
+    const marketKey = formatMarketKey(eventId.trim(), ticketCategoryId.trim());
+
+    return this.queue.execute(marketKey, async () => {
+      // 1. Verify market readiness
+      this.stateManager.assertReady(marketKey);
+
+      const book = this._marketBooks.get(marketKey);
+      if (!book) {
+        throw new MarketStateDivergenceError(
+          `No in-memory OrderBook registered for market "${marketKey}"`,
+          { marketKey }
+        );
+      }
+
+      // 2. Execute cancellation inside an atomic transaction
+      return this.repository.prisma.$transaction(async (tx) => {
+        const order = await tx.order.findUnique({
+          where: { id: orderId },
+        });
+
+        if (!order) {
+          throw new OrderValidationError(`Order not found: ${orderId}`, 'orderId');
+        }
+        if (order.userId !== userId) {
+          throw new OrderValidationError('Unauthorized: order does not belong to user', 'userId');
+        }
+        if (order.eventId !== eventId || order.ticketCategoryId !== ticketCategoryId) {
+          throw new OrderValidationError(
+            `Market mismatch: order belongs to ${order.eventId}:${order.ticketCategoryId}, requested ${eventId}:${ticketCategoryId}`,
+            'marketKey'
+          );
+        }
+
+        // Idempotent replay for already cancelled order
+        if (order.status === 'CANCELLED') {
+          return {
+            orderId: order.id,
+            status: 'CANCELLED',
+            cancelledQuantity: 0,
+            remainingQuantity: 0,
+            isDuplicate: true,
+            side: order.side,
+            price: order.price,
+            eventId: order.eventId,
+            ticketCategoryId: order.ticketCategoryId,
+            userId: order.userId,
+          };
+        }
+
+        if (order.status === 'FILLED') {
+          throw new OrderValidationError('Cannot cancel fully filled order', 'status');
+        }
+        if (order.status === 'REJECTED') {
+          throw new OrderValidationError('Cannot cancel rejected order', 'status');
+        }
+
+        const cancelledQuantity = order.remainingQuantity;
+
+        // Update database record
+        const updatedOrder = await tx.order.update({
+          where: { id: orderId },
+          data: {
+            status: 'CANCELLED',
+            remainingQuantity: 0,
+          },
+        });
+
+        // Mutate in-memory OrderBook
+        book.cancelOrder(orderId);
+
+        return {
+          orderId: updatedOrder.id,
+          status: 'CANCELLED',
+          cancelledQuantity,
+          remainingQuantity: 0,
+          isDuplicate: false,
+          side: updatedOrder.side,
+          price: updatedOrder.price,
+          eventId: updatedOrder.eventId,
+          ticketCategoryId: updatedOrder.ticketCategoryId,
+          userId: updatedOrder.userId,
+        };
+      });
+    });
+  }
 }
+

@@ -1097,4 +1097,92 @@ All balance mutations run inside a single atomic database transaction (`prisma.$
 - Floats, fractional paise, `NaN`, `Infinity`, negative amounts, zero, and values exceeding JavaScript `Number.MAX_SAFE_INTEGER` ($9,007,199,254,740,991$ paise) are rejected with `WalletValidationError`.
 - `serializeWallet()`, `serializeHold()`, and `serializeLedgerEntry()` serialize `BigInt` balances and sequence numbers to strings for API responses, preventing IEEE-754 precision loss.
 
+### 5.15 Step 9.3 — Order Lifecycle, Buy-Fund Reservations, and Sell-Inventory Reservations
+
+#### 5.15.1 Architectural Scope & Core Invariants
+- **Separation of Matching & Reservation from Settlement**:
+  - In Step 9.3, `OrderService` validates orders, secures pre-matching financial escrow holds for buyers, locks secondary ticket inventory for sellers, and integrates with `PersistentMatchingService` and `MarketExecutionQueue`.
+  - **Matching is NOT settlement**: When an order crosses and matches opposing orders, `Execution` records are created and resting quantities are reduced, but:
+    - Buyer wallet balance is **not** debited for trade settlement.
+    - Seller wallet balance is **not** credited.
+    - Ticket inventory is **not** transferred to the buyer.
+    - Reserved funds and reserved inventory are held in escrow awaiting authoritative multi-party settlement in Step 9.4.
+  - Zero public HTTP controllers or routes were added in this step.
+
+#### 5.15.2 Secondary Ticket Inventory Architecture (`UserTicketInventory`)
+- **Fungible Secondary Inventory Model (Proposal 1 Confirmed)**:
+  - Tickets in PassFlow's secondary exchange are represented as fungible quantities within a ticket category rather than individual seat barcodes.
+  - Added model `UserTicketInventory` (`backend/prisma/schema.prisma`):
+    - `id`: UUID primary key.
+    - `userId`: Foreign key to `User` (seller identity).
+    - `ticketCategoryId`: Foreign key to `TicketCategory`.
+    - `totalQuantity`: Non-negative integer of total tickets owned.
+    - `availableQuantity`: Non-negative integer of unlisted tickets eligible to be sold.
+    - `reservedQuantity`: Non-negative integer of tickets locked in active `ASK` orders.
+    - `@@unique([userId, ticketCategoryId])`: Strictly one inventory account per user per category.
+- **Database CHECK Constraints (Additive Migration `20261022130000_add_user_ticket_inventory`)**:
+  - PostgreSQL database-level constraints enforce mathematical invariants:
+    - `CHECK ("totalQuantity" >= 0)`
+    - `CHECK ("availableQuantity" >= 0)`
+    - `CHECK ("reservedQuantity" >= 0)`
+    - `CHECK ("availableQuantity" + "reservedQuantity" <= "totalQuantity")`
+- **Distinction from Primary `TicketInventory`**:
+  - Primary `TicketInventory` belongs to the event Organizer (`categoryId @unique`) and tracks primary event ticket sales. Secondary sellers cannot list or reserve from `TicketInventory`.
+  - Secondary sellers can only list tickets they own in `UserTicketInventory`.
+
+#### 5.15.3 Pre-Matching Buy Reservation Engine (BID Orders)
+- **Maximum Financial Exposure Invariant**:
+  - For a buy limit order of size $Q$ at price $P$ paise, the maximum possible obligation is:
+    $$\text{holdAmount} = P \times Q \text{ paise}$$
+  - The service executes `WalletService.reserveFunds` **before** the order enters matching eligibility.
+  - Atomically locks the buyer's wallet row (`SELECT FOR UPDATE`), verifies $\text{availableBalance} \ge \text{holdAmount}$, decrements $\text{availableBalance} -= \text{holdAmount}$, increments $\text{reservedBalance} += \text{holdAmount}$, and creates an active `WalletHold` record (`reason = 'ORDER_ESCROW'`).
+  - Available balance never becomes negative. Insufficient funds requests are rejected immediately without creating an order.
+
+#### 5.15.4 Pre-Matching Sell Inventory Reservation Engine (ASK Orders)
+- **Authoritative Inventory Lock**:
+  - For a sell limit order of size $Q$, the seller must own eligible unreserved tickets.
+  - Inside a PostgreSQL transaction, the service locks the seller's inventory row:
+    ```sql
+    SELECT * FROM "UserTicketInventory"
+    WHERE "userId" = $1 AND "ticketCategoryId" = $2
+    FOR UPDATE
+    ```
+  - Verifies $\text{availableQuantity} \ge Q$.
+  - Atomically updates:
+    - $\text{availableQuantity} = \text{availableQuantity} - Q$
+    - $\text{reservedQuantity} = \text{reservedQuantity} + Q$
+  - If no inventory record exists or $\text{availableQuantity} < Q$, throws `InsufficientInventoryError` (HTTP 422). Zero orders or holds are created.
+
+#### 5.15.5 Matching Engine Integration & Compensating Rollback
+- **Coordination under `MarketExecutionQueue`**:
+  - All matching submissions and cancellations for a market serialize through `MarketExecutionQueue.execute(marketKey, ...)`.
+  - The order book is synchronized from PostgreSQL; market readiness gate (`READY`) is strictly enforced.
+- **Compensating Atomicity**:
+  - If `PersistentMatchingService.submitLimitOrder()` throws (e.g. market quarantined, self-trade stopped, transient database error):
+    - For BUY: An immediate compensating transaction calls `WalletService.releaseHold()` to restore the buyer's available balance.
+    - For SELL: An immediate compensating transaction decrements $\text{reservedQuantity}$ and increments $\text{availableQuantity}$.
+    - Zero orphaned holds or locked inventory remain in the system.
+
+#### 5.15.6 Cancellation Semantics & Reservation Conservation
+- **Strict Matching / Cancellation Serialization**:
+  - Cancellation executes through `MarketExecutionQueue.execute(marketKey, ...)`, making it physically impossible for matching and cancellation to race within the market.
+- **Ownership & Status Verification**:
+  - Enforces `order.userId === userId`.
+  - Rejects cancellation of `FILLED` or `REJECTED` orders.
+  - Transitions order status to `CANCELLED` and sets $\text{remainingQuantity} = 0$ in DB.
+  - Mutates in-memory `OrderBook` via `book.cancelOrder(orderId)`.
+- **Exact Reservation Conservation**:
+  - When an order is cancelled, **only the unfilled, still-resting portion** is released:
+    - For BUY: Releases $\text{unfilledPaise} = \text{price} \times \text{cancelledQuantity}$ paise back to $\text{availableBalance}$. Funds corresponding to filled trades ($\text{price} \times (\text{initialQuantity} - \text{cancelledQuantity})$) remain reserved in the hold awaiting Step 9.4 settlement.
+    - For SELL: Restores $\text{cancelledQuantity}$ tickets back to $\text{availableQuantity}$. Inventory corresponding to filled trades remains in $\text{reservedQuantity}$ awaiting Step 9.4 settlement transfer.
+- **Idempotent Replay**:
+  - Repeated cancellation calls on an already cancelled order return the original outcome with `isDuplicate: true` and $\text{cancelledQuantity} = 0$, guaranteeing zero double refunds.
+
+#### 5.15.7 Primary-Purchase Integration Status & Dependency
+- **Current State**: Primary ticket purchase (`POST /events/:id/purchase`) is not yet implemented (assigned to Teammate 3 in `docs/Om.md`).
+- **Clean Integration Point**:
+  - `OrderService.creditUserTicketInventory({ userId, ticketCategoryId, quantity, tx })` is provided as the authoritative domain entrypoint.
+  - When Teammate 3 completes primary ticket checkout, primary purchase will call this method within its completion transaction to credit real user ownership.
+
+
 
