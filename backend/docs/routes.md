@@ -1181,8 +1181,261 @@ All balance mutations run inside a single atomic database transaction (`prisma.$
 #### 5.15.7 Primary-Purchase Integration Status & Dependency
 - **Current State**: Primary ticket purchase (`POST /events/:id/purchase`) is not yet implemented (assigned to Teammate 3 in `docs/Om.md`).
 - **Clean Integration Point**:
-  - `OrderService.creditUserTicketInventory({ userId, ticketCategoryId, quantity, tx })` is provided as the authoritative domain entrypoint.
+  - `OrderService.creditUserTicketInventory({ userId, ticketCategoryId, quantity, tx, requireTransaction, idempotencyKey })` is provided as the authoritative domain entrypoint.
   - When Teammate 3 completes primary ticket checkout, primary purchase will call this method within its completion transaction to credit real user ownership.
+
+---
+
+### 5.16 Step 9.3A Audit: Order, Reservation, and Matching Consistency
+
+#### 5.16.1 Ambiguous Matching Outcomes & Non-Blind Compensation Protocol
+- **Audit Problem**: In the initial Step 9.3 implementation, any exception thrown during `PersistentMatchingService.submitLimitOrder()` triggered a blind compensating rollback (releasing the buyer's wallet hold or unlocking the seller's inventory).
+  - If `submitLimitOrder` threw `PostCommitMutationError` (which occurs when PostgreSQL has committed but in-memory book mutation failed), the order was committed to PostgreSQL, but the reservation was released.
+  - If a network timeout or pooler disconnection occurred during transaction commit, the caller received an error while the order may have committed to PostgreSQL. Blindly releasing reservations resulted in active orders existing in PostgreSQL with zero reserved assets.
+- **Audited Distinction & Resolution Logic**:
+  | Outcome State | PostgreSQL Status | Action Taken | Reservation Disposition |
+  | :--- | :--- | :--- | :--- |
+  | **Definite Pre-Persistence Failure** (validation, queue reject) | Order does NOT exist | Catch error, recheck DB -> safe compensating release | Released to user |
+  | **Definitive Transaction Rollback** (check constraint, abort) | Order does NOT exist | Verified order absence in PostgreSQL -> safe compensating release | Released to user |
+  | **Post-Commit In-Memory Failure** (`PostCommitMutationError`) | Order **committed** | Hold linked to order; `PostCommitMutationError` rethrown | **Secured & Kept Locked** |
+  | **Ambiguous Commit Disconnect** (DB timeout, network drop) | DB check unreachable | Throws `AmbiguousOrderOutcomeError` | **Secured & Kept Locked** |
+  | **Ambiguous Commit Resolved** (DB query succeeds) | Order **committed** | Hold linked; returns committed outcome (`isAmbiguousCommitResolved: true`) | **Secured & Kept Locked** |
+
+#### 5.16.2 Order-to-Hold and Order-to-Inventory Linkage Invariants
+- **Buyer Hold Linkage Window**:
+  - Pre-matching hold is created with `operation.referenceId = orderId` and `orderId = null` (because `WalletHold.orderId` references `Order(id)` with foreign key enforcement).
+  - Upon order commit, `orderId` is linked.
+  - If a crash occurs prior to hold linkage:
+    - `OrderService.placeLimitOrder` idempotent replay automatically links any unlinked hold for the order.
+    - `OrderService.cancelLimitOrder` queries holds using dynamic filters: `OR: [{ orderId: order.id }, { idempotencyKey: order-escrow:${order.idempotencyKey} }, { operation: { referenceId: order.id } }]` and links `orderId` upon cancellation.
+    - `OrderService.reconcileOrderReservations` scans for active holds with `orderId === null` and links them to their corresponding `Order`.
+- **Orphaned Reservation Reconciliation**:
+  - `reconcileOrderReservations` detects active holds whose referenced order does not exist in PostgreSQL. In active mode (`dryRun: false`), orphaned holds from aborted processes are safely released.
+  - For sellers, `reconcileOrderReservations` calculates expected reserved quantity:
+    $$\text{expectedReserved} = \sum_{\text{active Asks}} \text{remainingQuantity} + \sum_{\text{unsettled Executions}} \text{quantity}$$
+    Any excess in `UserTicketInventory.reservedQuantity` represents orphaned reservations from interrupted submissions and is automatically restored to `availableQuantity`.
+
+#### 5.16.3 Partial-Fill and Cancellation Invariants
+- **Mathematical Quantity Conservation**:
+  $$\text{initialQuantity} = \text{remainingQuantity} + \text{executedQuantity}$$
+  - For active orders (`OPEN`, `PARTIALLY_FILLED`): verified on every fill.
+  - For cancelled orders: $\text{initialQuantity} = \text{cancelledQuantity} + \text{executedQuantity}$.
+- **Reservation Conservation on Partial Fills**:
+  - When an order is cancelled after partial fills, **only the unfilled quantity** is released:
+    - BUY: $\text{unfilledPaise} = \text{price} \times \text{cancelledQuantity}$ released. Remaining $\text{price} \times \text{executedQuantity}$ remains locked in `WalletHold` (`PARTIALLY_RELEASED`) awaiting Step 9.4 settlement.
+    - SELL: $\text{cancelledQuantity}$ tickets restored to `availableQuantity`. Executed tickets remain in `reservedQuantity` awaiting Step 9.4 settlement transfer.
+- **Price Improvement Protection**:
+  - When a buyer's limit price ($P_{\text{limit}}$) exceeds execution price ($P_{\text{exec}}$), the difference $(P_{\text{limit}} - P_{\text{exec}}) \times Q_{\text{exec}}$ remains secured inside the `WalletHold`.
+  - It is neither spent nor refunded during Step 9.3; price improvement accounting is strictly deferred to Step 9.4 settlement.
+- **Interrupted Cancellation Recovery**:
+  - If cancellation updates the order to `CANCELLED` in PostgreSQL but the process crashes before `WalletService.releaseHold()` completes:
+  - Client retrying cancellation detects that $\text{hold.remainingAmount} > \text{executedQuantity} \times \text{price}$. The unreleased remainder is calculated and refunded idempotently without double-refunding.
+
+#### 5.16.4 Primary-Purchase Inventory Credit Contract
+- **Authoritative Model**: Added `UserInventoryCredit` (`backend/prisma/schema.prisma`):
+  - `id`: UUID primary key.
+  - `userId`: Foreign key to `User`.
+  - `ticketCategoryId`: Foreign key to `TicketCategory`.
+  - `quantity`: Positive integer tickets credited.
+  - `idempotencyKey`: Unique string (`@unique`) preventing duplicate credits.
+  - `purchaseId`: Optional primary purchase reference for audit.
+  - `createdAt`: Timestamp.
+- **Additive Migration**: `20261022140000_add_user_inventory_credit` applied to live Neon PostgreSQL with `CHECK (quantity > 0)`.
+- **Contract Guarantees**:
+  1. *Transaction Atomicity*: Accepts caller's `tx`. If the primary purchase transaction aborts, PostgreSQL rolls back both `UserInventoryCredit` and `UserTicketInventory` updates atomically.
+  2. *Enforced Transaction Presence*: When `requireTransaction: true`, rejects execution if `tx` is null, preventing accidental out-of-transaction commits.
+  3. *Strict Idempotency*: Duplicate calls with the same `idempotencyKey` return the existing inventory with `isDuplicate: true` and zero additional increments. Conflicting parameters throw `IdempotencyConflictError`.
+
+#### 5.16.5 Test Suite Results
+- Total Order Test Suite: **27 passing tests across 2 suites** (0 failures).
+  - [`tests/order/order-service.test.js`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/tests/order/order-service.test.js): 16 tests covering buy/sell reservations, partial fills, cancellations, concurrency races, and idempotency.
+  - [`tests/order/order-service-audit.test.js`](file:///Users/om_upadhyay/OM/workspace/Projects/passflow/backend/tests/order/order-service-audit.test.js): 11 tests covering post-commit mutation failures, ambiguous commit handling, hold linkage, interrupted cancellation recovery, and primary purchase atomic credits.
+- Combined Suite Count: **383 passing tests across 23 test suites** in the full backend repository.
+
+---
+
+### 5.17 Step 9.4 & 9.4A — Trade Settlement: Design Correction & Adversarial Audit
+
+#### 5.17.1 Party Resolution, Role Determination & Hold Identification
+- **Party Resolution from Immutable Execution**:
+  - In `Execution`, the orders are `incomingOrder` and `restingOrder`.
+  - Roles are determined strictly from `Order.side`:
+    - **Buyer Order**: The order with `side === 'BID'`.
+    - **Seller Order**: The order with `side === 'ASK'`.
+    - `buyerIsIncoming = (incomingOrder.side === 'BID')`.
+    - If `incomingOrder.side === restingOrder.side`, reject immediately as an invalid execution.
+- **Defensive Rejection of Invalid Invariants**:
+  Settlement defensively asserts and rejects:
+  1. *Self-Trade Invariant*: `buyerOrder.userId === sellerOrder.userId` (rejects cross-account self-matching).
+  2. *Market Consistency*: `buyerOrder.eventId === sellerOrder.eventId` and `buyerOrder.ticketCategoryId === sellerOrder.ticketCategoryId`.
+  3. *Side Consistency*: `buyerOrder.side === 'BID'` and `sellerOrder.side === 'ASK'`.
+  4. *Limit Price Invariant*: $P_{\text{exec}} \le P_{\text{bid}}$ and $P_{\text{exec}} \ge P_{\text{ask}}$.
+  5. *Hold Presence*: Buyer MUST possess an active hold covering $\ge P_{\text{bid}} \times Q$.
+- **Authoritative Buyer Hold Identification**:
+  - Buyer hold is located via:
+    ```javascript
+    const hold = await tx.walletHold.findFirst({
+      where: {
+        walletId: buyerWallet.id,
+        status: { in: ['ACTIVE', 'PARTIALLY_RELEASED', 'PARTIALLY_SETTLED'] },
+        OR: [
+          { orderId: buyerOrder.id },
+          { idempotencyKey: `order-escrow:${buyerOrder.idempotencyKey}` },
+          { operation: { referenceId: buyerOrder.id } }
+        ]
+      }
+    });
+    ```
+  - Assert that exactly one matching hold is returned. Multiple or zero matching holds reject settlement.
+- **Handling Multi-Execution & Partial Fills on Holds**:
+  - If a buyer's order for 10 tickets matches across multiple executions ($Q_1 = 3, Q_2 = 7$), all executions reference the SAME parent buy order and the SAME `WalletHold`.
+  - Execution $i$ consumes $P_{\text{bid}} \times Q_i$ paise from `hold.remainingAmount` and decrements `buyerWallet.reservedBalance` by that amount.
+  - If an order is cancelled after partial fills (e.g. 4 tickets executed, 6 cancelled), `OrderService.cancelLimitOrder` releases ONLY $P_{\text{bid}} \times 6$ paise. The remaining $P_{\text{bid}} \times 4$ paise stays held in `WalletHold` (`PARTIALLY_RELEASED`) awaiting settlement.
+  - When the execution for 4 tickets settles, it consumes the remaining $P_{\text{bid}} \times 4$ paise and transitions the hold to `SETTLED`. Neither operation double-spends or interferes.
+
+#### 5.17.2 Concurrency-Safe Inventory Locking for Missing Rows
+- **Audit Problem**: A buyer purchasing tickets in a category for the first time has NO row in `UserTicketInventory`. In PostgreSQL, `SELECT FOR UPDATE` on a non-existent row returns 0 rows and acquires no lock, leading to uniqueness constraint races (`P2002`) and inconsistent state.
+- **Deterministic Create-if-Absent Approach**:
+  Before acquiring locks, ensure inventory rows exist using deterministic atomic insertion in sorted `userId` order:
+  ```sql
+  -- Sort user IDs lexicographically: [U1, U2] = [buyerUserId, sellerUserId].sort()
+  INSERT INTO "UserTicketInventory" ("id", "userId", "ticketCategoryId", "totalQuantity", "availableQuantity", "reservedQuantity", "createdAt", "updatedAt")
+  VALUES (gen_random_uuid(), $U1, $ticketCategoryId, 0, 0, 0, NOW(), NOW())
+  ON CONFLICT ("userId", "ticketCategoryId") DO NOTHING;
+
+  INSERT INTO "UserTicketInventory" ("id", "userId", "ticketCategoryId", "totalQuantity", "availableQuantity", "reservedQuantity", "createdAt", "updatedAt")
+  VALUES (gen_random_uuid(), $U2, $ticketCategoryId, 0, 0, 0, NOW(), NOW())
+  ON CONFLICT ("userId", "ticketCategoryId") DO NOTHING;
+  ```
+- **Deterministic Row-Level Lock Acquisition**:
+  Immediately following insertion, lock both rows in strict alphabetical `userId` order:
+  ```sql
+  SELECT * FROM "UserTicketInventory"
+  WHERE "ticketCategoryId" = $ticketCategoryId AND "userId" IN ($U1, $U2)
+  ORDER BY "userId" ASC
+  FOR UPDATE;
+  ```
+- **Concurrency & Deadlock Proof**:
+  - Because `INSERT ... ON CONFLICT DO NOTHING` and `SELECT ... FOR UPDATE` both execute in deterministic `userId ASC` order, concurrent settlements between User A and User B (even with reversed buyer/seller roles) acquire inventory locks in the identical order, eliminating lock-order inversion deadlocks.
+  - If a transaction retries due to a serialization conflict, the `ON CONFLICT DO NOTHING` is idempotent.
+  - Category-based fungible inventory (`UserTicketInventory`) is preserved; no barcode or seat-level models are introduced.
+
+#### 5.17.3 Exact Reconciled Accounting & Schema Enum Alignment
+All monetary calculations are performed in integer paise ($1\text{ INR} = 100\text{ paise}$).
+- **Core Parameters**:
+  - $Q$ = `execution.quantity` (integer tickets).
+  - $P_{\text{exec}}$ = `execution.price` (resting order limit price in paise).
+  - $P_{\text{bid}}$ = `buyerOrder.price` (buyer limit price in paise).
+  - $P_{\text{exec}} \le P_{\text{bid}}$ is guaranteed by price-time priority matching.
+- **Monetary Quantities**:
+  $$\text{TradeCost} = P_{\text{exec}} \times Q \text{ paise}$$
+  $$\text{BuyerReserved} = P_{\text{bid}} \times Q \text{ paise}$$
+  $$\text{PriceImprovement} = \text{BuyerReserved} - \text{TradeCost} = (P_{\text{bid}} - P_{\text{exec}}) \times Q \ge 0 \text{ paise}$$
+  $$\text{BuyerFee} = 0, \quad \text{SellerFee} = 0, \quad \text{PlatformFee} = 0 \text{ (Documented Zero-Fee Policy)}$$
+  $$\text{SellerProceeds} = \text{TradeCost} \text{ paise}$$
+- **Exact Schema Enum Alignment (`LedgerEntryType`)**:
+  - Audited against `schema.prisma` and migration `20261021181500`:
+    - Buyer trade debit: `TRADE_SETTLEMENT_DEBIT` (replaces informal `TRADE_DEBIT`).
+    - Buyer price improvement refund: `ORDER_RELEASE` (replaces informal `HOLD_RELEASED`).
+    - Seller trade credit: `TRADE_SETTLEMENT_CREDIT` (replaces informal `TRADE_CREDIT`).
+  - Immutability constraint: `CHECK (amount > 0)`. If $\text{PriceImprovement} === 0$, the `ORDER_RELEASE` ledger entry is omitted to prevent constraint violation on zero amount.
+
+| Entry | Wallet | Entry Type | Amount | Available Delta | Reserved Delta | Resulting Available Snapshot | Resulting Reserved Snapshot | Idempotency Key |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Buyer Debit** | Buyer | `TRADE_SETTLEMENT_DEBIT` | $\text{TradeCost}$ | $0$ | $-\text{TradeCost}$ | $A_{\text{buyer}}$ | $R_{\text{buyer}} - \text{TradeCost}$ | `trade-debit:${execution.id}` |
+| **Price Improvement** *(only if $>0$)* | Buyer | `ORDER_RELEASE` | $\text{PriceImprovement}$ | $+\text{PriceImprovement}$ | $-\text{PriceImprovement}$ | $A_{\text{buyer}} + \text{PriceImprovement}$ | $R_{\text{buyer}} - \text{BuyerReserved}$ | `price-improvement:${execution.id}` |
+| **Seller Credit** | Seller | `TRADE_SETTLEMENT_CREDIT` | $\text{TradeCost}$ | $+\text{TradeCost}$ | $0$ | $A_{\text{seller}} + \text{TradeCost}$ | $R_{\text{seller}}$ | `trade-credit:${execution.id}` |
+
+- **Proof of Accounting Invariants**:
+  1. *Non-Negative Balances*: $R_{\text{buyer}} \ge \text{BuyerReserved} = \text{TradeCost} + \text{PriceImprovement}$; deduction leaves $R_{\text{buyer}} \ge 0$. Available balance increases or remains constant; both remain $\ge 0$. Enforced by PostgreSQL CHECK constraints.
+  2. *Exact Buyer Payment*: Buyer net total wealth delta = $(+\text{PriceImprovement}) + (-\text{BuyerReserved}) = -\text{TradeCost}$.
+  3. *Exact Seller Receipt*: Seller net total wealth delta = $+\text{TradeCost} = \text{SellerProceeds}$.
+  4. *Single Release*: Price improvement released inside the atomic settlement transaction; uniquely identified by `execution.id`.
+  5. *Reconciliation with Deltas*: Sum of ledger deltas identically matches the net wallet balance mutations.
+  6. *Partial Fill Independence*: Each fill consumes exactly $P_{\text{bid}} \times Q_i$, leaving the remaining hold $P_{\text{bid}} \times Q_{\text{remaining}}$ intact.
+  7. *Single Interactive Transaction*: All wallet, ledger, inventory, hold, and settlement rows commit inside ONE interactive PostgreSQL transaction (`tx`). Zero external out-of-transaction wallet calls.
+
+#### 5.17.4 Hold Lifecycle & Cancellation Interaction Rules
+- **Lifecycle Status States**:
+  - `ACTIVE`: Initial reservation state.
+  - `PARTIALLY_SETTLED`: Portions consumed by settled executions; remainder active for other fills.
+  - `PARTIALLY_RELEASED`: Portions released by cancellation; remainder reserved for unsettled executions.
+  - `SETTLED`: All executed quantities settled; `remainingAmount === 0`.
+  - `RELEASED`: Order cancelled with zero remaining executions; `remainingAmount === 0`.
+- **Interleaved Matching and Cancellation**:
+  - Cancellation of an order with resting and executed portions releases ONLY the resting portion: $\Delta H = -P_{\text{bid}} \times Q_{\text{cancelled}}$.
+  - Hold `remainingAmount` is preserved for unsettled executions.
+  - Hold status is derived from remaining funds and lifecycle state without confusing release with settlement.
+
+#### 5.17.5 Settlement Idempotency Boundary & Elimination of Misleading Statuses
+- **Audit Correction on `TradeSettlement`**:
+  - In Step 9.4, an enum `ExecutionSettlementStatus (PENDING, SETTLED, FAILED)` was proposed.
+  - **Correction**: Because `TradeSettlement` is created INSIDE the atomic transaction that settles the trade, a row exists in PostgreSQL IF AND ONLY IF settlement has committed.
+  - Storing `PENDING` requires multi-transaction writes and leaves dangling rows on crashes. Storing `FAILED` permanently marks transient lock retries as failed.
+  - Therefore, `ExecutionSettlementStatus` is ELIMINATED. The presence of a `TradeSettlement` row with `@unique([executionId])` is the authoritative, immutable proof of completion.
+- **Idempotency Key Formulation**:
+  - Deterministically set to `settle:exec:${execution.id}`.
+  - Unique constraint `@unique([executionId])` prevents duplicate processing at the database level.
+  - Duplicate requests detect the committed record and return it with `isDuplicate: true`.
+
+#### 5.17.6 Safe Reconciliation Protocol
+- **Identification of Unsettled Executions**:
+  - Unsettled executions: `SELECT e.* FROM "Execution" e WHERE NOT EXISTS (SELECT 1 FROM "TradeSettlement" ts WHERE ts."executionId" = e."id")`.
+- **Safety Window & Coordination**:
+  - Reconciliation only inspects executions older than a safety threshold: `executedAt < NOW() - INTERVAL '30 seconds'`, preventing races with active settlement workers.
+  - All settlements and reconciliations for a market route through `MarketExecutionQueue.execute(marketKey)`.
+  - Reconciliation never releases holds or inventory solely because a record is temporarily missing or transaction outcome is uncertain.
+  - Ambiguous commits query `TradeSettlement` and `WalletLedgerEntry`. If database outcome cannot be conclusively established, the market is quarantined and operators alerted.
+
+#### 5.17.7 Global Deterministic Lock Hierarchy & Deadlock Proof
+All concurrent settlement, matching, and cancellation paths follow this strict lock hierarchy:
+1. **Level 1 — Market Queue**: `MarketExecutionQueue.execute(marketKey)` (in-memory per-market FIFO serialization).
+2. **Level 2 — Wallets**: Deterministic `SELECT FOR UPDATE` on `Wallet` ordered by `id ASC`:
+   `[W1, W2] = [buyerWalletId, sellerWalletId].sort()`.
+3. **Level 3 — User Ticket Inventories**:
+   - Create-if-absent in sorted order: `INSERT INTO "UserTicketInventory" ... ON CONFLICT DO NOTHING` for `[U1, U2] = [buyerUserId, sellerUserId].sort()`.
+   - Deterministic `SELECT FOR UPDATE` on `UserTicketInventory` ordered by `userId ASC`.
+4. **Level 4 — Buyer Hold**: `SELECT FOR UPDATE` on `WalletHold` where `id = buyerHoldId`.
+5. **Level 5 — Execution**: `SELECT FOR UPDATE` on `Execution` where `id = executionId`.
+
+- **Deadlock-Free Proof**:
+  - Total resource order: $\text{Wallet} \prec \text{UserTicketInventory} \prec \text{WalletHold} \prec \text{Execution}$.
+  - Intra-resource order: Wallets locked in strict `id ASC` order; inventories locked in strict `userId ASC` order.
+  - By Dijkstra's resource ordering theorem, circular lock wait is mathematically impossible.
+
+#### 5.17.8 Minimum Additive Schema Migration Proposal (No Implementation)
+```prisma
+model TradeSettlement {
+  id               String    @id @default(uuid())
+  executionId      String    @unique
+  execution        Execution @relation(fields: [executionId], references: [id], onDelete: Restrict)
+  buyerOrderId     String
+  sellerOrderId    String
+  buyerUserId      String
+  sellerUserId     String
+  ticketCategoryId String
+  quantity         Int
+  executionPrice   Int       // in paise
+  totalAmount      BigInt    // TradeCost in paise
+  buyerFee         BigInt    @default(0)
+  sellerFee        BigInt    @default(0)
+  priceImprovement BigInt    @default(0)
+  buyerHoldId      String
+  idempotencyKey   String    @unique
+  settledAt        DateTime  @default(now())
+
+  @@index([executionId])
+  @@index([buyerUserId])
+  @@index([sellerUserId])
+  @@index([ticketCategoryId])
+  @@index([idempotencyKey])
+}
+```
+- Inverse relation added to `Execution`: `settlement TradeSettlement?`.
+- Zero changes to existing fields or tables; 100% additive. No migration applied in Step 9.4A.
+
+
+
 
 
 

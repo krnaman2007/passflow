@@ -18,13 +18,16 @@
  *    - Total reserved funds = price * initialQuantity paise.
  *    - Upon partial fills, funds/inventory for executed trades remain held/reserved awaiting Step 9.4 settlement.
  *    - Upon cancellation, ONLY reservations belonging to the unfilled quantity (price * remainingQuantity) are released.
- * 4. Compensating Atomicity:
- *    - If matching engine submission or commit fails, a compensating transaction immediately releases the hold or
- *      restores the reserved inventory, preventing leaked or orphaned reservations.
- * 5. Idempotent Deduplication:
- *    - Retrying order placement with the same (userId, idempotencyKey) and identical payload returns the stored outcome.
- *    - Retrying with conflicting parameters throws an IdempotencyConflictError.
- *    - Retrying cancellation is idempotent and will never double-release funds or inventory.
+ *    - Price improvement (limit price minus execution price) remains locked in the hold until Step 9.4 settlement.
+ * 4. Non-Blind Compensation & Ambiguity Protocol:
+ *    - Never releases reservations on a matching engine failure without reconciling PostgreSQL first.
+ *    - If an order committed (or PostCommitMutationError occurred), reservations remain secured.
+ *    - If database outcome cannot be verified, throws AmbiguousOrderOutcomeError without releasing funds or inventory.
+ *    - Only definitively rolled-back transactions trigger compensating releases.
+ * 5. Idempotent Deduplication & Primary Purchase Integration:
+ *    - creditUserTicketInventory enforces caller transaction clients when required and uses UserInventoryCredit
+ *      to ensure duplicate purchase processing never credits inventory twice.
+ *    - Retrying cancellation on an already cancelled order recovers any previously interrupted hold releases.
  */
 
 import crypto from 'node:crypto';
@@ -35,6 +38,9 @@ import {
   OrderValidationError,
   IdempotencyPayloadMismatchError,
   assertIdempotentPayloadMatches,
+  PostCommitMutationError,
+  AmbiguousCommitError,
+  isAmbiguousCommitError,
 } from '../matching/persistent-matching-service.js';
 import { OrderRepository } from '../matching/order-repository.js';
 import { formatMarketKey } from '../matching/market-execution-queue.js';
@@ -55,6 +61,40 @@ export class InsufficientInventoryError extends Error {
     super(message);
     this.name = 'InsufficientInventoryError';
     this.code = 'INSUFFICIENT_INVENTORY';
+    this.details = details;
+  }
+}
+
+/**
+ * Error thrown when an order submission outcome is ambiguous (e.g. database timeout/disconnect)
+ * and the order's committed vs rolled-back status cannot be verified with certainty.
+ * Crucially, pre-matching reservations are NOT released so funds and inventory remain protected.
+ */
+export class AmbiguousOrderOutcomeError extends Error {
+  /**
+   * @param {string} message
+   * @param {Object} [details]
+   */
+  constructor(message, details = {}) {
+    super(message);
+    this.name = 'AmbiguousOrderOutcomeError';
+    this.code = 'AMBIGUOUS_ORDER_OUTCOME';
+    this.details = details;
+  }
+}
+
+/**
+ * Error thrown when an order's required reservation does not match its hold or inventory.
+ */
+export class OrderHoldMismatchError extends Error {
+  /**
+   * @param {string} message
+   * @param {Object} [details]
+   */
+  constructor(message, details = {}) {
+    super(message);
+    this.name = 'OrderHoldMismatchError';
+    this.code = 'ORDER_HOLD_MISMATCH';
     this.details = details;
   }
 }
@@ -84,14 +124,33 @@ export class OrderService {
   /**
    * Credits user ticket inventory from a trusted boundary (e.g. primary purchase or initial allocation).
    *
+   * Invariants:
+   * 1. Uses caller's interactive transaction client (tx) when provided.
+   * 2. When requireTransaction is true, throws an error if tx is null, preventing uncoordinated commits.
+   * 3. Idempotently tracks purchase credits via UserInventoryCredit; duplicate calls return without double-incrementing.
+   * 4. Failed/rolled-back caller transactions automatically roll back both inventory and credit records.
+   *
    * @param {Object} params
    * @param {string} params.userId
    * @param {string} params.ticketCategoryId
    * @param {number} params.quantity
+   * @param {string} [params.idempotencyKey] - Optional deduplication key (e.g. `primary-purchase:${purchaseId}`)
+   * @param {string} [params.purchaseId] - Optional primary purchase identifier for audit
+   * @param {boolean} [params.requireTransaction=false] - Enforce caller transaction presence
    * @param {Object} [tx] - Optional transaction client
    * @returns {Promise<Object>}
    */
-  async creditUserTicketInventory({ userId, ticketCategoryId, quantity }, tx = null) {
+  async creditUserTicketInventory(params, tx = null) {
+    const {
+      userId,
+      ticketCategoryId,
+      quantity,
+      idempotencyKey = null,
+      purchaseId = null,
+      requireTransaction = false,
+    } = params;
+
+    // 1. Validate inputs
     if (!userId || typeof userId !== 'string' || !userId.trim()) {
       throw new OrderValidationError('userId must be a non-empty string', 'userId');
     }
@@ -101,13 +160,108 @@ export class OrderService {
     if (typeof quantity !== 'number' || !Number.isInteger(quantity) || quantity <= 0 || !Number.isSafeInteger(quantity)) {
       throw new OrderValidationError('quantity must be a positive safe integer', 'quantity');
     }
+    if (requireTransaction && !tx) {
+      throw new OrderValidationError(
+        'Transaction client (tx) is required when atomic primary-purchase integration is specified',
+        'tx'
+      );
+    }
 
     const client = tx || this.prisma;
-    return client.userTicketInventory.upsert({
+    const cleanUserId = userId.trim();
+    const cleanCategoryId = ticketCategoryId.trim();
+
+    // 2. Idempotency handling
+    if (idempotencyKey && typeof idempotencyKey === 'string' && idempotencyKey.trim()) {
+      const cleanKey = idempotencyKey.trim();
+
+      // Check for existing credit record
+      const existingCredit = await client.userInventoryCredit.findUnique({
+        where: { idempotencyKey: cleanKey },
+      });
+
+      if (existingCredit) {
+        if (
+          existingCredit.userId !== cleanUserId ||
+          existingCredit.ticketCategoryId !== cleanCategoryId ||
+          existingCredit.quantity !== quantity
+        ) {
+          throw new IdempotencyConflictError(
+            `Idempotency key "${cleanKey}" was already used with different parameters: expected userId=${existingCredit.userId}, category=${existingCredit.ticketCategoryId}, qty=${existingCredit.quantity}; got userId=${cleanUserId}, category=${cleanCategoryId}, qty=${quantity}`,
+            { idempotencyKey: cleanKey }
+          );
+        }
+
+        // Return current inventory state with isDuplicate: true without double-incrementing
+        const currentInventory = await client.userTicketInventory.findUnique({
+          where: {
+            userId_ticketCategoryId: {
+              userId: cleanUserId,
+              ticketCategoryId: cleanCategoryId,
+            },
+          },
+        });
+
+        return {
+          ...currentInventory,
+          creditId: existingCredit.id,
+          isDuplicate: true,
+        };
+      }
+
+      // Record credit inside the same transaction
+      try {
+        await client.userInventoryCredit.create({
+          data: {
+            userId: cleanUserId,
+            ticketCategoryId: cleanCategoryId,
+            quantity,
+            idempotencyKey: cleanKey,
+            purchaseId: purchaseId ? String(purchaseId).trim() : null,
+          },
+        });
+      } catch (err) {
+        if (err.code === 'P2002') {
+          // Race condition on duplicate key: re-check
+          const rechecked = await client.userInventoryCredit.findUnique({
+            where: { idempotencyKey: cleanKey },
+          });
+          if (rechecked) {
+            if (
+              rechecked.userId !== cleanUserId ||
+              rechecked.ticketCategoryId !== cleanCategoryId ||
+              rechecked.quantity !== quantity
+            ) {
+              throw new IdempotencyConflictError(
+                `Idempotency key "${cleanKey}" collision with conflicting parameters`,
+                { idempotencyKey: cleanKey }
+              );
+            }
+            const currentInventory = await client.userTicketInventory.findUnique({
+              where: {
+                userId_ticketCategoryId: {
+                  userId: cleanUserId,
+                  ticketCategoryId: cleanCategoryId,
+                },
+              },
+            });
+            return {
+              ...currentInventory,
+              creditId: rechecked.id,
+              isDuplicate: true,
+            };
+          }
+        }
+        throw err;
+      }
+    }
+
+    // 3. Upsert user ticket inventory
+    const updatedInventory = await client.userTicketInventory.upsert({
       where: {
         userId_ticketCategoryId: {
-          userId: userId.trim(),
-          ticketCategoryId: ticketCategoryId.trim(),
+          userId: cleanUserId,
+          ticketCategoryId: cleanCategoryId,
         },
       },
       update: {
@@ -115,13 +269,18 @@ export class OrderService {
         availableQuantity: { increment: quantity },
       },
       create: {
-        userId: userId.trim(),
-        ticketCategoryId: ticketCategoryId.trim(),
+        userId: cleanUserId,
+        ticketCategoryId: cleanCategoryId,
         totalQuantity: quantity,
         availableQuantity: quantity,
         reservedQuantity: 0,
       },
     });
+
+    return {
+      ...updatedInventory,
+      isDuplicate: false,
+    };
   }
 
   /**
@@ -177,6 +336,27 @@ export class OrderService {
         initialQuantity: quantity,
         idempotencyKey,
       });
+
+      // Ensure hold is linked to existing order if it was unlinked during a previous crash
+      if (side === 'BID') {
+        try {
+          await this.prisma.walletHold.updateMany({
+            where: {
+              OR: [
+                { idempotencyKey: `order-escrow:${idempotencyKey}` },
+                { operation: { referenceId: existingOrder.id } },
+              ],
+              orderId: null,
+            },
+            data: {
+              orderId: existingOrder.id,
+            },
+          });
+        } catch (linkErr) {
+          console.error('Failed to link hold during idempotent replay:', linkErr);
+        }
+      }
+
       return this.matchingService._formatSubmissionResultFromRecord(existingOrder);
     }
 
@@ -185,74 +365,75 @@ export class OrderService {
     let holdRecord = null;
     let inventoryReserved = false;
 
+    // 3. Pre-matching Reservation
+    if (side === 'BID') {
+      // Reserve Buyer Funds: price * quantity paise
+      const requiredPaise = BigInt(price) * BigInt(quantity);
+      const holdKey = `order-escrow:${idempotencyKey}`;
+
+      const reserveResult = await this.walletService.reserveFunds({
+        userId,
+        amount: requiredPaise,
+        idempotencyKey: holdKey,
+        reason: 'ORDER_ESCROW',
+        orderId: null,
+        referenceType: 'ORDER',
+        referenceId: orderId,
+        description: `Buy order escrow for ${quantity} tickets @ ${price} paise`,
+      });
+
+      holdRecord = reserveResult.hold;
+    } else {
+      // Reserve Seller Inventory from UserTicketInventory under pessimistic lock
+      await this.prisma.$transaction(async (tx) => {
+        const rows = await tx.$queryRaw`
+          SELECT * FROM "UserTicketInventory"
+          WHERE "userId" = ${userId} AND "ticketCategoryId" = ${ticketCategoryId}
+          FOR UPDATE
+        `;
+
+        if (!rows || rows.length === 0) {
+          throw new InsufficientInventoryError(
+            `Seller has no ticket inventory for category ${ticketCategoryId}`,
+            { userId, ticketCategoryId, requestedQuantity: quantity, availableQuantity: 0 }
+          );
+        }
+
+        const inventory = rows[0];
+        if (inventory.availableQuantity < quantity) {
+          throw new InsufficientInventoryError(
+            `Insufficient ticket inventory: requested ${quantity}, available ${inventory.availableQuantity}`,
+            {
+              userId,
+              ticketCategoryId,
+              requestedQuantity: quantity,
+              availableQuantity: inventory.availableQuantity,
+            }
+          );
+        }
+
+        // Decrement available and increment reserved
+        await tx.userTicketInventory.update({
+          where: {
+            userId_ticketCategoryId: {
+              userId,
+              ticketCategoryId,
+            },
+          },
+          data: {
+            availableQuantity: { decrement: quantity },
+            reservedQuantity: { increment: quantity },
+          },
+        });
+      });
+
+      inventoryReserved = true;
+    }
+
+    // 4. Submit to Persistent Matching Engine under MarketExecutionQueue
+    let submissionResult;
     try {
-      // 3. Pre-matching Reservation
-      if (side === 'BID') {
-        // Reserve Buyer Funds: price * quantity paise
-        const requiredPaise = BigInt(price) * BigInt(quantity);
-        const holdKey = `order-escrow:${idempotencyKey}`;
-
-        const reserveResult = await this.walletService.reserveFunds({
-          userId,
-          amount: requiredPaise,
-          idempotencyKey: holdKey,
-          reason: 'ORDER_ESCROW',
-          orderId: null,
-          referenceType: 'ORDER',
-          referenceId: orderId,
-          description: `Buy order escrow for ${quantity} tickets @ ${price} paise`,
-        });
-
-        holdRecord = reserveResult.hold;
-      } else {
-        // Reserve Seller Inventory from UserTicketInventory under pessimistic lock
-        await this.prisma.$transaction(async (tx) => {
-          const rows = await tx.$queryRaw`
-            SELECT * FROM "UserTicketInventory"
-            WHERE "userId" = ${userId} AND "ticketCategoryId" = ${ticketCategoryId}
-            FOR UPDATE
-          `;
-
-          if (!rows || rows.length === 0) {
-            throw new InsufficientInventoryError(
-              `Seller has no ticket inventory for category ${ticketCategoryId}`,
-              { userId, ticketCategoryId, requestedQuantity: quantity, availableQuantity: 0 }
-            );
-          }
-
-          const inventory = rows[0];
-          if (inventory.availableQuantity < quantity) {
-            throw new InsufficientInventoryError(
-              `Insufficient ticket inventory: requested ${quantity}, available ${inventory.availableQuantity}`,
-              {
-                userId,
-                ticketCategoryId,
-                requestedQuantity: quantity,
-                availableQuantity: inventory.availableQuantity,
-              }
-            );
-          }
-
-          // Decrement available and increment reserved
-          await tx.userTicketInventory.update({
-            where: {
-              userId_ticketCategoryId: {
-                userId,
-                ticketCategoryId,
-              },
-            },
-            data: {
-              availableQuantity: { decrement: quantity },
-              reservedQuantity: { increment: quantity },
-            },
-          });
-        });
-
-        inventoryReserved = true;
-      }
-
-      // 4. Submit to Persistent Matching Engine under MarketExecutionQueue
-      const submissionResult = await this.matchingService.submitLimitOrder({
+      submissionResult = await this.matchingService.submitLimitOrder({
         id: orderId,
         userId,
         eventId,
@@ -262,34 +443,97 @@ export class OrderService {
         quantity,
         idempotencyKey,
       });
+    } catch (err) {
+      // 5. Handle matching engine outcome — NEVER blindly compensate!
 
-      // 5. If BUY order, update hold record with persisted order ID if needed
-      if (side === 'BID' && holdRecord) {
-        await this.prisma.walletHold.updateMany({
-          where: {
-            idempotencyKey: `order-escrow:${idempotencyKey}`,
-          },
-          data: {
-            orderId: submissionResult.orderId,
-          },
-        });
+      // Case A: Post-Commit Mutation Error
+      // The transaction DEFINITELY committed to PostgreSQL, but in-memory book mutation failed.
+      if (err instanceof PostCommitMutationError || err.name === 'PostCommitMutationError') {
+        if (side === 'BID' && holdRecord) {
+          try {
+            await this.prisma.walletHold.updateMany({
+              where: {
+                idempotencyKey: `order-escrow:${idempotencyKey}`,
+              },
+              data: {
+                orderId: err.orderId || orderId,
+              },
+            });
+          } catch (linkErr) {
+            console.error('Failed to link hold after post-commit error:', linkErr);
+          }
+        }
+        // Do NOT release reservations! Rethrow post-commit error for market reconciliation.
+        throw err;
       }
 
-      return {
-        ...submissionResult,
-        holdId: holdRecord ? holdRecord.id : null,
-      };
-    } catch (err) {
-      // 6. Compensating Rollback upon failure
+      // Case B: Check PostgreSQL to verify whether the order committed or rolled back
+      let persistedOrder = null;
+      try {
+        persistedOrder =
+          (await this.orderRepository.findById(orderId)) ||
+          (await this.orderRepository.findByIdempotencyKey(userId, idempotencyKey));
+      } catch (lookupErr) {
+        // Cannot reach PostgreSQL to verify state! Outcome is completely ambiguous.
+        // DO NOT release reservation!
+        throw new AmbiguousOrderOutcomeError(
+          `Ambiguous outcome for order "${orderId}": submission failed (${err.message}) and database verification failed (${lookupErr.message}). Reservation remains secured.`,
+          {
+            orderId,
+            idempotencyKey,
+            holdId: holdRecord?.id,
+            originalError: err,
+            lookupError: lookupErr,
+          }
+        );
+      }
+
+      if (persistedOrder) {
+        // The order committed to PostgreSQL despite the error!
+        // DO NOT release reservations!
+        if (side === 'BID' && holdRecord) {
+          try {
+            await this.prisma.walletHold.updateMany({
+              where: {
+                idempotencyKey: `order-escrow:${idempotencyKey}`,
+              },
+              data: {
+                orderId: persistedOrder.id,
+              },
+            });
+          } catch (linkErr) {
+            console.error('Failed to link hold to committed order:', linkErr);
+          }
+        }
+
+        // Return the stored outcome if payload matches
+        assertIdempotentPayloadMatches(persistedOrder, {
+          eventId,
+          ticketCategoryId,
+          side,
+          price,
+          initialQuantity: quantity,
+          idempotencyKey,
+        });
+
+        return {
+          ...this.matchingService._formatSubmissionResultFromRecord(persistedOrder),
+          holdId: holdRecord ? holdRecord.id : null,
+          isAmbiguousCommitResolved: true,
+        };
+      }
+
+      // Case C: Definitive Rollback / No Record in PostgreSQL
+      // Verified that no order exists in PostgreSQL with orderId or (userId, idempotencyKey).
+      // NOW it is safe to release the pre-matching reservation!
       if (side === 'BID' && holdRecord) {
         try {
           await this.walletService.releaseHold({
             holdId: holdRecord.id,
             idempotencyKey: `comp-release:${holdRecord.id}`,
-            description: 'Compensating release for failed order submission',
+            description: 'Compensating release for definitively rolled-back order submission',
           });
         } catch (compensationErr) {
-          // Log compensation error for audit
           console.error(
             `Failed to execute compensating release for hold ${holdRecord.id}:`,
             compensationErr
@@ -319,10 +563,40 @@ export class OrderService {
 
       throw err;
     }
+
+    // 6. If BUY order, update hold record with persisted order ID if needed
+    if (side === 'BID' && holdRecord) {
+      try {
+        await this.prisma.walletHold.updateMany({
+          where: {
+            idempotencyKey: `order-escrow:${idempotencyKey}`,
+          },
+          data: {
+            orderId: submissionResult.orderId,
+          },
+        });
+      } catch (linkErr) {
+        console.error(
+          `Warning: Order ${submissionResult.orderId} committed but hold linkage failed:`,
+          linkErr
+        );
+      }
+    }
+
+    return {
+      ...submissionResult,
+      holdId: holdRecord ? holdRecord.id : null,
+    };
   }
 
   /**
    * Cancels an open or partially filled limit order and releases remaining reservations exactly once.
+   *
+   * Invariants:
+   * 1. Cancellation and matching are strictly serialized via MarketExecutionQueue.
+   * 2. Only the unfilled portion (price * cancelledQuantity) is released.
+   * 3. Executed quantities and their corresponding reserved funds/inventory remain locked awaiting Step 9.4 settlement.
+   * 4. Retrying on an already CANCELLED order checks for any previously interrupted hold releases and completes them.
    *
    * @param {Object} input
    * @param {string} input.userId - Authenticated user ID (trusted boundary)
@@ -350,17 +624,6 @@ export class OrderService {
       throw new OrderValidationError('Unauthorized: order does not belong to user', 'userId');
     }
 
-    // Idempotent replay for already cancelled order
-    if (order.status === 'CANCELLED') {
-      return {
-        orderId: order.id,
-        status: 'CANCELLED',
-        cancelledQuantity: 0,
-        remainingQuantity: 0,
-        releasedReservation: 0,
-        isDuplicate: true,
-      };
-    }
     if (order.status === 'FILLED') {
       throw new OrderValidationError('Cannot cancel fully filled order', 'status');
     }
@@ -368,7 +631,57 @@ export class OrderService {
       throw new OrderValidationError('Cannot cancel rejected order', 'status');
     }
 
-    // 2. Execute cancellation under MarketExecutionQueue
+    // 2. Check if already cancelled — verify hold release completeness
+    if (order.status === 'CANCELLED') {
+      let releasedReservation = 0;
+      if (order.side === 'BID') {
+        const orFilters = [{ orderId: order.id }, { operation: { referenceId: order.id } }];
+        if (order.idempotencyKey) {
+          orFilters.push({ idempotencyKey: `order-escrow:${order.idempotencyKey}` });
+        }
+        const hold = await this.prisma.walletHold.findFirst({
+          where: {
+            OR: orFilters,
+            status: { in: ['ACTIVE', 'PARTIALLY_RELEASED'] },
+          },
+        });
+
+        if (hold) {
+          // Calculate executed quantity from executions
+          const executions = await this.prisma.execution.findMany({
+            where: {
+              OR: [{ incomingOrderId: order.id }, { restingOrderId: order.id }],
+            },
+          });
+          const executedQuantity = executions.reduce((sum, e) => sum + e.quantity, 0);
+          const requiredHoldPaise = BigInt(executedQuantity) * BigInt(order.price);
+
+          if (BigInt(hold.remainingAmount) > requiredHoldPaise) {
+            const unreleasedPaise = BigInt(hold.remainingAmount) - requiredHoldPaise;
+            await this.walletService.releaseHold({
+              holdId: hold.id,
+              amount: unreleasedPaise,
+              idempotencyKey: `cancel-release:${idempotencyKey}`,
+              referenceType: 'ORDER',
+              referenceId: order.id,
+              description: `Recovery release for unreleased funds on cancelled order ${order.id}`,
+            });
+            releasedReservation = Number(unreleasedPaise);
+          }
+        }
+      }
+
+      return {
+        orderId: order.id,
+        status: 'CANCELLED',
+        cancelledQuantity: 0,
+        remainingQuantity: 0,
+        releasedReservation,
+        isDuplicate: true,
+      };
+    }
+
+    // 3. Execute cancellation under MarketExecutionQueue
     const cancelResult = await this.matchingService.cancelLimitOrder({
       eventId: order.eventId,
       ticketCategoryId: order.ticketCategoryId,
@@ -378,7 +691,7 @@ export class OrderService {
 
     const { cancelledQuantity } = cancelResult;
 
-    // 3. Release Unfilled Reservations
+    // 4. Release Unfilled Reservations
     let releasedReservation = 0;
 
     if (cancelledQuantity > 0) {
@@ -386,15 +699,25 @@ export class OrderService {
         // Release remaining unexecuted funds: price * cancelledQuantity paise
         const releaseAmountPaise = BigInt(order.price) * BigInt(cancelledQuantity);
 
-        // Find active hold linked to this order
+        const orFilters = [{ orderId: order.id }, { operation: { referenceId: order.id } }];
+        if (order.idempotencyKey) {
+          orFilters.push({ idempotencyKey: `order-escrow:${order.idempotencyKey}` });
+        }
         const hold = await this.prisma.walletHold.findFirst({
           where: {
-            orderId: order.id,
+            OR: orFilters,
             status: { in: ['ACTIVE', 'PARTIALLY_RELEASED'] },
           },
         });
 
         if (hold) {
+          if (hold.orderId === null) {
+            await this.prisma.walletHold.update({
+              where: { id: hold.id },
+              data: { orderId: order.id },
+            });
+          }
+
           await this.walletService.releaseHold({
             holdId: hold.id,
             amount: releaseAmountPaise,
@@ -431,6 +754,147 @@ export class OrderService {
       releasedReservation,
       isDuplicate: cancelResult.isDuplicate,
     };
+  }
+
+  /**
+   * Reconciles order reservations against wallet holds and ticket inventory.
+   *
+   * Audits:
+   * 1. Unlinked holds: Active holds where referenceId matches an order, but orderId is null. Links them.
+   * 2. Orphaned holds: Active holds whose referenceId/orderId does not exist in the Order table.
+   *    If dryRun is false, releases the orphaned hold.
+   * 3. Underfunded buy orders: Active buy orders whose hold remainingAmount is less than required.
+   * 4. Orphaned sell inventory: UserTicketInventory reservedQuantity exceeding active resting + unsettled executions.
+   *    If dryRun is false, restores the orphaned reservation to availableQuantity.
+   *
+   * @param {Object} [options]
+   * @param {string} [options.eventId]
+   * @param {string} [options.ticketCategoryId]
+   * @param {boolean} [options.dryRun=false]
+   * @returns {Promise<Object>} Reconciliation summary
+   */
+  async reconcileOrderReservations({ eventId, ticketCategoryId, dryRun = false } = {}) {
+    const summary = {
+      unlinkedHoldsFixed: 0,
+      orphanedHoldsDetected: 0,
+      orphanedHoldsReleased: 0,
+      underfundedOrders: [],
+      orphanedInventoryDetected: 0,
+      orphanedInventoryRestored: 0,
+      isConsistent: true,
+    };
+
+    // 1. Audit active BUY holds
+    const activeHolds = await this.prisma.walletHold.findMany({
+      where: {
+        reason: 'ORDER_ESCROW',
+        status: { in: ['ACTIVE', 'PARTIALLY_RELEASED'] },
+      },
+      include: {
+        operation: true,
+      },
+    });
+
+    for (const hold of activeHolds) {
+      const targetOrderId = hold.orderId || hold.operation?.referenceId;
+      if (!targetOrderId) continue;
+
+      const order = await this.orderRepository.findById(targetOrderId);
+
+      if (order) {
+        // Link hold if unlinked
+        if (hold.orderId === null) {
+          if (!dryRun) {
+            await this.prisma.walletHold.update({
+              where: { id: hold.id },
+              data: { orderId: order.id },
+            });
+          }
+          summary.unlinkedHoldsFixed++;
+        }
+
+        // Check hold sufficiency for active orders
+        if (order.status === 'OPEN' || order.status === 'PARTIALLY_FILLED') {
+          const requiredPaise = BigInt(order.remainingQuantity) * BigInt(order.price);
+          if (BigInt(hold.remainingAmount) < requiredPaise) {
+            summary.underfundedOrders.push({
+              orderId: order.id,
+              requiredPaise: requiredPaise.toString(),
+              actualPaise: hold.remainingAmount.toString(),
+            });
+            summary.isConsistent = false;
+          }
+        }
+      } else {
+        // Orphaned hold: order does not exist in PostgreSQL
+        summary.orphanedHoldsDetected++;
+        summary.isConsistent = false;
+
+        if (!dryRun) {
+          try {
+            await this.walletService.releaseHold({
+              holdId: hold.id,
+              idempotencyKey: `recon-orphan-release:${hold.id}`,
+              description: 'Reconciliation release of orphaned pre-matching hold',
+            });
+            summary.orphanedHoldsReleased++;
+          } catch (relErr) {
+            console.error(`Failed to release orphaned hold ${hold.id}:`, relErr);
+          }
+        }
+      }
+    }
+
+    // 2. Audit SELL inventory
+    const userInventories = await this.prisma.userTicketInventory.findMany({
+      where: ticketCategoryId ? { ticketCategoryId } : {},
+    });
+
+    for (const inv of userInventories) {
+      // Find active ASK orders for this user and category
+      const activeAsks = await this.prisma.order.findMany({
+        where: {
+          userId: inv.userId,
+          ticketCategoryId: inv.ticketCategoryId,
+          side: 'ASK',
+          status: { in: ['OPEN', 'PARTIALLY_FILLED'] },
+        },
+      });
+
+      const activeReserved = activeAsks.reduce((sum, o) => sum + o.remainingQuantity, 0);
+
+      // Find unsettled executions for this seller
+      const sellerExecutions = await this.prisma.execution.findMany({
+        where: {
+          OR: [
+            { incomingOrder: { userId: inv.userId, ticketCategoryId: inv.ticketCategoryId, side: 'ASK' } },
+            { restingOrder: { userId: inv.userId, ticketCategoryId: inv.ticketCategoryId, side: 'ASK' } },
+          ],
+        },
+      });
+
+      const unsettledExecQty = sellerExecutions.reduce((sum, e) => sum + e.quantity, 0);
+      const expectedReserved = activeReserved + unsettledExecQty;
+
+      if (inv.reservedQuantity > expectedReserved) {
+        const excess = inv.reservedQuantity - expectedReserved;
+        summary.orphanedInventoryDetected += excess;
+        summary.isConsistent = false;
+
+        if (!dryRun) {
+          await this.prisma.userTicketInventory.update({
+            where: { id: inv.id },
+            data: {
+              availableQuantity: { increment: excess },
+              reservedQuantity: { decrement: excess },
+            },
+          });
+          summary.orphanedInventoryRestored += excess;
+        }
+      }
+    }
+
+    return summary;
   }
 
   /**
