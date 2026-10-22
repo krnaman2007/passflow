@@ -1665,8 +1665,24 @@ model TradeSettlement {
 - **Lifecycle Integration**:
   - Starts after database connection and startup recovery in `server.js`.
   - Graceful shutdown on `SIGTERM` and `SIGINT`: `stop({ timeoutMs: 5000 })` cancels pending timers and awaits completion of any in-flight tick within a bounded 5s window.
-- **Operational Starvation Boundary**:
-  - `recoverUnsettled` processes executions in ascending sequence order (`orderBy: { sequenceNumber: 'asc' }`). If executions fail due to permanent invariant errors (e.g. corrupted test data), they remain with `settlement: null`. If accumulated permanent failures equal or exceed `batchSize`, newer unsettled executions could be delayed until operator intervention or batch size increase.
+- **Operational Starvation Mitigation (Step 9.6 Keyset Pagination)**:
+  - Addressed via keyset pagination cursor rotation: `recoverUnsettled({ batchSize, afterSequenceNumber })`.
+  - When a batch contains executions with permanent failures, the worker advances `lastSeenSequenceNumber` to the highest sequence number in the batch.
+  - Subsequent ticks query `sequenceNumber > lastSeenSequenceNumber`, allowing newer eligible executions to be examined and settled even if older executions repeatedly fail.
+  - When the tail of the sequence stream is reached (no newer unsettled executions returned), `lastSeenSequenceNumber` wraps around to `null`, re-evaluating earlier unsettled executions.
+
+#### 5.18.12 Step 9.6 Keyset Pagination & Proposed Future Schema Migration
+- **Keyset Starvation Prevention**:
+  - `TradeSettlementService.recoverUnsettled({ batchSize, afterSequenceNumber })` accepts an optional `afterSequenceNumber` cursor (BigInt/integer) and queries `where: { settlement: null, sequenceNumber: { gt: afterSequenceNumber } }`.
+  - Results return `{ executionId, sequenceNumber, settled, ... }` for deterministic cursor advancement in `SettlementRecoveryWorker`.
+  - Wrap-around ensures all sequence ranges are swept periodically without stalling on corrupt executions.
+- **Proposed Future Schema Migration (Dead-Letter Queue / Backoff)**:
+  - *Current Status*: Keyset pagination prevents newer executions from being starved without altering the database schema.
+  - *Future Migration Recommendation*: To avoid re-attempting permanently invalid executions on every wrap-around cycle, a future migration should add:
+    - `retryCount Int @default(0)` on `Execution`
+    - `lastSettlementAttemptAt DateTime?` on `Execution`
+    - `settlementStatus ExecutionSettlementStatus @default(PENDING)` (enum: `PENDING`, `SETTLED`, `FAILED_DEAD_LETTER`)
+  - With these fields, executions exceeding `MAX_RECOVERY_ATTEMPTS` (e.g. 10) can be transitioned to `FAILED_DEAD_LETTER` for administrative review, completely removing them from the automated recovery query.
 
 
 

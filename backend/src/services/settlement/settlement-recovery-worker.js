@@ -147,7 +147,7 @@ export class SettlementRecoveryWorker {
           if (maxSeq !== null) {
             this.lastSeenSequenceNumber = maxSeq;
           }
-        } else if (this.lastSeenSequenceNumber !== null) {
+        } else if (Array.isArray(results) && this.lastSeenSequenceNumber !== null) {
           // Wrapped around: reached the tail of the sequence stream with no newer unsettled executions.
           // Reset cursor so subsequent ticks re-examine earlier unsettled executions.
           this.lastSeenSequenceNumber = null;
@@ -157,18 +157,22 @@ export class SettlementRecoveryWorker {
 
         if (failures.length > 0) {
           if (this.logger?.error) {
-            this.logger.error('Settlement recovery found executions requiring intervention', {
+            const meta = {
               failedCount: failures.length,
               executionIds: failures.map((f) => f.executionId),
-              lastSeenSequenceNumber: this.lastSeenSequenceNumber?.toString(),
-            });
+            };
+            if (this.lastSeenSequenceNumber !== null) {
+              meta.lastSeenSequenceNumber = this.lastSeenSequenceNumber.toString();
+            }
+            this.logger.error('Settlement recovery found executions requiring intervention', meta);
           }
         } else if (Array.isArray(results) && results.length > 0) {
           if (this.logger?.info) {
-            this.logger.info('Settlement recovery processed executions', {
-              count: results.length,
-              lastSeenSequenceNumber: this.lastSeenSequenceNumber?.toString(),
-            });
+            const meta = { count: results.length };
+            if (this.lastSeenSequenceNumber !== null) {
+              meta.lastSeenSequenceNumber = this.lastSeenSequenceNumber.toString();
+            }
+            this.logger.info('Settlement recovery processed executions', meta);
           }
         }
 
