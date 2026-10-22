@@ -121,6 +121,7 @@ describe('Admin Management API Endpoints (/admin)', () => {
     }
 
     await prisma.reconciliation.deleteMany({});
+    await prisma.monitoring.deleteMany({});
 
     await prisma.$disconnect();
   }, 120000);
@@ -637,6 +638,181 @@ describe('Admin Management API Endpoints (/admin)', () => {
           expect(report.status).toBe('MATCHED');
         }
       });
+    });
+  });
+
+  describe('Monitoring & Infrastructure API (/admin/monitoring)', () => {
+    describe('GET /admin/monitoring/health', () => {
+      it('should reject unauthenticated caller (401 Unauthorized)', async () => {
+        const res = await request(app).get('/admin/monitoring/health').expect(401);
+        expect(res.body.success).toBe(false);
+        expect(res.body.error.code).toBe('UNAUTHORIZED');
+      });
+
+      it('should reject non-admin caller (403 Forbidden)', async () => {
+        const res = await request(app)
+          .get('/admin/monitoring/health')
+          .set('Authorization', `Bearer ${userToken}`)
+          .expect(403);
+
+        expect(res.body.success).toBe(false);
+        expect(res.body.error.code).toBe('FORBIDDEN');
+      });
+
+      it('should return system health status for admin (200 OK)', async () => {
+        const res = await request(app)
+          .get('/admin/monitoring/health')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .expect(200);
+
+        expect(res.body.success).toBe(true);
+        expect(res.body.data.status).toBeDefined();
+        expect(res.body.data.services).toBeDefined();
+        expect(res.body.data.services.database).toBeDefined();
+        expect(res.body.data.services.redis).toBeDefined();
+        expect(res.body.data.services.websocket).toBeDefined();
+        expect(res.body.data.services.matchingEngine).toBeDefined();
+      });
+    });
+
+    describe('GET /admin/monitoring/logs', () => {
+      it('should reject unauthenticated caller (401 Unauthorized)', async () => {
+        const res = await request(app).get('/admin/monitoring/logs').expect(401);
+        expect(res.body.success).toBe(false);
+        expect(res.body.error.code).toBe('UNAUTHORIZED');
+      });
+
+      it('should reject non-admin caller (403 Forbidden)', async () => {
+        const res = await request(app)
+          .get('/admin/monitoring/logs')
+          .set('Authorization', `Bearer ${userToken}`)
+          .expect(403);
+
+        expect(res.body.success).toBe(false);
+        expect(res.body.error.code).toBe('FORBIDDEN');
+      });
+
+      it('should return paginated system logs for admin (200 OK)', async () => {
+        const res = await request(app)
+          .get('/admin/monitoring/logs')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .expect(200);
+
+        expect(res.body.success).toBe(true);
+        expect(Array.isArray(res.body.data.logs)).toBe(true);
+        expect(res.body.data.pagination).toBeDefined();
+      });
+
+      it('should filter logs by status query (200 OK)', async () => {
+        const res = await request(app)
+          .get('/admin/monitoring/logs?status=HEALTHY')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .expect(200);
+
+        expect(res.body.success).toBe(true);
+        expect(Array.isArray(res.body.data.logs)).toBe(true);
+      });
+    });
+  });
+
+  describe('Performance Metrics API (/admin/metrics)', () => {
+    it('should reject unauthenticated caller (401 Unauthorized)', async () => {
+      const res = await request(app).get('/admin/metrics').expect(401);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('should reject non-admin caller (403 Forbidden)', async () => {
+      const res = await request(app)
+        .get('/admin/metrics')
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(403);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('should return performance metrics for admin (200 OK)', async () => {
+      const res = await request(app)
+        .get('/admin/metrics')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.metrics).toBeDefined();
+      expect(res.body.data.ordersPerSec).toBeDefined();
+      expect(res.body.data.avgLatency).toBeDefined();
+      expect(res.body.data.throughput).toBeDefined();
+      expect(res.body.data.errorRate).toBeDefined();
+    });
+  });
+
+  describe('Solvency API (/admin/solvency and /solvency)', () => {
+    describe('POST /admin/solvency/generate', () => {
+      it('should reject unauthenticated caller (401 Unauthorized)', async () => {
+        const res = await request(app).post('/admin/solvency/generate').expect(401);
+        expect(res.body.success).toBe(false);
+        expect(res.body.error.code).toBe('UNAUTHORIZED');
+      });
+
+      it('should reject non-admin caller (403 Forbidden)', async () => {
+        const res = await request(app)
+          .post('/admin/solvency/generate')
+          .set('Authorization', `Bearer ${userToken}`)
+          .send({})
+          .expect(403);
+
+        expect(res.body.success).toBe(false);
+        expect(res.body.error.code).toBe('FORBIDDEN');
+      });
+
+      it('should generate SolvencyProof for admin (201 Created)', async () => {
+        const res = await request(app)
+          .post('/admin/solvency/generate')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({
+            backingAssets: 2500000,
+            notes: 'Quarterly solvency audit snapshot',
+          })
+          .expect(201);
+
+        expect(res.body.success).toBe(true);
+        expect(res.body.data.message).toBe('Solvency proof created successfully');
+        expect(res.body.data.proof).toBeDefined();
+        expect(res.body.data.proof.id).toBeDefined();
+        expect(res.body.data.proof.isSolvent).toBe(true);
+        expect(res.body.data.proof.proofHash).toBeDefined();
+        expect(res.body.data.proof.ratio).toBeGreaterThan(0);
+      });
+    });
+
+    describe('GET /solvency/verify', () => {
+      it('should allow public access to verify platform solvency (200 OK)', async () => {
+        const res = await request(app).get('/solvency/verify').expect(200);
+
+        expect(res.body.success).toBe(true);
+        expect(res.body.data.isSolvent).toBe(true);
+        expect(res.body.data.verified).toBe(true);
+        expect(res.body.data.proof).toBeDefined();
+        expect(res.body.data.proof.proofHash).toBeDefined();
+      });
+    });
+  });
+
+  describe('Deployment Health Liveness Check (GET /health)', () => {
+    it('should return 200 OK for public /health endpoint', async () => {
+      const res = await request(app).get('/health').expect(200);
+
+      expect(res.body.status).toBe('ok');
+      expect(res.body.message).toBe('Backend server is running');
+      expect(res.body.timestamp).toBeDefined();
+    });
+
+    it('should return 200 OK for public /api/health endpoint', async () => {
+      const res = await request(app).get('/api/health').expect(200);
+
+      expect(res.body.status).toBe('ok');
+      expect(res.body.message).toBe('Backend server is running');
     });
   });
 });

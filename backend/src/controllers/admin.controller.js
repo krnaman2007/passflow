@@ -5,6 +5,8 @@ import { formatSafeUser } from '../utils/token.js';
 import auditLogService from '../services/audit-log.service.js';
 import rulesService from '../services/rules.service.js';
 import reconciliationService from '../services/reconciliation.service.js';
+import monitoringService from '../services/monitoring.service.js';
+import solvencyService from '../services/solvency.service.js';
 
 /**
  * GET /admin/users
@@ -688,6 +690,86 @@ export const getReconciliationReports = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /admin/monitoring/health
+ * Admin: DB, Redis, WebSocket, engine status.
+ */
+export const getMonitoringHealth = async (req, res, next) => {
+  try {
+    const health = await monitoringService.getHealth();
+    res.status(200).json(successResponse(health));
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /admin/monitoring/logs
+ * Admin: System logs.
+ */
+export const getMonitoringLogs = async (req, res, next) => {
+  try {
+    const query = req.validatedQuery || req.query;
+    const result = await monitoringService.getLogs(query);
+    res.status(200).json(
+      successResponse({
+        logs: result.logs,
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+        totalPages: result.totalPages,
+        pagination: {
+          total: result.total,
+          page: result.page,
+          limit: result.limit,
+          totalPages: result.totalPages,
+        },
+      })
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /admin/metrics
+ * Admin: PerformanceMetrics: orders/sec, latency, errors.
+ */
+export const getMetrics = async (req, res, next) => {
+  try {
+    const metrics = await monitoringService.getMetrics();
+    res.status(200).json(
+      successResponse({
+        metrics,
+        ordersPerSec: metrics.ordersPerSec,
+        avgLatency: metrics.avgLatency,
+        errorRate: metrics.errorRate,
+        throughput: metrics.throughput,
+      })
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /admin/solvency/generate
+ * Admin: Create SolvencyProof.
+ */
+export const generateSolvencyProof = async (req, res, next) => {
+  try {
+    const proof = await solvencyService.generateProof(req.body);
+    res.status(201).json(
+      successResponse({
+        message: 'Solvency proof created successfully',
+        proof,
+      })
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
 export default {
   getUsers,
   manageUser,
@@ -703,4 +785,8 @@ export default {
   getAuditLogs,
   runReconciliation,
   getReconciliationReports,
+  getMonitoringHealth,
+  getMonitoringLogs,
+  getMetrics,
+  generateSolvencyProof,
 };
