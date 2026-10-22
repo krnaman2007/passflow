@@ -1,7 +1,9 @@
 import express from 'express';
 import eventController from '../controllers/event.controller.js';
+import ticketController from '../controllers/ticket.controller.js';
 import { authenticateUser, requireOrganizer } from '../middleware/auth.js';
 import validate from '../middleware/validate.js';
+import { purchaseTicketSchema } from '../schemas/ticket.schema.js';
 import {
   createEventSchema,
   updateEventSchema,
@@ -52,6 +54,14 @@ router.patch(
   requireOrganizer,
   validate(updateEventStatusSchema),
   eventController.updateEventStatus
+);
+
+// POST /events/:id/purchase - Buy at original face value (User only)
+router.post(
+  '/events/:id/purchase',
+  authenticateUser,
+  validate(purchaseTicketSchema),
+  ticketController.purchaseTickets
 );
 
 // GET /events/:id/price-history - OHLC / price history for charts (Public)
