@@ -570,6 +570,20 @@ describe('Step 9.13 — Durable Settlement Recovery and Retry Management', () =>
         isTransient: false,
       });
 
+      const dbConstraint = new Error('new row for relation "Wallet" violates check constraint "wallet_available_balance_non_negative"');
+      expect(classifySettlementError(dbConstraint)).toEqual({
+        type: 'PERMANENT',
+        code: 'DATABASE_CONSTRAINT_VIOLATION',
+        isTransient: false,
+      });
+
+      const programmingError = new TypeError('Cannot read properties of undefined (reading "id")');
+      expect(classifySettlementError(programmingError)).toEqual({
+        type: 'TRANSIENT',
+        code: 'PROGRAMMING_ERROR',
+        isTransient: true,
+      });
+
       const serialization = new Error('Raw query failed: could not serialize access (40001)');
       expect(classifySettlementError(serialization)).toEqual({
         type: 'TRANSIENT',
@@ -610,6 +624,243 @@ describe('Step 9.13 — Durable Settlement Recovery and Retry Management', () =>
       expect(service.maxAutoRetries).toBe(DEFAULT_MAX_AUTO_RETRIES);
       expect(service.baseBackoffMs).toBe(DEFAULT_BASE_BACKOFF_MS);
       expect(service.maxBackoffMs).toBe(DEFAULT_BASE_BACKOFF_MS); // Clamped to at least baseBackoffMs
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Step 9.13A Audit: Deterministic Eligibility Boundaries & Concurrency Hardening
+  // --------------------------------------------------------------------------
+  describe('Step 9.13A — Correctness Audit Tests', () => {
+    test('Audit 1: Deterministic eligibility boundary (just before, exactly at, and just after nextRetryAt)', async () => {
+      const buyer = await createUserWithWallet('aud-bound-b', 10000n, 1000n);
+      const seller = await createUserWithWallet('aud-bound-s', 5000n, 0n);
+      const { execution } = await seedMatchedTrade({ buyer, seller });
+
+      // Target eligibility time T
+      const T = new Date('2026-10-22T15:00:00.000Z');
+
+      await livePrisma.execution.update({
+        where: { id: execution.id },
+        data: {
+          settlementStatus: 'PENDING',
+          retryCount: 1, // Failed at least once
+          nextRetryAt: T,
+        },
+      });
+
+      // 1. Just before eligibility time T (-100ms): MUST be skipped
+      const beforeTime = new Date(T.getTime() - 100);
+      const resultsBefore = await settlementService.recoverUnsettled({
+        batchSize: 500,
+        now: beforeTime,
+      });
+      const foundBefore = resultsBefore.find((r) => r.executionId === execution.id);
+      expect(foundBefore).toBeUndefined();
+
+      // 2. Exactly at eligibility time T (now == T): MUST be selected
+      const resultsAt = await settlementService.recoverUnsettled({
+        batchSize: 500,
+        now: T,
+      });
+      const foundAt = resultsAt.find((r) => r.executionId === execution.id);
+      expect(foundAt).toBeDefined();
+      expect(foundAt.settled).toBe(true);
+
+      // Verify execution is now settled in DB
+      const dbAfter = await livePrisma.execution.findUnique({ where: { id: execution.id } });
+      expect(dbAfter.settlementStatus).toBe('SETTLED');
+
+      // 3. Just after eligibility time on a fresh execution (+100ms): MUST be selected
+      const { execution: execution2 } = await seedMatchedTrade({ buyer, seller });
+      const T2 = new Date('2026-10-22T16:00:00.000Z');
+      await livePrisma.execution.update({
+        where: { id: execution2.id },
+        data: {
+          settlementStatus: 'PENDING',
+          retryCount: 2,
+          nextRetryAt: T2,
+        },
+      });
+
+      const afterTime = new Date(T2.getTime() + 100);
+      const resultsAfter = await settlementService.recoverUnsettled({
+        batchSize: 500,
+        now: afterTime,
+      });
+      const foundAfter = resultsAfter.find((r) => r.executionId === execution2.id);
+      expect(foundAfter).toBeDefined();
+      expect(foundAfter.settled).toBe(true);
+    });
+
+    test('Audit 2: First-attempt executions (retryCount: 0) are immediately eligible for settlement', async () => {
+      const buyer = await createUserWithWallet('aud-first-b', 5000n, 200n);
+      const seller = await createUserWithWallet('aud-first-s', 1000n, 0n);
+      const { execution } = await seedMatchedTrade({ buyer, seller });
+
+      // Brand new execution has retryCount: 0
+      const dbRecord = await livePrisma.execution.findUnique({ where: { id: execution.id } });
+      expect(dbRecord.retryCount).toBe(0);
+
+      // Query with exact creation time
+      const results = await settlementService.recoverUnsettled({
+        batchSize: 500,
+        now: dbRecord.executedAt,
+      });
+      const found = results.find((r) => r.executionId === execution.id);
+      expect(found).toBeDefined();
+      expect(found.settled).toBe(true);
+    });
+
+    test('Audit 3: Settlement success racing with delayed failure recording does not corrupt SETTLED state', async () => {
+      const buyer = await createUserWithWallet('aud-race-b', 10000n, 500n);
+      const seller = await createUserWithWallet('aud-race-s', 5000n, 0n);
+      const { execution } = await seedMatchedTrade({ buyer, seller });
+
+      // Worker 1 successfully settles execution
+      const settleResult = await settlementService.settleExecution({ executionId: execution.id });
+      expect(settleResult.isIdempotentReplay).toBe(false);
+
+      const dbSettled = await livePrisma.execution.findUnique({ where: { id: execution.id } });
+      expect(dbSettled.settlementStatus).toBe('SETTLED');
+
+      // Worker 2 finishes a delayed, failed attempt and calls recordSettlementFailure
+      const failureResult = await settlementService.recordSettlementFailure({
+        executionId: execution.id,
+        error: new Error('could not serialize access due to concurrent update (40001)'),
+        now: new Date(),
+      });
+
+      // Must NOT overwrite SETTLED status
+      expect(failureResult.settlementStatus).toBe('SETTLED');
+
+      const dbFinal = await livePrisma.execution.findUnique({ where: { id: execution.id } });
+      expect(dbFinal.settlementStatus).toBe('SETTLED');
+      expect(dbFinal.nextRetryAt).toBeNull();
+
+      // Exactly 1 TradeSettlement exists
+      const settlements = await livePrisma.tradeSettlement.findMany({
+        where: { executionId: execution.id },
+      });
+      expect(settlements).toHaveLength(1);
+    });
+
+    test('Audit 4: Delayed failure handler does not revert MANUAL_REVIEW back to PENDING', async () => {
+      const buyer = await createUserWithWallet('aud-mr-b', 5000n, 200n);
+      const seller = await createUserWithWallet('aud-mr-s', 1000n, 0n);
+      const { execution } = await seedMatchedTrade({ buyer, seller });
+
+      // Execution is placed in MANUAL_REVIEW
+      await livePrisma.execution.update({
+        where: { id: execution.id },
+        data: {
+          settlementStatus: 'MANUAL_REVIEW',
+          retryCount: 5,
+          lastErrorCode: 'MAX_RETRIES_EXCEEDED',
+          nextRetryAt: null,
+        },
+      });
+
+      // A concurrent stale worker encounters a transient error and calls recordSettlementFailure
+      const failureResult = await settlementService.recordSettlementFailure({
+        executionId: execution.id,
+        error: new Error('deadlock detected (40P01)'),
+        now: new Date(),
+      });
+
+      // Must remain in MANUAL_REVIEW without resurrecting to PENDING
+      expect(failureResult.settlementStatus).toBe('MANUAL_REVIEW');
+
+      const dbRecord = await livePrisma.execution.findUnique({ where: { id: execution.id } });
+      expect(dbRecord.settlementStatus).toBe('MANUAL_REVIEW');
+      expect(dbRecord.nextRetryAt).toBeNull();
+    });
+
+    test('Audit 5: Stale worker with past timestamp cannot overwrite newer retry metadata', async () => {
+      const buyer = await createUserWithWallet('aud-stale-b', 5000n, 200n);
+      const seller = await createUserWithWallet('aud-stale-s', 1000n, 0n);
+      const { execution } = await seedMatchedTrade({ buyer, seller });
+
+      const T2 = new Date('2026-10-22T12:00:10.000Z');
+      const newerRetryAt = new Date('2026-10-22T12:00:20.000Z');
+
+      // Worker 2 updated execution at T2
+      await livePrisma.execution.update({
+        where: { id: execution.id },
+        data: {
+          settlementStatus: 'PENDING',
+          retryCount: 2,
+          lastAttemptedAt: T2,
+          lastFailedAt: T2,
+          nextRetryAt: newerRetryAt,
+          lastErrorCode: 'SERIALIZATION_FAILURE',
+        },
+      });
+
+      // Stale Worker 1 whose attempt started earlier at T1 (12:00:05) finishes late
+      const T1 = new Date('2026-10-22T12:00:05.000Z');
+      const staleResult = await settlementService.recordSettlementFailure({
+        executionId: execution.id,
+        error: new Error('deadlock detected (40P01)'),
+        now: T1,
+      });
+
+      // Stale worker call must NOT overwrite newer attempt
+      expect(staleResult.retryCount).toBe(2);
+      expect(staleResult.nextRetryAt).toEqual(newerRetryAt);
+
+      const dbRecord = await livePrisma.execution.findUnique({ where: { id: execution.id } });
+      expect(dbRecord.retryCount).toBe(2);
+      expect(dbRecord.nextRetryAt).toEqual(newerRetryAt);
+    });
+
+    test('Audit 6: Requeueing cannot requeue an already settled execution', async () => {
+      const buyer = await createUserWithWallet('aud-req-b', 5000n, 200n);
+      const seller = await createUserWithWallet('aud-req-s', 1000n, 0n);
+      const { execution } = await seedMatchedTrade({ buyer, seller });
+
+      // Settle the execution
+      await settlementService.settleExecution({ executionId: execution.id });
+
+      // Attempt to requeue settled execution
+      const requeueRes = await settlementService.requeueExecution({ executionId: execution.id });
+      expect(requeueRes.requeued).toBe(false);
+      expect(requeueRes.status).toBe('SETTLED');
+
+      const dbRecord = await livePrisma.execution.findUnique({ where: { id: execution.id } });
+      expect(dbRecord.settlementStatus).toBe('SETTLED');
+    });
+
+    test('Audit 7: Retry exhaustion progression transitions cleanly to MANUAL_REVIEW after maxAutoRetries', async () => {
+      const buyer = await createUserWithWallet('aud-exh-b', 5000n, 200n);
+      const seller = await createUserWithWallet('aud-exh-s', 1000n, 0n);
+      const { execution } = await seedMatchedTrade({ buyer, seller });
+
+      const customService = new TradeSettlementService({
+        prismaClient: livePrisma,
+        maxAutoRetries: 3,
+        baseBackoffMs: 100,
+        maxBackoffMs: 1000,
+        jitter: false,
+      });
+
+      const err = new Error('deadlock detected (40P01)');
+
+      // Attempt 1
+      const res1 = await customService.recordSettlementFailure({ executionId: execution.id, error: err, now: new Date() });
+      expect(res1.retryCount).toBe(1);
+      expect(res1.settlementStatus).toBe('PENDING');
+
+      // Attempt 2
+      const res2 = await customService.recordSettlementFailure({ executionId: execution.id, error: err, now: new Date() });
+      expect(res2.retryCount).toBe(2);
+      expect(res2.settlementStatus).toBe('PENDING');
+
+      // Attempt 3 (reaches maxAutoRetries = 3) -> MANUAL_REVIEW
+      const res3 = await customService.recordSettlementFailure({ executionId: execution.id, error: err, now: new Date() });
+      expect(res3.retryCount).toBe(3);
+      expect(res3.settlementStatus).toBe('MANUAL_REVIEW');
+      expect(res3.lastErrorCode).toBe('MAX_RETRIES_EXCEEDED');
+      expect(res3.nextRetryAt).toBeNull();
     });
   });
 });

@@ -110,6 +110,27 @@ export function classifySettlementError(error) {
     };
   }
 
+  // Database integrity constraint violations are permanent business invariant violations
+  if (
+    error.code === 'P2002' ||
+    error.code === 'P2003' ||
+    error.code === '23505' ||
+    error.code === '23503' ||
+    error.code === '23514' ||
+    (typeof error.message === 'string' && (
+      error.message.includes('check constraint') ||
+      error.message.includes('violates check constraint') ||
+      error.message.includes('foreign key constraint') ||
+      error.message.includes('violates foreign key')
+    ))
+  ) {
+    return {
+      type: 'PERMANENT',
+      code: 'DATABASE_CONSTRAINT_VIOLATION',
+      isTransient: false,
+    };
+  }
+
   if (error.code === 'P2034') {
     return { type: 'TRANSIENT', code: 'PRISMA_WRITE_CONFLICT', isTransient: true };
   }
@@ -131,6 +152,11 @@ export function classifySettlementError(error) {
     error.code === 'P1008'
   ) {
     return { type: 'TRANSIENT', code: 'DATABASE_CONNECTIVITY', isTransient: true };
+  }
+
+  // Programming errors (TypeError, ReferenceError, RangeError) are classified with clean code
+  if (error instanceof TypeError || error instanceof ReferenceError || error instanceof RangeError) {
+    return { type: 'TRANSIENT', code: 'PROGRAMMING_ERROR', isTransient: true };
   }
 
   // Conservative policy: unknown errors are treated as transient up to maxAutoRetries
@@ -208,7 +234,7 @@ export class TradeSettlementService {
     try {
       return await this.prisma.$transaction(async (tx) => {
         const rows = await tx.$queryRaw`
-          SELECT id, "settlementStatus", "retryCount"
+          SELECT id, "settlementStatus", "retryCount", "lastAttemptedAt", "nextRetryAt", "lastErrorCode", "lastFailedAt"
           FROM "Execution"
           WHERE id = ${cleanId}
           FOR UPDATE
@@ -234,6 +260,16 @@ export class TradeSettlementService {
               lastErrorCode: null,
             },
           });
+          return execution;
+        }
+
+        // If already under MANUAL_REVIEW, do not let a failure handler revert to PENDING or overwrite
+        if (execution.settlementStatus === 'MANUAL_REVIEW') {
+          return execution;
+        }
+
+        // Stale worker protection: if another worker has already recorded an attempt after `now`, do not overwrite newer metadata
+        if (execution.lastAttemptedAt && new Date(execution.lastAttemptedAt) > now) {
           return execution;
         }
 
@@ -342,6 +378,28 @@ export class TradeSettlementService {
           message: 'Execution is already settled',
         };
       }
+
+      // Check if TradeSettlement exists
+      const settlement = await tx.tradeSettlement.findUnique({
+        where: { executionId: cleanId },
+      });
+      if (settlement) {
+        await tx.execution.update({
+          where: { id: cleanId },
+          data: {
+            settlementStatus: 'SETTLED',
+            nextRetryAt: null,
+            lastErrorCode: null,
+          },
+        });
+        return {
+          executionId: cleanId,
+          status: 'SETTLED',
+          requeued: false,
+          message: 'Execution is already settled',
+        };
+      }
+
       if (execution.settlementStatus === 'PENDING') {
         return {
           executionId: cleanId,
@@ -420,7 +478,6 @@ export class TradeSettlementService {
     }
 
     const shouldFilterDue = onlyDue !== undefined ? Boolean(onlyDue) : cursor === null;
-    const queryTime = new Date(now.getTime() + 1000);
 
     const where = {
       settlement: null,
@@ -431,7 +488,7 @@ export class TradeSettlementService {
             OR: [
               { nextRetryAt: null },
               { retryCount: 0 },
-              { nextRetryAt: { lte: queryTime } },
+              { nextRetryAt: { lte: now } },
             ],
           }
         : {}),

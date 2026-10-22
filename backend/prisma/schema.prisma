@@ -162,6 +162,7 @@ model Event {
   // Relationships
   categories    TicketCategory[]
   orders        Order[]
+  marketLeases  MarketLease[]
 }
 
 model TicketCategory {
@@ -181,6 +182,7 @@ model TicketCategory {
   orders            Order[]
   userInventories   UserTicketInventory[]
   inventoryCredits  UserInventoryCredit[]
+  marketLeases      MarketLease[]
 }
 
 model TicketInventory {
@@ -242,6 +244,7 @@ model Order {
   idempotencyKey    String?        // Client-provided deduplication token
   stoppedReason     String?        // Recorded reason matching stopped (e.g. 'SELF_TRADE_PREVENTION')
   sequenceNumber    BigInt         @unique @default(autoincrement())
+  fencingToken      BigInt?        // Monotonic lease fencing token under which order was matched
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
 
@@ -308,6 +311,25 @@ model TradeSettlement {
   createdAt             DateTime  @default(now())
 
   @@index([createdAt])
+}
+
+// Database-backed distributed market lease for exclusive market ownership and fencing
+model MarketLease {
+  id               String         @id @default(uuid())
+  eventId          String
+  event            Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  ticketCategoryId String
+  ticketCategory   TicketCategory @relation(fields: [ticketCategoryId], references: [id], onDelete: Cascade)
+  ownerId          String
+  fencingToken     BigInt         @default(1)
+  leaseDurationMs  Int            @default(10000) // Default 10s duration
+  expiresAt        DateTime
+  acquiredAt       DateTime       @default(now())
+  renewedAt        DateTime       @default(now())
+
+  @@unique([eventId, ticketCategoryId])
+  @@index([ownerId])
+  @@index([expiresAt])
 }
 
 model Wallet {

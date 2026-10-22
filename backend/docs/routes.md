@@ -1862,7 +1862,8 @@ model TradeSettlement {
     - Error codes are strictly bounded string enums. Raw stack traces, SQL queries, credentials, and wallet balances are never persisted in recovery metadata.
 - **Recovery Worker Scheduling & Starvation Prevention**:
   - Worker queries PostgreSQL directly for due executions:
-    `WHERE "settlementStatus" = 'PENDING' AND "settlement" IS NULL AND ("nextRetryAt" IS NULL OR "nextRetryAt" <= NOW()) ORDER BY "sequenceNumber" ASC LIMIT batchSize`.
+    `WHERE "settlementStatus" = 'PENDING' AND "settlement" IS NULL AND ("nextRetryAt" IS NULL OR "retryCount" = 0 OR "nextRetryAt" <= NOW()) ORDER BY "sequenceNumber" ASC LIMIT batchSize`.
+  - *Strict Scheduling Boundaries (Step 9.13A Audit)*: The initial one-second scheduling tolerance was audited and removed. Due filtering strictly checks `nextRetryAt <= NOW()` to prevent premature retries. First-attempt executions (`retryCount = 0`) are immediately eligible.
   - Eliminates reliance on volatile in-memory cursor for correctness.
   - *Starvation Protection*: Failing executions wait out their backoff delay in the future (`nextRetryAt > NOW()`), allowing newly arriving executions to be settled immediately. When their backoff expires, their low `sequenceNumber` gives them top FIFO priority.
   - *Restart Safety*: Process restart reloads exact retry count, scheduling, and manual-review state directly from PostgreSQL.
@@ -1870,10 +1871,13 @@ model TradeSettlement {
   - Competing workers or parallel retries serialize on the durable `Execution` row lock (`SELECT FOR UPDATE`).
   - If a worker encounters an already settled execution, `_assertExistingSettlement` returns `{ settlement, isIdempotentReplay: true }` with zero duplicate ledger movements or wallet balance mutations.
   - `recordSettlementFailure` executes in an atomic transaction; if an execution is already `SETTLED`, it never overwrites the settlement status or retry count.
+  - *Stale Worker & Manual Review Protection (Step 9.13A Audit)*:
+    - If an execution is in `MANUAL_REVIEW`, a late failure handler cannot overwrite or revert it to `PENDING`.
+    - If another worker has already recorded an attempt at or after `now` (`lastAttemptedAt > now`), stale worker failure recording aborts without overwriting newer retry metadata.
 - **Controlled Operator Interface**:
   - Internal service method: `tradeSettlementService.requeueExecution({ executionId, resetRetryCount = false })`.
   - Transitions `MANUAL_REVIEW` executions back to `PENDING` with `nextRetryAt = NOW()`.
-  - Idempotent: returns `{ requeued: false }` if already `PENDING` or `SETTLED`.
+  - Idempotent: returns `{ requeued: false }` if already `PENDING` or `SETTLED` (verified against `TradeSettlement` existence).
   - No public or unauthenticated HTTP endpoint exposed.
 - **Structured Observability**:
   - Standardized structured log events emitted:
