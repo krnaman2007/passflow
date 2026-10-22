@@ -335,4 +335,137 @@ describe('Admin Management API Endpoints (/admin)', () => {
       expect(res.body.data.event.status).toBe('CANCELLED');
     });
   });
+
+  describe('Anti-Scalping Rules API (/admin/rules/anti-scalping)', () => {
+    let createdRuleId = null;
+
+    it('should reject unauthenticated caller (401 Unauthorized)', async () => {
+      const res = await request(app).get('/admin/rules/anti-scalping').expect(401);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('should reject non-admin caller (403 Forbidden)', async () => {
+      const res = await request(app)
+        .get('/admin/rules/anti-scalping')
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(403);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('should list all anti-scalping rules for admin', async () => {
+      const res = await request(app)
+        .get('/admin/rules/anti-scalping')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(Array.isArray(res.body.data.rules)).toBe(true);
+      expect(res.body.data.rules.length).toBeGreaterThan(0);
+    });
+
+    it('should validate rule creation payload (400 Validation Error)', async () => {
+      const res = await request(app)
+        .post('/admin/rules/anti-scalping')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ name: 'Incomplete Rule' })
+        .expect(400);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('should create a new anti-scalping price-cap rule (201 Created)', async () => {
+      const res = await request(app)
+        .post('/admin/rules/anti-scalping')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          name: 'Festival GA Cap',
+          eventId: testEventId,
+          tier: 'General Admission',
+          maxResalePrice: 180,
+          enabled: true,
+        })
+        .expect(201);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.rule.id).toBeDefined();
+      expect(res.body.data.rule.maxPrice).toBe(180);
+      createdRuleId = res.body.data.rule.id;
+    });
+
+    it('should return 404 when updating nonexistent rule', async () => {
+      const res = await request(app)
+        .put('/admin/rules/anti-scalping/nonexistent_rule_id')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ maxResalePrice: 200 })
+        .expect(404);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('RULE_NOT_FOUND');
+    });
+
+    it('should update and deactivate anti-scalping rule (200 OK)', async () => {
+      const res = await request(app)
+        .put(`/admin/rules/anti-scalping/${createdRuleId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          maxResalePrice: 220,
+          enabled: false,
+        })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.rule.maxPrice).toBe(220);
+      expect(res.body.data.rule.enabled).toBe(false);
+    });
+  });
+
+  describe('Anti-Bot Rate Limits API (/admin/rules/anti-bot)', () => {
+    it('should reject unauthenticated request (401 Unauthorized)', async () => {
+      const res = await request(app).get('/admin/rules/anti-bot').expect(401);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('should reject non-admin caller (403 Forbidden)', async () => {
+      const res = await request(app)
+        .get('/admin/rules/anti-bot')
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(403);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('should view current anti-bot rate limits (200 OK)', async () => {
+      const res = await request(app)
+        .get('/admin/rules/anti-bot')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.ordersPerMinute).toBeDefined();
+      expect(res.body.data.enabled).toBeDefined();
+    });
+
+    it('should update anti-bot rate limits (200 OK)', async () => {
+      const res = await request(app)
+        .put('/admin/rules/anti-bot')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          ordersPerMinute: 35,
+          maxRequestsPerMinute: 150,
+          burstLimit: 40,
+          enabled: true,
+        })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.config.ordersPerMinute).toBe(35);
+      expect(res.body.data.config.burstLimit).toBe(40);
+    });
+  });
 });

@@ -8,6 +8,9 @@ import {
   adminGetUsersQuerySchema,
   adminGetEventsQuerySchema,
   adminManageEventSchema,
+  createAntiScalpingRuleSchema,
+  updateAntiScalpingRuleSchema,
+  updateAntiBotRuleSchema,
 } from '../schemas/admin.schema.js';
 
 const router = Router();
@@ -50,5 +53,52 @@ router.get('/events', validate(adminGetEventsQuerySchema, 'query'), adminControl
  * @access  Admin
  */
 router.patch('/events/:id', validate(adminManageEventSchema), adminController.manageEvent);
+
+/**
+ * @route   GET /admin/rules/anti-scalping
+ * @desc    List price-cap rules.
+ * @access  Admin
+ */
+router.get('/rules/anti-scalping', adminController.listAntiScalpingRules);
+
+/**
+ * @route   POST /admin/rules/anti-scalping
+ * @desc    Create rule (maxResalePrice per category).
+ * @access  Admin
+ */
+router.post(
+  '/rules/anti-scalping',
+  validate(createAntiScalpingRuleSchema),
+  adminController.createAntiScalpingRule
+);
+
+/**
+ * @route   PUT /admin/rules/anti-scalping/:id
+ * @desc    Update / deactivate rule.
+ * @access  Admin
+ */
+router.put(
+  '/rules/anti-scalping/:id',
+  validate(updateAntiScalpingRuleSchema),
+  adminController.updateAntiScalpingRule
+);
+
+/**
+ * @route   GET /admin/rules/anti-bot
+ * @desc    View rate limits.
+ * @access  Admin
+ */
+router.get('/rules/anti-bot', adminController.getAntiBotConfig);
+
+/**
+ * @route   PUT /admin/rules/anti-bot
+ * @desc    Change rate limits.
+ * @access  Admin
+ */
+router.put(
+  '/rules/anti-bot',
+  validate(updateAntiBotRuleSchema),
+  adminController.updateAntiBotConfig
+);
 
 export default router;

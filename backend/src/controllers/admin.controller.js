@@ -3,6 +3,7 @@ import { AppError } from '../middleware/errorHandler.js';
 import { successResponse } from '../utils/response.js';
 import { formatSafeUser } from '../utils/token.js';
 import auditLogService from '../services/audit-log.service.js';
+import rulesService from '../services/rules.service.js';
 
 /**
  * GET /admin/users
@@ -389,10 +390,148 @@ export const manageEvent = async (req, res, next) => {
   }
 };
 
+export const listAntiScalpingRules = async (req, res, next) => {
+  try {
+    const rules = rulesService.listAntiScalpingRules(req.query);
+    res.status(200).json(
+      successResponse({
+        rules,
+        total: rules.length,
+      })
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /admin/rules/anti-scalping
+ * Admin: Create rule (maxResalePrice per category).
+ */
+export const createAntiScalpingRule = async (req, res, next) => {
+  try {
+    const rule = rulesService.createAntiScalpingRule(req.body);
+
+    // Non-blocking audit log record
+    try {
+      const adminRecord = await prisma.admin.findFirst({
+        where: { OR: [{ userId: req.user.id }, { email: req.user.email }] },
+      });
+      if (adminRecord) {
+        await auditLogService.logAction(
+          adminRecord.id,
+          'CREATE_ANTI_SCALPING_RULE',
+          { ruleId: rule.id, name: rule.name, maxPrice: rule.maxPrice, eventId: rule.eventId }
+        );
+      }
+    } catch {
+      // Non-blocking
+    }
+
+    res.status(201).json(
+      successResponse({
+        message: 'Anti-scalping rule created successfully',
+        rule,
+      })
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * PUT /admin/rules/anti-scalping/:id
+ * Admin: Update / deactivate rule.
+ */
+export const updateAntiScalpingRule = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const rule = rulesService.updateAntiScalpingRule(id, req.body);
+
+    // Non-blocking audit log record
+    try {
+      const adminRecord = await prisma.admin.findFirst({
+        where: { OR: [{ userId: req.user.id }, { email: req.user.email }] },
+      });
+      if (adminRecord) {
+        await auditLogService.logAction(
+          adminRecord.id,
+          'UPDATE_ANTI_SCALPING_RULE',
+          { ruleId: id, updates: req.body }
+        );
+      }
+    } catch {
+      // Non-blocking
+    }
+
+    res.status(200).json(
+      successResponse({
+        message: 'Anti-scalping rule updated successfully',
+        rule,
+      })
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /admin/rules/anti-bot
+ * Admin: View rate limits.
+ */
+export const getAntiBotConfig = async (req, res, next) => {
+  try {
+    const config = rulesService.getAntiBotConfig();
+    res.status(200).json(successResponse(config));
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * PUT /admin/rules/anti-bot
+ * Admin: Change rate limits.
+ */
+export const updateAntiBotConfig = async (req, res, next) => {
+  try {
+    const config = rulesService.updateAntiBotConfig(req.body);
+
+    // Non-blocking audit log record
+    try {
+      const adminRecord = await prisma.admin.findFirst({
+        where: { OR: [{ userId: req.user.id }, { email: req.user.email }] },
+      });
+      if (adminRecord) {
+        await auditLogService.logAction(
+          adminRecord.id,
+          'UPDATE_ANTI_BOT_CONFIG',
+          { updates: req.body }
+        );
+      }
+    } catch {
+      // Non-blocking
+    }
+
+    res.status(200).json(
+      successResponse({
+        message: 'Anti-bot rate limits updated successfully',
+        config,
+      })
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
 export default {
   getUsers,
   manageUser,
   verifyOrganizer,
   getEvents,
   manageEvent,
+  listAntiScalpingRules,
+  createAntiScalpingRule,
+  updateAntiScalpingRule,
+  getAntiBotConfig,
+  updateAntiBotConfig,
 };
