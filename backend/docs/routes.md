@@ -1889,6 +1889,80 @@ model TradeSettlement {
     - `Settlement recovery worker error`: includes sanitized error message.
   - Internal worker diagnostics exposed via `settlementRecoveryWorker.getStatus()` and `tradeSettlementService.getExecutionRecoveryState({ executionId })`.
 
+#### 5.18.19 Step 9.14 Distributed Market Leases and Fenced Worker Coordination
+- **Distributed Market Lease Schema (`MarketLease` Model & Migration)**:
+  - Added `MarketLease` model via migration `20261022210000_add_market_lease_and_fencing`:
+    - `id`: UUID primary key.
+    - `eventId`: UUID referencing `Event.id` (`onDelete: Cascade`).
+    - `ticketCategoryId`: UUID referencing `TicketCategory.id` (`onDelete: Cascade`).
+    - `ownerId`: `String` identifying the active worker/coordinator instance holding the lease.
+    - `fencingToken`: `BigInt` strictly monotonically increasing fencing token protecting database persistence boundaries.
+    - `leaseDurationMs`: `Int` lease validity window in milliseconds.
+    - `acquiredAt`: `DateTime` initial acquisition timestamp.
+    - `renewedAt`: `DateTime` last successful renewal timestamp.
+    - `expiresAt`: `DateTime` lease expiration timestamp.
+    - Constraints: `@@unique([eventId, ticketCategoryId])` ensuring exactly one lease record per secondary market. Indexes on `ownerId` and `expiresAt` for fast renewal and takeover queries.
+  - Added `fencingToken`: `BigInt?` column on `Order` recording the fencing token under which each order was admitted and persisted.
+- **Market Lease Manager (`MarketLeaseManager`)**:
+  - Located at `backend/src/services/matching/market-lease-manager.js`.
+  - *Atomic Acquisition*:
+    - Uses PostgreSQL transaction with `INSERT ... ON CONFLICT ("eventId", "ticketCategoryId") DO NOTHING` followed by `SELECT ... FOR UPDATE`.
+    - If no lease exists: inserts new lease with `fencingToken = 1n`.
+    - If lease exists and is held by the same `ownerId`: renews lease and preserves current `fencingToken`.
+    - If lease exists but is held by another instance and `expiresAt <= NOW()`: executes safe takeover, updates `ownerId`, increments `fencingToken = fencingToken + 1n`, and resets expiration.
+    - If lease exists and is active (`expiresAt > NOW()`): rejects acquisition attempt (`MarketOwnershipError`).
+  - *Heartbeat Auto-Renewal Loop*:
+    - Computes renewal cadence at ~50% of `leaseDurationMs`.
+    - Renewals execute atomically with `SELECT ... FOR UPDATE`: checks `ownerId`, expected `fencingToken`, and non-expiration.
+    - If renewal fails due to takeover, expiration, or database failure, invokes `onRenewalFailure` callback, purges active lease, and terminates the timer.
+  - *Voluntary Graceful Release*:
+    - Immediately expires lease in database using PostgreSQL `NOW() - make_interval(secs => 1.0)`.
+    - Preserves historical fencing token so the next successor can increment monotonically.
+- **Fencing Token Verification at Database Boundary**:
+  - Implemented in `verifyFencingToken(tx, leaseContext)`:
+    - Runs inside the same atomic PostgreSQL transaction as order matching or cancellation persistence (`SELECT ... FOR UPDATE` on `MarketLease`).
+    - Evaluates expiration directly inside the PostgreSQL engine: `("expiresAt" <= NOW()) as "isExpired"` to eliminate client-server clock skew discrepancies.
+    - Verifies that:
+      1. Lease row exists for the target market.
+      2. `ownerId` matches the executing instance.
+      3. `fencingToken` matches the expected token.
+      4. Lease has not expired.
+    - If any check fails, rolls back the transaction and throws `FencingViolationError`.
+    - In `OrderRepository.persistMatchingTransaction`: stamps incoming order with `incomingOrderData.fencingToken = BigInt(leaseContext.fencingToken)`.
+- **Persistent Matching Service Integration & Fault Isolation**:
+  - `PersistentMatchingService` enforces `requireMarketLease: true`.
+  - When submitting or cancelling limit orders:
+    - Verifies active local lease before entering execution queue.
+    - Passes `leaseContext` to `OrderRepository.persistMatchingTransaction` or cancellation transaction.
+    - If `FencingViolationError` occurs during write persistence:
+      - Trapped by `_handleFencingViolation(marketKey, err)`.
+      - Local lease cache is cleared and auto-renewal timer is stopped.
+      - Market state is quarantined to `RECONCILING` (`MarketState.RECONCILING`), preventing further in-memory mutations.
+  - Crash recovery & takeover:
+    - Successor instance acquires market lease (incrementing fencing token) and calls `syncMarketOrders(eventId, ticketCategoryId)` to deterministically reconstruct the in-memory order book from PostgreSQL before processing new orders.
+    - Stale former owner cannot write to the database because its fencing token is strictly less than the successor's token.
+- **Readiness Probe & Graceful Shutdown**:
+  - `PersistentMatchingService.checkReadiness()` verifies lease health:
+    - If any active market in `READY` state has an expired or lost lease, readiness returns `{ ready: false, reason: 'Market "..." lease is expired or lost' }`.
+    - Deep readiness endpoint (`/ready`) returns `503 Service Unavailable` with `status: "not_ready"` and `checks.matching: "degraded"`.
+    - Readiness probe strictly redacts internal fencing tokens and owner IDs to prevent information disclosure.
+  - `server.js` graceful shutdown handler calls `orderService.matchingService.releaseAllLeases()` before disconnecting database pools, releasing ownership cleanly for peer instances.
+- **Automated Test Coverage**:
+  - Suite: `backend/tests/matching/distributed-market-leases.test.js` (12 tests, 100% pass against isolated PostgreSQL):
+    1. Two instances competing for the same market (mutual exclusion).
+    2. Two different markets acquiring ownership independently without cross-market interference.
+    3. Lease expiration and safe takeover with monotonic fencing tokens.
+    4. Former owner attempting writes after newer fencing token is rejected at DB persistence boundary.
+    5. Lease renewal racing with expiration or takeover.
+    6. Database failure during renewal triggers failure callback and state transition.
+    7. Process crash and restart with persistent market reconstruction.
+    8. Order placement and cancellation under ownership changes.
+    9. Duplicate submission and idempotent execution behavior under lease ownership.
+    10. Price-time priority preserved under serialized concurrent submissions.
+    11. Existing settlement, wallet-conservation, and recovery regressions.
+    12. Graceful shutdown and readiness behavior when ownership is lost.
+
+
 
 
 
