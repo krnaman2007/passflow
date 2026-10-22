@@ -22,14 +22,21 @@ model User {
   updatedAt    DateTime   @updatedAt
 
   // Relationships
-  organizer    Organizer?
-  buyerSeller  BuyerSeller?
-  orders       Order[]
-  wallet       Wallet?
-  refreshTokens RefreshToken[]
-  admin        Admin?
+
+  // Relationships
+  organizer         Organizer?
+  buyerSeller       BuyerSeller?
+  orders            Order[]
+  tickets           Ticket[]               @relation("UserTickets")
+  ticketOwnerships  TicketOwnership[]      @relation("UserTicketOwnership")
+  transfersSent     TicketTransfer[]       @relation("TransfersSent")
+  transfersReceived TicketTransfer[]       @relation("TransfersReceived")
+  wallet            Wallet?
+  refreshTokens     RefreshToken[]
+  admin             Admin?
   ticketInventories UserTicketInventory[]
   inventoryCredits  UserInventoryCredit[]
+
 }
 
 enum Role {
@@ -155,6 +162,7 @@ model Event {
 
   // Relationships
   categories    TicketCategory[]
+  tickets       Ticket[] @relation("EventTickets")
   orders        Order[]
 }
 
@@ -175,6 +183,7 @@ model TicketCategory {
   orders            Order[]
   userInventories   UserTicketInventory[]
   inventoryCredits  UserInventoryCredit[]
+  tickets           Ticket[] @relation("CategoryTickets")
 }
 
 model TicketInventory {
@@ -310,10 +319,114 @@ model Wallet {
 
   // Relationships
   ledgerEntries    WalletLedgerEntry[]
+  transactions    Transaction[] @relation("WalletTransactions")
   holds            WalletHold[]
 
   @@index([userId])
+} // end of Wallet model
+
+// --- Primary Ticket Purchase models ---
+
+enum TicketStatus {
+  AVAILABLE
+  OWNED
+  LISTED
+  USED
+  TRANSFERRED
 }
+
+enum TicketOwnershipSource {
+  PRIMARY
+  RESALE
+  TRANSFER
+}
+
+enum TransferStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+enum TransactionType {
+  DEPOSIT
+  PURCHASE
+  REFUND
+  FEE
+}
+
+enum TransactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+model Transaction {
+  id          String            @id @default(uuid())
+  walletId    String
+  wallet      Wallet            @relation("WalletTransactions", fields: [walletId], references: [id], onDelete: Cascade)
+  amount      BigInt            // (+) credit, (-) debit, in paise
+  type        TransactionType
+  status      TransactionStatus @default(PENDING)
+  description String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  ticketOwnerships TicketOwnership[] @relation("TransactionOwnership")
+
+  @@index([walletId, status])
+}
+
+model Ticket {
+  id           String             @id @default(uuid())
+  eventId      String
+  event        Event              @relation("EventTickets", fields: [eventId], references: [id], onDelete: Cascade)
+  categoryId   String
+  category     TicketCategory     @relation("CategoryTickets", fields: [categoryId], references: [id], onDelete: Cascade)
+  ownerId      String
+  owner        User               @relation("UserTickets", fields: [ownerId], references: [id], onDelete: Cascade)
+  faceValue    Decimal            @db.Decimal(12, 2)
+  currentPrice Decimal            @db.Decimal(12, 2)
+  status       TicketStatus       @default(OWNED)
+  createdAt    DateTime           @default(now())
+
+  // Relationships
+  ownershipHistory TicketOwnership[] @relation("TicketOwnershipHistory")
+  transfers        TicketTransfer[]  @relation("TicketTransfers")
+
+  @@index([ownerId, status])
+  @@index([eventId, categoryId])
+}
+
+model TicketOwnership {
+  id            String                @id @default(uuid())
+  ticketId      String
+  ticket        Ticket                @relation("TicketOwnershipHistory", fields: [ticketId], references: [id], onDelete: Cascade)
+  ownerId       String
+  owner         User                  @relation("UserTicketOwnership", fields: [ownerId], references: [id], onDelete: Cascade)
+  acquiredAt    DateTime              @default(now())
+  source        TicketOwnershipSource @default(PRIMARY)
+  transactionId String?
+  transaction   Transaction?          @relation("TransactionOwnership", fields: [transactionId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId, acquiredAt])
+  @@index([ownerId, acquiredAt])
+}
+
+model TicketTransfer {
+  id         String         @id @default(uuid())
+  ticketId   String
+  ticket     Ticket         @relation("TicketTransfers", fields: [ticketId], references: [id], onDelete: Cascade)
+  fromUserId String
+  fromUser   User           @relation("TransfersSent", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUserId   String
+  toUser     User           @relation("TransfersReceived", fields: [toUserId], references: [id], onDelete: Cascade)
+  status     TransferStatus @default(PENDING)
+  createdAt  DateTime       @default(now())
+
+  @@index([ticketId])
+  @@index([fromUserId])
+  @@index([toUserId])
+}
+
 
 model FinancialOperation {
   id             String                   @id @default(uuid())
