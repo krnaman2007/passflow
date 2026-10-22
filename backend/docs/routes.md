@@ -70,6 +70,8 @@ This document tracks active API routes and planned route additions as the PassFl
 | `PUT` | `/admin/rules/anti-bot` *(also `/api/v1/admin/rules/anti-bot`)* | View / change global bot rate limits | Admin | `{"ordersPerMinute": 30, "maxRequestsPerMinute": 150, "burstLimit": 50, "enabled": true}` | `{"success": true, "data": {"message": "Anti-bot rate limits updated successfully", "config": {...}}}` | Active |
 | `GET` | `/admin/reports` *(also `/api/v1/admin/reports`)* | Platform summary reports (volume, revenue, fees, user stats, events) | Admin | None | `{"success": true, "data": {"summary": {...}, "users": {...}, "events": {...}}}` | Active |
 | `GET` | `/admin/audit-logs` *(also `/api/v1/admin/audit-logs`)* | Immutable administrative audit trail with filtering and pagination | Admin | None (Query: `adminId`, `action`, `startDate`, `endDate`, `page`, `limit`) | `{"success": true, "data": {"logs": [...], "total": 1, "pagination": {...}}}` | Active |
+| `POST` | `/admin/reconciliation/run` *(also `/api/v1/admin/reconciliation/run`)* | Trigger automated reconciliation run comparing ledger vs settlements | Admin | `{"date": "2026-10-22T00:00:00.000Z"}` *(optional)* | `{"success": true, "data": {"message": "Reconciliation report generated successfully", "report": {...}}}` | Active |
+| `GET` | `/admin/reconciliation` *(also `/api/v1/admin/reconciliation`)* | Retrieve paginated reconciliation reports and discrepancy logs | Admin | None (Query: `status`, `startDate`, `endDate`, `page`, `limit`) | `{"success": true, "data": {"reports": [...], "total": 1, "pagination": {...}}}` | Active |
 
 ---
 

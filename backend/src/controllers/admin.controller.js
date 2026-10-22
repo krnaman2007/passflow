@@ -4,6 +4,7 @@ import { successResponse } from '../utils/response.js';
 import { formatSafeUser } from '../utils/token.js';
 import auditLogService from '../services/audit-log.service.js';
 import rulesService from '../services/rules.service.js';
+import reconciliationService from '../services/reconciliation.service.js';
 
 /**
  * GET /admin/users
@@ -626,6 +627,67 @@ export const getAuditLogs = async (req, res, next) => {
   }
 };
 
+export const runReconciliation = async (req, res, next) => {
+  try {
+    const { date } = req.body;
+    const report = await reconciliationService.runReconciliation(date);
+
+    // Non-blocking audit log record
+    try {
+      const adminRecord = await prisma.admin.findFirst({
+        where: { OR: [{ userId: req.user.id }, { email: req.user.email }] },
+      });
+      if (adminRecord) {
+        await auditLogService.logAction(
+          adminRecord.id,
+          'RUN_RECONCILIATION',
+          { reportId: report.id, date: report.date, status: report.status }
+        );
+      }
+    } catch {
+      // Non-blocking
+    }
+
+    res.status(201).json(
+      successResponse({
+        message: 'Reconciliation report generated successfully',
+        report,
+      })
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /admin/reconciliation
+ * Admin: Reports and discrepancies.
+ */
+export const getReconciliationReports = async (req, res, next) => {
+  try {
+    const query = req.validatedQuery || req.query;
+    const result = await reconciliationService.getReports(query);
+
+    res.status(200).json(
+      successResponse({
+        reports: result.reports,
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+        totalPages: result.totalPages,
+        pagination: {
+          total: result.total,
+          page: result.page,
+          limit: result.limit,
+          totalPages: result.totalPages,
+        },
+      })
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
 export default {
   getUsers,
   manageUser,
@@ -639,4 +701,6 @@ export default {
   updateAntiBotConfig,
   getReports,
   getAuditLogs,
+  runReconciliation,
+  getReconciliationReports,
 };

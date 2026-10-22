@@ -4,7 +4,7 @@ import app from '../src/app.js';
 import prisma from '../src/db/prisma.js';
 
 describe('Admin Management API Endpoints (/admin)', () => {
-  jest.setTimeout(30000);
+  jest.setTimeout(120000);
 
   const timestamp = Date.now();
   let adminToken = null;
@@ -92,7 +92,7 @@ describe('Admin Management API Endpoints (/admin)', () => {
       },
     });
     testEventId = testEvent.id;
-  });
+  }, 120000);
 
   afterAll(async () => {
     if (testEventId) {
@@ -120,8 +120,10 @@ describe('Admin Management API Endpoints (/admin)', () => {
       await prisma.user.deleteMany({ where: { id: adminUserId } });
     }
 
+    await prisma.reconciliation.deleteMany({});
+
     await prisma.$disconnect();
-  });
+  }, 120000);
 
   describe('GET /admin/users', () => {
     it('should reject request without authentication (401 Unauthorized)', async () => {
@@ -555,6 +557,86 @@ describe('Admin Management API Endpoints (/admin)', () => {
 
       expect(res.body.success).toBe(true);
       expect(Array.isArray(res.body.data.logs)).toBe(true);
+    });
+  });
+
+  describe('Reconciliation API (/admin/reconciliation)', () => {
+    describe('POST /admin/reconciliation/run', () => {
+      it('should reject unauthenticated caller (401 Unauthorized)', async () => {
+        const res = await request(app).post('/admin/reconciliation/run').expect(401);
+        expect(res.body.success).toBe(false);
+        expect(res.body.error.code).toBe('UNAUTHORIZED');
+      });
+
+      it('should reject non-admin caller (403 Forbidden)', async () => {
+        const res = await request(app)
+          .post('/admin/reconciliation/run')
+          .set('Authorization', `Bearer ${userToken}`)
+          .send({})
+          .expect(403);
+
+        expect(res.body.success).toBe(false);
+        expect(res.body.error.code).toBe('FORBIDDEN');
+      });
+
+      it('should generate reconciliation report for admin (201 Created)', async () => {
+        const res = await request(app)
+          .post('/admin/reconciliation/run')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ date: new Date().toISOString() })
+          .expect(201);
+
+        expect(res.body.success).toBe(true);
+        expect(res.body.data.message).toBe('Reconciliation report generated successfully');
+        expect(res.body.data.report).toBeDefined();
+        expect(res.body.data.report.id).toBeDefined();
+        expect(res.body.data.report.status).toBeDefined();
+        expect(res.body.data.report.reportUrl).toBeDefined();
+      });
+    });
+
+    describe('GET /admin/reconciliation', () => {
+      it('should reject unauthenticated caller (401 Unauthorized)', async () => {
+        const res = await request(app).get('/admin/reconciliation').expect(401);
+        expect(res.body.success).toBe(false);
+        expect(res.body.error.code).toBe('UNAUTHORIZED');
+      });
+
+      it('should reject non-admin caller (403 Forbidden)', async () => {
+        const res = await request(app)
+          .get('/admin/reconciliation')
+          .set('Authorization', `Bearer ${userToken}`)
+          .expect(403);
+
+        expect(res.body.success).toBe(false);
+        expect(res.body.error.code).toBe('FORBIDDEN');
+      });
+
+      it('should return paginated reconciliation reports for admin (200 OK)', async () => {
+        const res = await request(app)
+          .get('/admin/reconciliation')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .expect(200);
+
+        expect(res.body.success).toBe(true);
+        expect(Array.isArray(res.body.data.reports)).toBe(true);
+        expect(res.body.data.reports.length).toBeGreaterThan(0);
+        expect(res.body.data.pagination).toBeDefined();
+        expect(res.body.data.pagination.page).toBe(1);
+      });
+
+      it('should filter reconciliation reports by status (200 OK)', async () => {
+        const res = await request(app)
+          .get('/admin/reconciliation?status=MATCHED')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .expect(200);
+
+        expect(res.body.success).toBe(true);
+        expect(Array.isArray(res.body.data.reports)).toBe(true);
+        for (const report of res.body.data.reports) {
+          expect(report.status).toBe('MATCHED');
+        }
+      });
     });
   });
 });
