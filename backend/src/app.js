@@ -9,6 +9,9 @@ import adminRoutes from './routes/admin.routes.js';
 import solvencyRoutes from './routes/solvency.routes.js';
 import marketRoutes from './routes/market.routes.js';
 import orderRoutes from './routes/order.routes.js';
+import historyRoutes from './routes/history.routes.js';
+import notificationRoutes from './routes/notification.routes.js';
+import dutchAuctionRoutes from './routes/dutch-auction.routes.js';
 import errorHandler from './middleware/errorHandler.js';
 
 const app = express();
@@ -68,6 +71,19 @@ app.use('/api/v1/market', marketRoutes);
 // Secondary Market Order Routes (Authenticated)
 app.use('/orders', orderRoutes);
 app.use('/api/v1/orders', orderRoutes);
+
+// History & Transaction Routes (Authenticated)
+app.use('/history', historyRoutes);
+app.use('/api/v1/history', historyRoutes);
+
+// User Notification Routes (Authenticated)
+app.use('/notifications', notificationRoutes);
+app.use('/api/v1/notifications', notificationRoutes);
+
+// Dutch Auction Routes
+app.use('/auctions', dutchAuctionRoutes);
+app.use('/api/v1/auctions', dutchAuctionRoutes);
+
 
 // Event & Category Routes
 app.use(eventRoutes);
