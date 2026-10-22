@@ -1715,6 +1715,55 @@ model TradeSettlement {
      - **Health vs Readiness Probes**: `/health` functions as a shallow liveness probe (Node process up). A deep readiness probe testing database connectivity and order book synchronization should be adopted for production container orchestrators.
      - **Unapplied Teammate Migrations**: Confirmed that `RefreshToken`, `Admin`, `ReconciliationReport`, and `PrimaryPurchase` models exist in `schema.prisma` but have unapplied migrations owned by other workstreams. The core financial schema (10 migrations) is 100% migrated and verified.
 
+#### 5.18.15 Step 9.10 Secondary Market Order API Integration
+- **Endpoints Exposed**:
+  - `POST /api/v1/orders` (also mounted at `/orders` for backward compatibility)
+  - `DELETE /api/v1/orders/:id` (also mounted at `/orders/:id` for backward compatibility)
+- **Authentication & Ownership**:
+  - Requires `authenticateToken` middleware with valid Bearer JWT. Unauthenticated requests are rejected with `401 UNAUTHORIZED`.
+  - `userId` is strictly derived from `req.user.id`. The request body is strictly validated using Zod (`.strict()`) and explicitly rejects client-supplied `userId` or unknown fields with `400 VALIDATION_ERROR`.
+  - Order cancellation enforces strict ownership: a user cannot cancel an order belonging to another user. Attempting to do so returns `403 FORBIDDEN` (`You do not have permission to cancel this order`).
+- **1. Place Limit Order (`POST /api/v1/orders`)**:
+  - **Request Body Fields & Validation (`placeLimitOrderSchema`)**:
+    - `eventId`: Required non-empty string.
+    - `ticketCategoryId`: Required non-empty string.
+    - `side`: Required enum (`"BUY"` or `"SELL"`).
+    - `price`: Required positive integer (stored in minor units/cents). Floating-point values (e.g. `10.5`) and non-integers are rejected (`price must be an integer`). Must be `<= 100,000,000` (safe monetary boundary).
+    - `quantity`: Required positive integer. Must be `<= 1,000,000`.
+    - `idempotencyKey`: Optional string (min 8, max 128 chars). Can also be provided via `Idempotency-Key` or `X-Idempotency-Key` HTTP headers.
+  - **Business Delegation**: Controller delegates market validation, wallet hold reservation, ticket inventory verification, and matching entirely to `OrderService.placeLimitOrder()`.
+  - **Success Response Shape (`201 Created` / `200 OK` for duplicate)**:
+    - Envelope: `{ success: true, data: { order, isDuplicate, executions, executionSummary } }`
+    - Sanitized Order Representation: Strips internal `holdId`. BigInt fields (such as `sequenceNumber`) are safely serialized to strings (`sequenceNumber: "1"` or `null`).
+  - **Error Mappings**:
+    - `400 VALIDATION_ERROR`: Malformed body, float price, invalid side, missing required fields.
+    - `401 UNAUTHORIZED`: Missing or invalid Bearer token.
+    - `404 EVENT_NOT_FOUND` / `CATEGORY_NOT_FOUND`: Target event or ticket category does not exist.
+    - `409 IDEMPOTENCY_CONFLICT`: Idempotency key reused with mismatched order parameters.
+    - `422 INSUFFICIENT_FUNDS`: Buyer's wallet has insufficient available balance for price * quantity.
+    - `422 INSUFFICIENT_INVENTORY`: Seller does not hold sufficient available tickets in `UserTicketInventory`.
+    - `503 MARKET_UNAVAILABLE`: Market order book queue unavailable or closed.
+    - `504 GATEWAY_TIMEOUT`: Order matching execution queue timeout.
+- **2. Cancel Limit Order (`DELETE /api/v1/orders/:id`)**:
+  - **Request Parameters & Validation (`cancelOrderParamsSchema`)**:
+    - `id`: Required non-empty string parameter.
+    - Idempotency key derived from `Idempotency-Key` / `X-Idempotency-Key` header, body/query, or deterministically defaulted to `cancel:${orderId}`.
+  - **Business Delegation**: Controller delegates cancellation and reservation release to `OrderService.cancelLimitOrder()`.
+  - **Success Response Shape (`200 OK`)**:
+    - Envelope: `{ success: true, data: { orderId, isCancelled, isDuplicate, cancelledQuantity, remainingQuantity, status } }`
+    - Strips all internal wallet hold and ledger accounting details.
+  - **Error Mappings**:
+    - `400 VALIDATION_ERROR`: Invalid or malformed order ID.
+    - `401 UNAUTHORIZED`: Missing or invalid Bearer token.
+    - `403 FORBIDDEN`: Order belongs to a different user.
+    - `404 ORDER_NOT_FOUND`: Order does not exist.
+    - `409 INVALID_STATE_TRANSITION`: Order is already in a non-cancellable terminal state (`FILLED`).
+- **Security & Integrity Invariants**:
+  - No direct database or wallet mutations in the controller.
+  - Centralized error handler protects internal stack traces and raw SQL errors from leaking to API consumers.
+  - Verified with 17 integration and unit tests in `backend/tests/order/order-api.test.js`.
+
+
 
 
 

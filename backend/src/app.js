@@ -8,6 +8,7 @@ import organizerRoutes from './routes/organizer.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import solvencyRoutes from './routes/solvency.routes.js';
 import marketRoutes from './routes/market.routes.js';
+import orderRoutes from './routes/order.routes.js';
 import errorHandler from './middleware/errorHandler.js';
 
 const app = express();
@@ -52,6 +53,10 @@ app.use('/api/v1/solvency', solvencyRoutes);
 // Market Data & Analytics Routes (Public)
 app.use('/market', marketRoutes);
 app.use('/api/v1/market', marketRoutes);
+
+// Secondary Market Order Routes (Authenticated)
+app.use('/orders', orderRoutes);
+app.use('/api/v1/orders', orderRoutes);
 
 // Event & Category Routes
 app.use(eventRoutes);
