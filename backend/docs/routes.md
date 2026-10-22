@@ -1620,6 +1620,29 @@ model TradeSettlement {
      - Remaining Hold Amount: **$0\text{ paise}$** (`SETTLED`).
      - **Net Economic Result**: Initial total wealth ($11,000\text{p}$) minus final total wealth ($10,640\text{p}$) = $-360\text{ paise}$. The buyer paid exactly the $360\text{ paise}$ trade cost for 4 tickets and received a $40\text{ paise}$ price improvement refund. Total wallet balance **decreased by 360 paise**; it did not increase.
 
+#### 5.18.9 Step 9.4F Audit: Entry-Level Execution Locking & Database-Level Concurrency
+- **Entry-Level Execution Row Lock**:
+  - To prevent two concurrent settlement workers from competing for wallets/inventories only to abort on the final `TradeSettlement` insert:
+  - Every settlement transaction begins with:
+    `SELECT * FROM "Execution" WHERE id = $executionId FOR UPDATE;`
+  - This serializes concurrent settlement attempts for the same execution at the database level before any wallet, hold, or inventory locks are requested.
+  - The winner commits the settlement; the loser unblocks, detects the committed `TradeSettlement` record, and returns `{ isDuplicate: true }` without performing any mutations or throwing errors.
+- **Application Queue vs. PostgreSQL Kernel Locks**:
+  - `MarketExecutionQueue` is strictly an in-process, per-market optimization for single-node FIFO sequencing.
+  - Settlement workers use PostgreSQL row locks and a serializable transaction. They lock the execution first, then order IDs and wallet IDs in lexical order, followed by the buyer hold and inventory rows.
+  - This ordering serializes same-execution workers before financial effects. It reduces conflicting multi-execution lock cycles, but it is not a proof of global deadlock freedom; PostgreSQL serialization/deadlock errors must be retried from durable execution state.
+- **Referential Integrity Hardening**:
+  - In addition to Prisma relations, the Step 9.4 migration adds explicit SQL foreign keys:
+    - `Execution.incomingOrderId` and `Execution.restingOrderId` reference `Order` with `ON DELETE RESTRICT`.
+    - `TradeSettlement.executionId`, buyer/seller order IDs, and buyer hold ID reference their durable source records with `ON DELETE RESTRICT`.
+  - Guarantees completed financial history can never be orphaned or cascade-deleted.
+
+#### 5.18.10 Settlement Dispatch and Recovery Boundaries
+- `OrderService` dispatches settlement only after matching has committed an execution. An idempotent order replay re-dispatches its persisted executions.
+- The server runs a bounded startup scan of unsettled executions (100 maximum). It is safe across instances because settlement claims the execution row in PostgreSQL.
+- Startup recovery is not a continuous scheduler. A permanently running deployment needs an external, bounded job to call `recoverUnsettled`; neither matching nor the process-local market queue provides distributed recovery coordination.
+
+
 
 
 

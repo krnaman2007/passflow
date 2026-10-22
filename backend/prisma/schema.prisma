@@ -242,6 +242,8 @@ model Order {
   // Relationships
   incomingExecutions Execution[]   @relation("IncomingOrderExecutions")
   restingExecutions  Execution[]   @relation("RestingOrderExecutions")
+  buySettlements     TradeSettlement[] @relation("SettlementBuyOrder")
+  sellSettlements    TradeSettlement[] @relation("SettlementSellOrder")
   ledgerEntries      WalletLedgerEntry[]
   holds              WalletHold[]
 
@@ -255,9 +257,9 @@ model Order {
 model Execution {
   id              String   @id @default(uuid())
   incomingOrderId String
-  incomingOrder   Order    @relation("IncomingOrderExecutions", fields: [incomingOrderId], references: [id], onDelete: Cascade)
+  incomingOrder   Order    @relation("IncomingOrderExecutions", fields: [incomingOrderId], references: [id], onDelete: Restrict)
   restingOrderId  String
-  restingOrder    Order    @relation("RestingOrderExecutions", fields: [restingOrderId], references: [id], onDelete: Cascade)
+  restingOrder    Order    @relation("RestingOrderExecutions", fields: [restingOrderId], references: [id], onDelete: Restrict)
   price           Int      // Integer execution price (passive resting order price in ticks/cents)
   quantity        Int      // Executed quantity
   sequenceNumber  BigInt   @default(autoincrement())
@@ -265,11 +267,34 @@ model Execution {
 
   // Relationships
   ledgerEntries   WalletLedgerEntry[]
+  settlement      TradeSettlement?
 
   // Indexes for order history reconstruction and audit
   @@index([incomingOrderId])
   @@index([restingOrderId])
   @@index([sequenceNumber])
+}
+
+// One immutable, completed accounting result per execution.  This is both the
+// durable settlement receipt and the concurrency/idempotency guard.
+model TradeSettlement {
+  id                    String    @id @default(uuid())
+  executionId           String    @unique
+  execution             Execution @relation(fields: [executionId], references: [id], onDelete: Restrict)
+  buyerOrderId          String
+  buyerOrder            Order     @relation("SettlementBuyOrder", fields: [buyerOrderId], references: [id], onDelete: Restrict)
+  sellerOrderId         String
+  sellerOrder           Order     @relation("SettlementSellOrder", fields: [sellerOrderId], references: [id], onDelete: Restrict)
+  buyerHoldId           String
+  buyerHold             WalletHold @relation(fields: [buyerHoldId], references: [id], onDelete: Restrict)
+  quantity              Int
+  executionPricePaise   Int
+  executionCostPaise    BigInt
+  buyerReservedConsumed BigInt
+  priceImprovementPaise BigInt
+  createdAt             DateTime  @default(now())
+
+  @@index([createdAt])
 }
 
 model Wallet {
@@ -328,6 +353,7 @@ model WalletHold {
 
   // Relationships
   ledgerEntries   WalletLedgerEntry[]
+  settlements     TradeSettlement[]
 
   @@unique([walletId, idempotencyKey])
   @@index([walletId, status])

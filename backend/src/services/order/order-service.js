@@ -44,6 +44,7 @@ import {
 } from '../matching/persistent-matching-service.js';
 import { OrderRepository } from '../matching/order-repository.js';
 import { formatMarketKey } from '../matching/market-execution-queue.js';
+import { TradeSettlementService } from '../settlement/index.js';
 import {
   InsufficientFundsError,
   IdempotencyConflictError,
@@ -114,11 +115,13 @@ export class OrderService {
       repository: new OrderRepository({ prismaClient }),
     }),
     orderRepository = new OrderRepository({ prismaClient }),
+    settlementService = new TradeSettlementService({ prismaClient }),
   } = {}) {
     this.prisma = prismaClient;
     this.walletService = walletService;
     this.matchingService = matchingService;
     this.orderRepository = orderRepository;
+    this.settlementService = settlementService;
   }
 
   /**
@@ -357,7 +360,9 @@ export class OrderService {
         }
       }
 
-      return this.matchingService._formatSubmissionResultFromRecord(existingOrder);
+      const replay = this.matchingService._formatSubmissionResultFromRecord(existingOrder);
+      await this._settleExecutions(replay.executions);
+      return replay;
     }
 
     // Pre-generate order ID
@@ -583,6 +588,7 @@ export class OrderService {
       }
     }
 
+    await this._settleExecutions(submissionResult.executions);
     return {
       ...submissionResult,
       holdId: holdRecord ? holdRecord.id : null,
@@ -765,7 +771,7 @@ export class OrderService {
    *    If dryRun is false, releases the orphaned hold.
    * 3. Underfunded buy orders: Active buy orders whose hold remainingAmount is less than required.
    * 4. Orphaned sell inventory: UserTicketInventory reservedQuantity exceeding active resting + unsettled executions.
-   *    If dryRun is false, restores the orphaned reservation to availableQuantity.
+   *    This is reported only; an unlocked snapshot must not release inventory that a concurrent execution needs.
    *
    * @param {Object} [options]
    * @param {string} [options.eventId]
@@ -826,22 +832,13 @@ export class OrderService {
           }
         }
       } else {
-        // Orphaned hold: order does not exist in PostgreSQL
+        // An absent order may be an ambiguous pre-matching commit outcome.  It is
+        // never safe for reconciliation to infer rollback and release its money.
         summary.orphanedHoldsDetected++;
         summary.isConsistent = false;
 
-        if (!dryRun) {
-          try {
-            await this.walletService.releaseHold({
-              holdId: hold.id,
-              idempotencyKey: `recon-orphan-release:${hold.id}`,
-              description: 'Reconciliation release of orphaned pre-matching hold',
-            });
-            summary.orphanedHoldsReleased++;
-          } catch (relErr) {
-            console.error(`Failed to release orphaned hold ${hold.id}:`, relErr);
-          }
-        }
+        // Leave recovery/compensation to a path that can prove the original
+        // matching transaction rolled back.  This report remains actionable.
       }
     }
 
@@ -866,6 +863,7 @@ export class OrderService {
       // Find unsettled executions for this seller
       const sellerExecutions = await this.prisma.execution.findMany({
         where: {
+          settlement: null,
           OR: [
             { incomingOrder: { userId: inv.userId, ticketCategoryId: inv.ticketCategoryId, side: 'ASK' } },
             { restingOrder: { userId: inv.userId, ticketCategoryId: inv.ticketCategoryId, side: 'ASK' } },
@@ -881,20 +879,33 @@ export class OrderService {
         summary.orphanedInventoryDetected += excess;
         summary.isConsistent = false;
 
-        if (!dryRun) {
-          await this.prisma.userTicketInventory.update({
-            where: { id: inv.id },
-            data: {
-              availableQuantity: { increment: excess },
-              reservedQuantity: { decrement: excess },
-            },
-          });
-          summary.orphanedInventoryRestored += excess;
-        }
+        // A snapshot reconciliation cannot prove an execution will not settle
+        // immediately afterwards.  Auto-releasing this inventory would race
+        // settlement and could make a durable execution impossible to settle.
+        // Keep reconciliation observational until an operator performs a
+        // separately serialized repair with execution history in scope.
       }
     }
 
     return summary;
+  }
+
+  /**
+   * Dispatches only already-persisted executions after matching has committed.
+   * A dispatch failure is intentionally surfaced: the execution remains durable
+   * and is retried by an idempotent request or bounded startup recovery; no
+   * financial compensation is attempted here.
+   *
+   * @private
+   */
+  async _settleExecutions(executions) {
+    if (!Array.isArray(executions)) return;
+    for (const execution of executions) {
+      if (!execution?.id) {
+        throw new OrderValidationError('Persisted execution is missing an id');
+      }
+      await this.settlementService.settleExecution({ executionId: execution.id });
+    }
   }
 
   /**
