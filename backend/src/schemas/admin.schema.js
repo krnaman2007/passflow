@@ -73,6 +73,17 @@ export const adminGetUsersQuerySchema = z.object({
 });
 
 /**
+ * Schema for Admin Events Query (GET /admin/events)
+ */
+export const adminGetEventsQuerySchema = z.object({
+  search: z.string().optional(),
+  status: z.enum(['DRAFT', 'PUBLISHED', 'CANCELLED', 'COMPLETED']).optional(),
+  organizerId: z.string().uuid().optional(),
+  page: z.preprocess((val) => (val !== undefined ? parseInt(val, 10) : 1), z.number().int().min(1).default(1)),
+  limit: z.preprocess((val) => (val !== undefined ? parseInt(val, 10) : 20), z.number().int().min(1).max(100).default(20)),
+});
+
+/**
  * Schema for Admin Event Management (PATCH /admin/events/:id)
  */
 export const adminManageEventSchema = z.object({

@@ -12,6 +12,7 @@ describe('Admin Management API Endpoints (/admin)', () => {
   let userToken = null;
   let regularUserId = null;
   let organizerId = null;
+  let testEventId = null;
 
   beforeAll(async () => {
     // 1. Create a regular user
@@ -66,9 +67,28 @@ describe('Admin Management API Endpoints (/admin)', () => {
       .expect(201);
 
     organizerId = orgRes.body.data.organizer.id;
+
+    // 4. Create a draft event for testing admin event endpoints
+    const testEvent = await prisma.event.create({
+      data: {
+        name: `Admin Test Event ${timestamp}`,
+        description: 'Test event description for admin moderation',
+        dateTime: new Date(Date.now() + 86400000),
+        location: 'Mumbai Arena',
+        organizerId: organizerId,
+        status: 'DRAFT',
+        originalPrice: 1500,
+      },
+    });
+    testEventId = testEvent.id;
   });
 
   afterAll(async () => {
+    if (testEventId) {
+      await prisma.ticketCategory.deleteMany({ where: { eventId: testEventId } });
+      await prisma.event.deleteMany({ where: { id: testEventId } });
+    }
+
     if (regularUserId) {
       await prisma.refreshToken.deleteMany({ where: { userId: regularUserId } });
       await prisma.organizer.deleteMany({ where: { userId: regularUserId } });
@@ -223,6 +243,96 @@ describe('Admin Management API Endpoints (/admin)', () => {
 
       expect(res.body.success).toBe(true);
       expect(res.body.data.organizer.verificationStatus).toBe('REJECTED');
+    });
+  });
+
+  describe('GET /admin/events', () => {
+    it('should reject unauthenticated request (401 Unauthorized)', async () => {
+      const res = await request(app).get('/admin/events').expect(401);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('should reject non-admin caller (403 Forbidden)', async () => {
+      const res = await request(app)
+        .get('/admin/events')
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(403);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('should list all events including drafts for admin', async () => {
+      const res = await request(app)
+        .get('/admin/events')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(Array.isArray(res.body.data.events)).toBe(true);
+      expect(res.body.data.pagination).toBeDefined();
+
+      const foundTestEvent = res.body.data.events.find((e) => e.id === testEventId);
+      expect(foundTestEvent).toBeDefined();
+      expect(foundTestEvent.status).toBe('DRAFT');
+    });
+
+    it('should filter events by status (e.g. status=DRAFT)', async () => {
+      const res = await request(app)
+        .get('/admin/events?status=DRAFT')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.events.every((e) => e.status === 'DRAFT')).toBe(true);
+    });
+  });
+
+  describe('PATCH /admin/events/:id', () => {
+    it('should reject non-admin caller (403 Forbidden)', async () => {
+      const res = await request(app)
+        .patch(`/admin/events/${testEventId}`)
+        .set('Authorization', `Bearer ${userToken}`)
+        .send({ status: 'PUBLISHED' })
+        .expect(403);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('should return 404 for nonexistent event ID', async () => {
+      const fakeId = '00000000-0000-0000-0000-000000000000';
+      const res = await request(app)
+        .patch(`/admin/events/${fakeId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'PUBLISHED' })
+        .expect(404);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('EVENT_NOT_FOUND');
+    });
+
+    it('should approve / publish event (status: PUBLISHED)', async () => {
+      const res = await request(app)
+        .patch(`/admin/events/${testEventId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'PUBLISHED' })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.event.status).toBe('PUBLISHED');
+    });
+
+    it('should cancel event (status: CANCELLED)', async () => {
+      const res = await request(app)
+        .patch(`/admin/events/${testEventId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ status: 'CANCELLED' })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.event.status).toBe('CANCELLED');
     });
   });
 });

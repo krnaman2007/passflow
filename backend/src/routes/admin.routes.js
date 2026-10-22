@@ -6,6 +6,8 @@ import {
   adminManageUserSchema,
   adminVerifyOrganizerSchema,
   adminGetUsersQuerySchema,
+  adminGetEventsQuerySchema,
+  adminManageEventSchema,
 } from '../schemas/admin.schema.js';
 
 const router = Router();
@@ -34,5 +36,19 @@ router.patch('/users/:id', validate(adminManageUserSchema), adminController.mana
  * @access  Admin
  */
 router.patch('/organizers/:id/verify', validate(adminVerifyOrganizerSchema), adminController.verifyOrganizer);
+
+/**
+ * @route   GET /admin/events
+ * @desc    All events including drafts.
+ * @access  Admin
+ */
+router.get('/events', validate(adminGetEventsQuerySchema, 'query'), adminController.getEvents);
+
+/**
+ * @route   PATCH /admin/events/:id
+ * @desc    Approve / cancel event.
+ * @access  Admin
+ */
+router.patch('/events/:id', validate(adminManageEventSchema), adminController.manageEvent);
 
 export default router;

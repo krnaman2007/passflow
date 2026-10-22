@@ -251,8 +251,148 @@ export const verifyOrganizer = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /admin/events
+ * Admin: Retrieve all events including drafts with optional search, status, organizerId, and pagination.
+ */
+export const getEvents = async (req, res, next) => {
+  try {
+    const query = req.validatedQuery || req.query;
+    const { search, status, organizerId, page = 1, limit = 20 } = query;
+    const pageNum = parseInt(page, 10) || 1;
+    const limitNum = parseInt(limit, 10) || 20;
+    const skip = (pageNum - 1) * limitNum;
+
+    const where = {};
+
+    if (status) {
+      where.status = status;
+    }
+
+    if (organizerId) {
+      where.organizerId = organizerId;
+    }
+
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { location: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    const [events, total] = await Promise.all([
+      prisma.event.findMany({
+        where,
+        skip,
+        take: limitNum,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          categories: {
+            include: { inventory: true },
+          },
+          organizer: {
+            select: {
+              id: true,
+              organizationName: true,
+              verificationStatus: true,
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+      prisma.event.count({ where }),
+    ]);
+
+    res.status(200).json(
+      successResponse({
+        events,
+        total,
+        pagination: {
+          total,
+          page: pageNum,
+          limit: limitNum,
+          totalPages: Math.ceil(total / limitNum) || 1,
+        },
+      })
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * PATCH /admin/events/:id
+ * Admin: Approve / cancel / update event status.
+ */
+export const manageEvent = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    const existingEvent = await prisma.event.findUnique({
+      where: { id },
+      include: { organizer: true },
+    });
+
+    if (!existingEvent) {
+      throw new AppError('Event not found', 404, 'EVENT_NOT_FOUND');
+    }
+
+    const updatedEvent = await prisma.event.update({
+      where: { id },
+      data: { status },
+      include: {
+        categories: {
+          include: { inventory: true },
+        },
+        organizer: {
+          select: {
+            id: true,
+            organizationName: true,
+            verificationStatus: true,
+          },
+        },
+      },
+    });
+
+    // Non-blocking audit log record
+    try {
+      const adminRecord = await prisma.admin.findFirst({
+        where: { OR: [{ userId: req.user.id }, { email: req.user.email }] },
+      });
+      if (adminRecord) {
+        await auditLogService.logAction(
+          adminRecord.id,
+          status === 'PUBLISHED' ? 'APPROVE_EVENT' : status === 'CANCELLED' ? 'CANCEL_EVENT' : 'UPDATE_EVENT_STATUS',
+          { eventId: id, oldStatus: existingEvent.status, newStatus: status }
+        );
+      }
+    } catch {
+      // Non-blocking
+    }
+
+    res.status(200).json(
+      successResponse({
+        message: `Event status updated to ${status}`,
+        event: updatedEvent,
+      })
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
 export default {
   getUsers,
   manageUser,
   verifyOrganizer,
+  getEvents,
+  manageEvent,
 };
