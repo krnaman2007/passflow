@@ -54,6 +54,13 @@ This document tracks active API routes and planned route additions as the PassFl
 | `GET` | `/api/v1/categories/:id/inventory` | Inspect total, available, reserved, and sold ticket counts | Organizer (Owner) / Admin | None | `{"success": true, "data": {"categoryId": "...", "totalQuantity": 100, "availableQuantity": 80, "reservedQuantity": 5, "soldCount": 15}}` | Active |
 | `PUT` | `/api/v1/categories/:id/inventory` | Adjust total inventory (strictly blocked below sold count) | Organizer (Owner) / Admin | `{"totalQuantity": 150}` | `{"success": true, "data": {"categoryId": "...", "totalQuantity": 150, "availableQuantity": 130, "reservedQuantity": 5, "soldCount": 15}}` | Active |
 
+### Platform Administration & Moderation
+
+| Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `GET` | `/admin/users` *(also `/api/v1/admin/users`)* | List / search users with query filters (`search`, `role`, `kycStatus`, `isActive`, `page`, `limit`) | Admin | None (Query: `search`, `role`, `kycStatus`, `isActive`, `page`, `limit`) | `{"success": true, "data": {"users": [...], "total": 1, "pagination": {"total": 1, "page": 1, "limit": 20, "totalPages": 1}}}` | Active |
+| `PATCH` | `/admin/users/:id` *(also `/api/v1/admin/users/:id`)* | Suspend / activate (`isActive`), change role (`role`), approve/reject KYC (`kycStatus`) | Admin | `{"role": "ORGANIZER", "isActive": true, "kycStatus": "VERIFIED"}` *(optional fields)* | `{"success": true, "data": {"message": "User updated successfully", "user": {...}}}` | Active |
+| `PATCH` | `/admin/organizers/:id/verify` *(also `/api/v1/admin/organizers/:id/verify`)* | Verify or reject organizer application (elevates user role to ORGANIZER when VERIFIED) | Admin | `{"verificationStatus": "VERIFIED" \| "REJECTED" \| "PENDING"}` | `{"success": true, "data": {"message": "Organizer verification status updated to VERIFIED", "organizer": {...}}}` | Active |
 
 ---
 

@@ -56,6 +56,23 @@ export const adminVerifyOrganizerSchema = z.object({
 });
 
 /**
+ * Schema for Admin User Query (GET /admin/users)
+ */
+export const adminGetUsersQuerySchema = z.object({
+  search: z.string().optional(),
+  role: userRoleEnum.optional(),
+  kycStatus: kycStatusEnum.optional(),
+  isActive: z
+    .preprocess((val) => {
+      if (val === 'true' || val === true) return true;
+      if (val === 'false' || val === false) return false;
+      return undefined;
+    }, z.boolean().optional()),
+  page: z.preprocess((val) => (val !== undefined ? parseInt(val, 10) : 1), z.number().int().min(1).default(1)),
+  limit: z.preprocess((val) => (val !== undefined ? parseInt(val, 10) : 20), z.number().int().min(1).max(100).default(20)),
+});
+
+/**
  * Schema for Admin Event Management (PATCH /admin/events/:id)
  */
 export const adminManageEventSchema = z.object({

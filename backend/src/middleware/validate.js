@@ -16,7 +16,12 @@ export const validate = (schema, source = 'body') => (req, res, next) => {
       return next(new AppError(`${field}: ${firstIssue.message}`, 400, 'VALIDATION_ERROR'));
     }
     // Replace with parsed/sanitized data (coerced types, trimmed strings, etc.)
-    req[source] = parsed.data;
+    try {
+      req[source] = parsed.data;
+    } catch {
+      // In Express 5, req.query is a getter-only property; attach to req.validatedQuery
+      req[`validated${source.charAt(0).toUpperCase() + source.slice(1)}`] = parsed.data;
+    }
     next();
   } catch (err) {
     next(err);

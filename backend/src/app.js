@@ -5,6 +5,7 @@ import eventRoutes from './routes/event.routes.js';
 import authRoutes from './routes/auth.routes.js';
 import userRoutes from './routes/user.routes.js';
 import organizerRoutes from './routes/organizer.routes.js';
+import adminRoutes from './routes/admin.routes.js';
 import errorHandler from './middleware/errorHandler.js';
 
 const app = express();
@@ -34,6 +35,10 @@ app.use('/api/v1/users', userRoutes);
 // Organizer Routes
 app.use('/organizers', organizerRoutes);
 app.use('/api/v1/organizers', organizerRoutes);
+
+// Admin Routes
+app.use('/admin', adminRoutes);
+app.use('/api/v1/admin', adminRoutes);
 
 // Event & Category Routes
 app.use('/api/v1', eventRoutes);
