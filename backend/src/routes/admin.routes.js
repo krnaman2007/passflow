@@ -12,6 +12,7 @@ import {
   updateAntiScalpingRuleSchema,
   updateAntiBotRuleSchema,
 } from '../schemas/admin.schema.js';
+import { queryAuditLogsSchema } from '../schemas/audit-log.schema.js';
 
 const router = Router();
 
@@ -100,5 +101,19 @@ router.put(
   validate(updateAntiBotRuleSchema),
   adminController.updateAntiBotConfig
 );
+
+/**
+ * @route   GET /admin/reports
+ * @desc    Volume, revenue, fees, user stats.
+ * @access  Admin
+ */
+router.get('/reports', adminController.getReports);
+
+/**
+ * @route   GET /admin/audit-logs
+ * @desc    Audit trail; filter by admin, action, date.
+ * @access  Admin
+ */
+router.get('/audit-logs', validate(queryAuditLogsSchema, 'query'), adminController.getAuditLogs);
 
 export default router;

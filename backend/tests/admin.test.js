@@ -13,6 +13,7 @@ describe('Admin Management API Endpoints (/admin)', () => {
   let regularUserId = null;
   let organizerId = null;
   let testEventId = null;
+  let adminRecordId = null;
 
   beforeAll(async () => {
     // 1. Create a regular user
@@ -47,6 +48,16 @@ describe('Admin Management API Endpoints (/admin)', () => {
       where: { id: adminUserId },
       data: { role: 'ADMIN' },
     });
+
+    const adminRec = await prisma.admin.create({
+      data: {
+        userId: adminUserId,
+        name: 'Admin Test Operator',
+        email: `admin_${timestamp}@example.com`,
+        role: 'ADMIN',
+      },
+    });
+    adminRecordId = adminRec.id;
 
     // Login to get token with ADMIN role in payload
     const loginRes = await request(app)
@@ -95,6 +106,11 @@ describe('Admin Management API Endpoints (/admin)', () => {
       await prisma.buyerSeller.deleteMany({ where: { userId: regularUserId } });
       await prisma.wallet.deleteMany({ where: { userId: regularUserId } });
       await prisma.user.deleteMany({ where: { id: regularUserId } });
+    }
+
+    if (adminRecordId) {
+      await prisma.auditLog.deleteMany({ where: { adminId: adminRecordId } });
+      await prisma.admin.deleteMany({ where: { id: adminRecordId } });
     }
 
     if (adminUserId) {
@@ -466,6 +482,79 @@ describe('Admin Management API Endpoints (/admin)', () => {
       expect(res.body.success).toBe(true);
       expect(res.body.data.config.ordersPerMinute).toBe(35);
       expect(res.body.data.config.burstLimit).toBe(40);
+    });
+  });
+
+  describe('Reports API (/admin/reports)', () => {
+    it('should reject unauthenticated caller (401 Unauthorized)', async () => {
+      const res = await request(app).get('/admin/reports').expect(401);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('should reject non-admin caller (403 Forbidden)', async () => {
+      const res = await request(app)
+        .get('/admin/reports')
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(403);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('should return platform reports summary (200 OK)', async () => {
+      const res = await request(app)
+        .get('/admin/reports')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.summary).toBeDefined();
+      expect(res.body.data.summary.totalVolume).toBeDefined();
+      expect(res.body.data.summary.totalRevenue).toBeDefined();
+      expect(res.body.data.summary.totalFees).toBeDefined();
+      expect(res.body.data.users).toBeDefined();
+      expect(res.body.data.users.total).toBeGreaterThan(0);
+      expect(res.body.data.events).toBeDefined();
+    });
+  });
+
+  describe('Audit Logs API (/admin/audit-logs)', () => {
+    it('should reject unauthenticated caller (401 Unauthorized)', async () => {
+      const res = await request(app).get('/admin/audit-logs').expect(401);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('should reject non-admin caller (403 Forbidden)', async () => {
+      const res = await request(app)
+        .get('/admin/audit-logs')
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(403);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('should return paginated audit logs for admin (200 OK)', async () => {
+      const res = await request(app)
+        .get('/admin/audit-logs')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(Array.isArray(res.body.data.logs)).toBe(true);
+      expect(res.body.data.pagination).toBeDefined();
+    });
+
+    it('should filter audit logs by action query (200 OK)', async () => {
+      const res = await request(app)
+        .get('/admin/audit-logs?action=ANTI_BOT')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(Array.isArray(res.body.data.logs)).toBe(true);
     });
   });
 });

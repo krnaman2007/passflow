@@ -523,6 +523,109 @@ export const updateAntiBotConfig = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /admin/reports
+ * Admin: Volume, revenue, fees, user stats.
+ */
+export const getReports = async (req, res, next) => {
+  try {
+    const [
+      totalUsers,
+      activeUsers,
+      totalOrganizers,
+      verifiedOrganizers,
+      pendingKycUsers,
+      totalEvents,
+      publishedEvents,
+      totalOrders,
+      openOrders,
+      totalExecutions,
+      executions,
+    ] = await Promise.all([
+      prisma.user.count(),
+      prisma.buyerSeller.count({ where: { isActive: true } }),
+      prisma.organizer.count(),
+      prisma.organizer.count({ where: { verificationStatus: 'VERIFIED' } }),
+      prisma.buyerSeller.count({ where: { kycStatus: 'PENDING' } }),
+      prisma.event.count(),
+      prisma.event.count({ where: { status: 'PUBLISHED' } }),
+      prisma.order.count(),
+      prisma.order.count({ where: { status: 'OPEN' } }),
+      prisma.execution.count(),
+      prisma.execution.findMany({
+        select: { price: true, quantity: true },
+        take: 1000,
+      }),
+    ]);
+
+    // Calculate total volume in minor units (paise/cents)
+    let totalVolumeMinor = 0n;
+    for (const exec of executions) {
+      totalVolumeMinor += BigInt(exec.price) * BigInt(exec.quantity);
+    }
+
+    // Standard 2.5% platform fee estimate
+    const totalFeesMinor = (totalVolumeMinor * 25n) / 1000n;
+
+    const report = {
+      summary: {
+        totalVolume: totalVolumeMinor.toString(),
+        totalRevenue: totalFeesMinor.toString(),
+        totalFees: totalFeesMinor.toString(),
+        totalExecutions,
+        totalOrders,
+        openOrders,
+      },
+      users: {
+        total: totalUsers,
+        active: activeUsers,
+        pendingKyc: pendingKycUsers,
+        organizers: {
+          total: totalOrganizers,
+          verified: verifiedOrganizers,
+        },
+      },
+      events: {
+        total: totalEvents,
+        published: publishedEvents,
+      },
+      generatedAt: new Date().toISOString(),
+    };
+
+    res.status(200).json(successResponse(report));
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /admin/audit-logs
+ * Admin: Audit trail; filter by admin, action, date.
+ */
+export const getAuditLogs = async (req, res, next) => {
+  try {
+    const query = req.validatedQuery || req.query;
+    const result = await auditLogService.getAuditLogs(query);
+    res.status(200).json(
+      successResponse({
+        logs: result.logs,
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+        totalPages: result.totalPages,
+        pagination: {
+          total: result.total,
+          page: result.page,
+          limit: result.limit,
+          totalPages: result.totalPages,
+        },
+      })
+    );
+  } catch (err) {
+    next(err);
+  }
+};
+
 export default {
   getUsers,
   manageUser,
@@ -534,4 +637,6 @@ export default {
   updateAntiScalpingRule,
   getAntiBotConfig,
   updateAntiBotConfig,
+  getReports,
+  getAuditLogs,
 };

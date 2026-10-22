@@ -68,6 +68,8 @@ This document tracks active API routes and planned route additions as the PassFl
 | `PUT` | `/admin/rules/anti-scalping/:id` *(also `/api/v1/admin/rules/anti-scalping/:id`)* | Update / deactivate anti-scalping price-cap rule | Admin | `{"name": "...", "maxResalePrice": 300, "enabled": false}` | `{"success": true, "data": {"message": "Anti-scalping rule updated successfully", "rule": {...}}}` | Active |
 | `GET` | `/admin/rules/anti-bot` *(also `/api/v1/admin/rules/anti-bot`)* | View global bot rate limits and throttles | Admin | None | `{"success": true, "data": {"ordersPerMinute": 20, "maxRequestsPerMinute": 100, "burstLimit": 30, "enabled": true}}` | Active |
 | `PUT` | `/admin/rules/anti-bot` *(also `/api/v1/admin/rules/anti-bot`)* | View / change global bot rate limits | Admin | `{"ordersPerMinute": 30, "maxRequestsPerMinute": 150, "burstLimit": 50, "enabled": true}` | `{"success": true, "data": {"message": "Anti-bot rate limits updated successfully", "config": {...}}}` | Active |
+| `GET` | `/admin/reports` *(also `/api/v1/admin/reports`)* | Platform summary reports (volume, revenue, fees, user stats, events) | Admin | None | `{"success": true, "data": {"summary": {...}, "users": {...}, "events": {...}}}` | Active |
+| `GET` | `/admin/audit-logs` *(also `/api/v1/admin/audit-logs`)* | Immutable administrative audit trail with filtering and pagination | Admin | None (Query: `adminId`, `action`, `startDate`, `endDate`, `page`, `limit`) | `{"success": true, "data": {"logs": [...], "total": 1, "pagination": {...}}}` | Active |
 
 ---
 
