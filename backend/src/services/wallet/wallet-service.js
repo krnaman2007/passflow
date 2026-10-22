@@ -197,6 +197,10 @@ export class WalletService {
       throw new WalletValidationError('userId must be a non-empty string');
     }
 
+    if (currency !== 'INR') {
+      throw new WalletValidationError(`Unsupported currency: ${currency}. Only 'INR' is supported.`);
+    }
+
     const client = tx || this.prisma;
 
     // 1. Try to find existing wallet
@@ -204,6 +208,11 @@ export class WalletService {
       where: { userId },
     });
     if (existing) {
+      if (existing.currency !== currency) {
+        throw new WalletValidationError(
+          `Wallet currency mismatch: existing wallet is ${existing.currency}, requested ${currency}`
+        );
+      }
       return serializeWallet(existing);
     }
 
@@ -254,7 +263,7 @@ export class WalletService {
         ? {
             holds: {
               where: {
-                status: { in: ['ACTIVE', 'PARTIALLY_SETTLED'] },
+                status: { in: ['ACTIVE', 'PARTIALLY_RELEASED', 'PARTIALLY_SETTLED'] },
               },
               orderBy: { createdAt: 'desc' },
             },
@@ -266,6 +275,11 @@ export class WalletService {
       throw new WalletNotFoundError(
         walletId ? `Wallet not found with id: ${walletId}` : `Wallet not found for userId: ${userId}`
       );
+    }
+
+    // Enforce ownership check: if both walletId and userId were supplied, ensure they match
+    if (walletId && userId && wallet.userId !== userId) {
+      throw new WalletNotFoundError(`Wallet ${walletId} does not belong to user ${userId}`);
     }
 
     const result = serializeWallet(wallet);
@@ -905,7 +919,7 @@ export class WalletService {
 
       // 8. Calculate new hold remaining and state
       const newRemaining = currentRemaining - releaseAmountBigInt;
-      const newHoldStatus = newRemaining === 0n ? 'RELEASED' : 'PARTIALLY_SETTLED';
+      const newHoldStatus = newRemaining === 0n ? 'RELEASED' : 'PARTIALLY_RELEASED';
 
       // 9. Calculate new balances: reserved decreases, available increases
       const currentAvailable = BigInt(wallet.availableBalance);
@@ -982,7 +996,9 @@ export class WalletService {
     }
     return this._runInTransaction(execute, idempotencyKey, {
       holdId,
-      amount: amount !== null && amount !== undefined ? amount.toString() : 'FULL',
+      amount: amount !== null && amount !== undefined ? parseMonetaryAmount(amount, 'amount').toString() : null,
+      referenceType: referenceType || null,
+      referenceId: referenceId || null,
     });
   }
 
@@ -1002,7 +1018,12 @@ export class WalletService {
    */
   async _lockWallet(tx, { walletId, userId }) {
     let rows;
-    if (walletId) {
+    if (walletId && userId) {
+      rows = await tx.$queryRaw`SELECT * FROM "Wallet" WHERE id = ${walletId} FOR UPDATE`;
+      if (rows && rows.length > 0 && rows[0].userId !== userId) {
+        throw new WalletNotFoundError(`Wallet ${walletId} does not belong to user ${userId}`);
+      }
+    } else if (walletId) {
       rows = await tx.$queryRaw`SELECT * FROM "Wallet" WHERE id = ${walletId} FOR UPDATE`;
     } else if (userId) {
       rows = await tx.$queryRaw`SELECT * FROM "Wallet" WHERE "userId" = ${userId} FOR UPDATE`;
@@ -1041,13 +1062,38 @@ export class WalletService {
    */
   _verifyIdempotentOperation(existingOp, expectedPayload, idempotencyKey) {
     const meta = existingOp.metadata || {};
+
+    const isAmountMatch =
+      expectedPayload.amount === null || expectedPayload.amount === undefined
+        ? true
+        : meta.amount === expectedPayload.amount;
+
+    const isWalletMatch =
+      !expectedPayload.walletId || meta.walletId === expectedPayload.walletId;
+
+    const isOpTypeMatch =
+      !expectedPayload.operationType || existingOp.operationType === expectedPayload.operationType;
+
+    const isHoldMatch =
+      (meta.holdId || null) === (expectedPayload.holdId || null);
+
+    const isRefTypeMatch =
+      expectedPayload.referenceType === undefined
+        ? true
+        : (existingOp.referenceType || null) === (expectedPayload.referenceType || null);
+
+    const isRefIdMatch =
+      expectedPayload.referenceId === undefined
+        ? true
+        : (existingOp.referenceId || null) === (expectedPayload.referenceId || null);
+
     const isMatch =
-      meta.walletId === expectedPayload.walletId &&
-      meta.amount === expectedPayload.amount &&
-      existingOp.operationType === expectedPayload.operationType &&
-      (meta.holdId || null) === (expectedPayload.holdId || null) &&
-      (existingOp.referenceType || null) === (expectedPayload.referenceType || null) &&
-      (existingOp.referenceId || null) === (expectedPayload.referenceId || null);
+      isAmountMatch &&
+      isWalletMatch &&
+      isOpTypeMatch &&
+      isHoldMatch &&
+      isRefTypeMatch &&
+      isRefIdMatch;
 
     if (!isMatch) {
       throw new IdempotencyConflictError(
@@ -1116,25 +1162,25 @@ export class WalletService {
         });
         if (existingOp) {
           const meta = existingOp.metadata || {};
-          const isConflict =
-            (expectedSummary.amount && meta.amount && expectedSummary.amount !== meta.amount) ||
-            (expectedSummary.walletId && meta.walletId && expectedSummary.walletId !== meta.walletId) ||
-            (expectedSummary.operationType && existingOp.operationType && expectedSummary.operationType !== existingOp.operationType);
-
-          if (isConflict) {
-            throw new IdempotencyConflictError(
-              `Idempotency key '${idempotencyKey}' was already used with a different business payload`,
-              {
-                idempotencyKey,
-                existing: {
-                  walletId: meta.walletId,
-                  amount: meta.amount,
-                  operationType: existingOp.operationType,
-                },
-                requested: expectedSummary,
-              }
-            );
+          let targetWalletId = expectedSummary.walletId;
+          if (!targetWalletId && expectedSummary.userId) {
+            const w = await this.prisma.wallet.findUnique({
+              where: { userId: expectedSummary.userId },
+            });
+            targetWalletId = w ? w.id : null;
           }
+
+          const fullExpected = {
+            walletId: targetWalletId,
+            amount: expectedSummary.amount,
+            operationType: expectedSummary.operationType,
+            referenceType: expectedSummary.referenceType || null,
+            referenceId: expectedSummary.referenceId || null,
+            holdId: expectedSummary.holdId || null,
+          };
+
+          this._verifyIdempotentOperation(existingOp, fullExpected, idempotencyKey);
+
           const wallet = await this.prisma.wallet.findUnique({
             where: { id: meta.walletId },
           });

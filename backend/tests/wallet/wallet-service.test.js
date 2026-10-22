@@ -138,6 +138,31 @@ describe('Step 9.2 — Transactional Wallet Operations (Live PostgreSQL)', () =>
         walletService.getWalletBalance({ userId: '00000000-0000-0000-0000-000000000000' })
       ).rejects.toThrow(WalletNotFoundError);
     });
+
+    test('rejects unsupported currency with WalletValidationError', async () => {
+      await expect(
+        walletService.getOrCreateWallet({ userId: testUser1.id, currency: 'USD' })
+      ).rejects.toThrow(WalletValidationError);
+    });
+
+    test('enforces ownership check when both walletId and userId are passed', async () => {
+      wallet2 = await walletService.getOrCreateWallet({ userId: testUser2.id });
+
+      // wallet1 belongs to testUser1, not testUser2
+      await expect(
+        walletService.getWalletBalance({ walletId: wallet1.id, userId: testUser2.id })
+      ).rejects.toThrow(WalletNotFoundError);
+
+      // Mutating method _lockWallet also enforces this ownership check
+      await expect(
+        walletService.creditAvailable({
+          walletId: wallet1.id,
+          userId: testUser2.id,
+          amount: 1000,
+          idempotencyKey: `ownership-fail-${suffix}`,
+        })
+      ).rejects.toThrow(WalletNotFoundError);
+    });
   });
 
   // =========================================================================
@@ -326,7 +351,7 @@ describe('Step 9.2 — Transactional Wallet Operations (Live PostgreSQL)', () =>
       holdId = result.hold.id;
     });
 
-    test('partially releases a hold back to available balance', async () => {
+    test('partially releases a hold back to available balance and sets PARTIALLY_RELEASED', async () => {
       const partialKey = `release-partial-${suffix}`;
       const result = await walletService.releaseHold({
         holdId,
@@ -341,7 +366,7 @@ describe('Step 9.2 — Transactional Wallet Operations (Live PostgreSQL)', () =>
       expect(result.wallet.version).toBe('5');
 
       expect(result.hold.remainingAmount).toBe('12000');
-      expect(result.hold.status).toBe('PARTIALLY_SETTLED');
+      expect(result.hold.status).toBe('PARTIALLY_RELEASED');
 
       expect(result.ledgerEntry.amount).toBe('8000');
       expect(result.ledgerEntry.availableDelta).toBe('8000');
@@ -384,6 +409,86 @@ describe('Step 9.2 — Transactional Wallet Operations (Live PostgreSQL)', () =>
           idempotencyKey: closedKey,
         })
       ).rejects.toThrow(HoldInvariantError);
+    });
+
+    test('supports repeated partial releases on the same hold until fully exhausted', async () => {
+      // Create new hold of 15000 paise (150 INR)
+      const res = await walletService.reserveFunds({
+        walletId: wallet1.id,
+        amount: 15000,
+        idempotencyKey: `multi-rel-res-${suffix}`,
+      });
+      const mHoldId = res.hold.id;
+
+      // Partial release 1: 5000 paise
+      const r1 = await walletService.releaseHold({
+        holdId: mHoldId,
+        amount: 5000,
+        idempotencyKey: `multi-rel-1-${suffix}`,
+      });
+      expect(r1.hold.remainingAmount).toBe('10000');
+      expect(r1.hold.status).toBe('PARTIALLY_RELEASED');
+
+      // Partial release 2: 5000 paise
+      const r2 = await walletService.releaseHold({
+        holdId: mHoldId,
+        amount: 5000,
+        idempotencyKey: `multi-rel-2-${suffix}`,
+      });
+      expect(r2.hold.remainingAmount).toBe('5000');
+      expect(r2.hold.status).toBe('PARTIALLY_RELEASED');
+
+      // Exact-final release 3: 5000 paise
+      const r3 = await walletService.releaseHold({
+        holdId: mHoldId,
+        amount: 5000,
+        idempotencyKey: `multi-rel-3-${suffix}`,
+      });
+      expect(r3.hold.remainingAmount).toBe('0');
+      expect(r3.hold.status).toBe('RELEASED');
+
+      // Attempting release 4 fails
+      await expect(
+        walletService.releaseHold({
+          holdId: mHoldId,
+          amount: 1000,
+          idempotencyKey: `multi-rel-4-${suffix}`,
+        })
+      ).rejects.toThrow(HoldInvariantError);
+    });
+
+    test('concurrent partial releases on the same hold serialize cleanly without overdraft', async () => {
+      // Create hold of 30000 paise
+      const res = await walletService.reserveFunds({
+        walletId: wallet1.id,
+        amount: 30000,
+        idempotencyKey: `conc-hold-res-${suffix}`,
+      });
+      const cHoldId = res.hold.id;
+
+      // Attempt 4 concurrent releases of 10000 each (Total 40000 > 30000 held)
+      const tasks = Array.from({ length: 4 }, (_, i) => {
+        return walletService
+          .releaseHold({
+            holdId: cHoldId,
+            amount: 10000,
+            idempotencyKey: `conc-hold-rel-${i}-${suffix}`,
+          })
+          .then((r) => ({ success: true, result: r }))
+          .catch((e) => ({ success: false, error: e }));
+      });
+
+      const outcomes = await Promise.all(tasks);
+      const succeeded = outcomes.filter((o) => o.success);
+      const failed = outcomes.filter((o) => !o.success);
+
+      expect(succeeded).toHaveLength(3); // Exactly 3 can succeed (3 * 10000 = 30000)
+      expect(failed).toHaveLength(1);
+      expect(failed[0].error).toBeInstanceOf(HoldInvariantError);
+
+      const finalHold = await livePrisma.walletHold.findUnique({ where: { id: cHoldId } });
+      expect(finalHold.remainingAmount).toBe(0n);
+      expect(finalHold.status).toBe('RELEASED');
     });
   });
 
@@ -456,6 +561,49 @@ describe('Step 9.2 — Transactional Wallet Operations (Live PostgreSQL)', () =>
           idempotencyKey: crossWalletKey,
         })
       ).rejects.toThrow(IdempotencyConflictError);
+    });
+
+    test('retry after transaction definitively rolled back executes cleanly and commits', async () => {
+      const rollbackRetryKey = `rollback-retry-${suffix}`;
+
+      // Simulate a failed transaction using this key
+      try {
+        await livePrisma.$transaction(async (tx) => {
+          await walletService.creditAvailable(
+            {
+              walletId: wallet1.id,
+              amount: 5000,
+              idempotencyKey: rollbackRetryKey,
+            },
+            tx
+          );
+          throw new Error('SIMULATED_ABORT');
+        });
+      } catch (err) {
+        expect(err.message).toBe('SIMULATED_ABORT');
+      }
+
+      // Verify that NO operation record was committed for this key
+      const op = await livePrisma.financialOperation.findUnique({
+        where: { idempotencyKey: rollbackRetryKey },
+      });
+      expect(op).toBeNull();
+
+      // Now retry the operation with the SAME key outside the failing transaction
+      const retried = await walletService.creditAvailable({
+        walletId: wallet1.id,
+        amount: 5000,
+        idempotencyKey: rollbackRetryKey,
+      });
+
+      expect(retried.isIdempotentReplay).toBe(false);
+      expect(retried.operation.idempotencyKey).toBe(rollbackRetryKey);
+
+      // Verify it was committed
+      const committedOp = await livePrisma.financialOperation.findUnique({
+        where: { idempotencyKey: rollbackRetryKey },
+      });
+      expect(committedOp).not.toBeNull();
     });
   });
 
@@ -541,6 +689,68 @@ describe('Step 9.2 — Transactional Wallet Operations (Live PostgreSQL)', () =>
       expect(final.availableBalance).toBe(expectedFinal.toString());
       expect(BigInt(final.availableBalance) >= 0n).toBe(true);
     });
+
+    test('concurrent requests with same key but different amounts reject with IdempotencyConflictError', async () => {
+      const conflictConcKey = `concurrent-conflict-${suffix}`;
+
+      const tasks = [
+        walletService
+          .creditAvailable({
+            walletId: wallet1.id,
+            amount: 10000,
+            idempotencyKey: conflictConcKey,
+          })
+          .then((r) => ({ success: true, result: r }))
+          .catch((e) => ({ success: false, error: e })),
+        walletService
+          .creditAvailable({
+            walletId: wallet1.id,
+            amount: 20000,
+            idempotencyKey: conflictConcKey,
+          })
+          .then((r) => ({ success: true, result: r }))
+          .catch((e) => ({ success: false, error: e })),
+      ];
+
+      const outcomes = await Promise.all(tasks);
+      const succeeded = outcomes.filter((o) => o.success);
+      const failed = outcomes.filter((o) => !o.success);
+
+      expect(succeeded).toHaveLength(1);
+      expect(failed).toHaveLength(1);
+      expect(failed[0].error).toBeInstanceOf(IdempotencyConflictError);
+    });
+
+    test('concurrent requests with same key across different wallets reject with IdempotencyConflictError', async () => {
+      const crossConcKey = `concurrent-cross-wallet-${suffix}`;
+
+      const tasks = [
+        walletService
+          .creditAvailable({
+            walletId: wallet1.id,
+            amount: 5000,
+            idempotencyKey: crossConcKey,
+          })
+          .then((r) => ({ success: true, result: r }))
+          .catch((e) => ({ success: false, error: e })),
+        walletService
+          .creditAvailable({
+            walletId: wallet2.id,
+            amount: 5000,
+            idempotencyKey: crossConcKey,
+          })
+          .then((r) => ({ success: true, result: r }))
+          .catch((e) => ({ success: false, error: e })),
+      ];
+
+      const outcomes = await Promise.all(tasks);
+      const succeeded = outcomes.filter((o) => o.success);
+      const failed = outcomes.filter((o) => !o.success);
+
+      expect(succeeded).toHaveLength(1);
+      expect(failed).toHaveLength(1);
+      expect(failed[0].error).toBeInstanceOf(IdempotencyConflictError);
+    });
   });
 
   // =========================================================================
@@ -594,7 +804,7 @@ describe('Step 9.2 — Transactional Wallet Operations (Live PostgreSQL)', () =>
       const activeHolds = await livePrisma.walletHold.findMany({
         where: {
           walletId: wallet1.id,
-          status: { in: ['ACTIVE', 'PARTIALLY_SETTLED'] },
+          status: { in: ['ACTIVE', 'PARTIALLY_RELEASED', 'PARTIALLY_SETTLED'] },
         },
       });
 

@@ -76,6 +76,7 @@ enum OrderStatus {
 
 enum HoldStatus {
   ACTIVE
+  PARTIALLY_RELEASED
   PARTIALLY_SETTLED
   SETTLED
   RELEASED

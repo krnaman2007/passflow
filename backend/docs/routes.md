@@ -1014,3 +1014,87 @@ All balance mutations run inside a single atomic database transaction (`prisma.$
     $$\text{Wallet.reservedBalance} = \sum \text{WalletLedgerEntry.reservedDelta}$$
     $$\text{Wallet.reservedBalance} = \sum_{\text{active holds}} \text{WalletHold.remainingAmount}$$
 
+### 5.14C Step 9.2A — Wallet Transaction, Hold-State, and Idempotency Audit
+
+#### 5.14C.1 Hold Lifecycle Semantics: Separation of Release from Settlement
+- **Semantic Defect in Prior Implementation**:
+  - The previous design transitioned partially released holds to `HoldStatus.PARTIALLY_SETTLED`.
+  - In financial systems, a **release** returns unconsumed reserved funds back to the user's available balance (e.g. order cancellation, expired reservation, unused escrow). A **settlement** permanently debits or transfers funds to an exchange counterparty upon trade execution.
+  - Calling a partial release `PARTIALLY_SETTLED` conflated two orthogonal financial state machines, misleading auditing systems into reporting that funds had been paid out or trades had been executed.
+- **Additive Schema Migration (`20261022120000_add_partially_released_hold_status`)**:
+  - Added `PARTIALLY_RELEASED` to the PostgreSQL `HoldStatus` enum:
+    ```sql
+    ALTER TYPE "HoldStatus" ADD VALUE 'PARTIALLY_RELEASED';
+    ```
+  - Preserved all existing enum values (`ACTIVE`, `PARTIALLY_SETTLED`, `SETTLED`, `RELEASED`) and existing database records without table locks or data loss.
+- **Strictly Separated State Machines**:
+  - **Hold Release Lifecycle**:
+    - `ACTIVE` $\xrightarrow{\text{partial release}}$ `PARTIALLY_RELEASED`
+    - `PARTIALLY_RELEASED` $\xrightarrow{\text{partial release}}$ `PARTIALLY_RELEASED` (monotonic decrease in `remainingAmount`)
+    - `PARTIALLY_RELEASED` or `ACTIVE` $\xrightarrow{\text{exact/final release}}$ `RELEASED`
+  - **Settlement Lifecycle (reserved for future trade execution)**:
+    - `ACTIVE` $\xrightarrow{\text{partial fill settlement}}$ `PARTIALLY_SETTLED`
+    - `PARTIALLY_SETTLED` $\xrightarrow{\text{complete fill settlement}}$ `SETTLED`
+  - **Terminal States**:
+    - `RELEASED` and `SETTLED` are terminal. Any attempt to call `releaseHold()` on a hold in these states throws `WalletValidationError('Cannot release hold with closed status: ...')`.
+- **Remaining Amount Invariant**:
+  - `remainingAmount` decreases monotonically upon release. Releases where `releaseAmount > remainingAmount` are rejected with `WalletValidationError`.
+  - `remainingAmount` never increases during release.
+  - When `remainingAmount == 0`, status becomes `RELEASED`.
+
+#### 5.14C.2 Idempotency Under Concurrency and Ambiguous Outcomes
+- **Canonical Business Payload Verification**:
+  - Idempotent deduplication compares the full normalized business payload: `walletId`, `amount`, `operationType`, `referenceType`, `referenceId`, and `holdId`.
+  - Resolves `walletId` from `userId` prior to comparison so that caller requests passing either identifier match canonical stored metadata.
+- **Exhaustive Concurrency & Retry Behavior**:
+  1. **Concurrent Identical Requests (Same Key, Same Payload)**:
+     - Serialized on PostgreSQL wallet row lock (`SELECT FOR UPDATE`). The first request executes and commits `FinancialOperation`. The second request unblocks, evaluates the stored operation, and returns the committed outcome with `isIdempotentReplay: true`. Zero duplicate ledger entries.
+     - If both requests hit a uniqueness race (`P2002`), the catch block retrieves the committed record, validates the full payload, and returns the identical replay.
+  2. **Concurrent Conflicting Requests (Same Key, Different Amount/Wallet/Operation)**:
+     - The second request discovers payload differences and throws `IdempotencyConflictError` (HTTP 409 Conflict). It never overwrites the existing record or applies balance mutations.
+  3. **Retry After Committed Outcome with Lost Response**:
+     - Safely returns original committed result and snapshot balances with `isIdempotentReplay: true`.
+  4. **Retry After Definitive Rollback**:
+     - Because `FinancialOperation` is created inside the same atomic database transaction as the ledger entry and wallet projection, a rolled-back transaction writes nothing to disk. A retry with the same idempotency key executes freshly and cleanly without false conflict or replay errors.
+  5. **Transient Failure / Ambiguous Commit Outcome**:
+     - If PostgreSQL disconnects or times out ambiguously, Prisma transaction errors are never swallowed. The service throws a recoverable `DatabaseConnectionError`. It never blindly re-executes or treats arbitrary `P2002` errors as success without validating the payload against the committed database record.
+- **Idempotency Key Matrix: Safe vs. Fresh Key Requirements**:
+  | Outcome / Error Condition | Idempotency Key Reusability | Action Required |
+  | :--- | :--- | :--- |
+  | **Success (Committed)** | Same key safely replayable | Returns committed result (`isIdempotentReplay: true`) |
+  | **Pre-validation Error** (invalid amount, negative, float, non-INR) | Safe to retry | User fixes input and retries |
+  | **Insufficient Funds** (`InsufficientFundsError`) | Same key safely reusable | User adds funds and retries with same key |
+  | **Payload Conflict** (`IdempotencyConflictError`) | Must use fresh key | Request parameters differed; requires fresh key |
+  | **Transaction Rollback** (database constraint or transient fail) | Same key safely reusable | Re-attempt original transaction with same key |
+  | **Database Connection Error** (`DatabaseConnectionError`) | Same key safely reusable | Retry once connectivity is restored |
+
+#### 5.14C.3 FinancialOperation Lifecycle & Transactional Consistency
+- **Status Semantics**:
+  - `PENDING`: Reserved for asynchronous, multi-phase external workflows (e.g. payment gateway webhooks, external bank transfers, distributed two-phase commit).
+  - `COMPLETED`: Mutation has successfully committed to the database alongside its ledger entry and wallet balance updates.
+  - `FAILED`: Explicit terminal state for multi-phase operations that aborted permanently.
+- **Single-Transaction Pattern**:
+  - In `WalletService`, every internal credit, debit, reservation, and hold release executes within a single atomic PostgreSQL transaction (`prisma.$transaction`).
+  - `FinancialOperation` is inserted with status `COMPLETED` alongside the append-only `WalletLedgerEntry` and the updated `Wallet` projection.
+  - This design guarantees that a rollback can never leave an orphaned or false `COMPLETED` record, and eliminates inconsistent intermediate states.
+
+#### 5.14C.4 Balance, Hold, and Ledger Invariants
+- **Non-Negative Balances**: Guaranteed by both application pre-checks and PostgreSQL database constraints (`CHECK (available_balance >= 0)` and `CHECK (reserved_balance >= 0)`).
+- **Monotonic Version Sequence**: Incremented by exactly $1$ on every mutation modifying balances (`version = version + 1n`).
+- **Audit Ledger Conservation**:
+  $$\text{Wallet.availableBalance} = \sum_{e \in \text{Ledger}} e\text{.availableDelta}$$
+  $$\text{Wallet.reservedBalance} = \sum_{e \in \text{Ledger}} e\text{.reservedDelta}$$
+- **Active Hold Reconciliation**:
+  $$\text{Wallet.reservedBalance} = \sum_{h \in \text{ActiveHolds}} h\text{.remainingAmount}$$
+  Where $\text{ActiveHolds} = \{ h \mid h\text{.status} \in [\text{'ACTIVE'}, \text{'PARTIALLY\_RELEASED'}, \text{'PARTIALLY\_SETTLED'}] \}$.
+- **Currency Enforcement**:
+  - `getOrCreateWallet` strictly enforces `currency === 'INR'`. All other currencies are rejected with `WalletValidationError`.
+- **Tenant Ownership Enforcement**:
+  - `getWalletBalance({ walletId, userId })` and `_lockWallet({ walletId, userId })` explicitly verify that the fetched wallet's `userId` matches the caller's `userId`. Mismatches throw `WalletValidationError('Unauthorized: wallet does not belong to user')`.
+
+#### 5.14C.5 Money Precision & Serialization
+- All monetary amounts are verified by `parseMonetaryAmount()` as positive integer paise ($1 \text{ INR} = 100 \text{ paise}$).
+- Floats, fractional paise, `NaN`, `Infinity`, negative amounts, zero, and values exceeding JavaScript `Number.MAX_SAFE_INTEGER` ($9,007,199,254,740,991$ paise) are rejected with `WalletValidationError`.
+- `serializeWallet()`, `serializeHold()`, and `serializeLedgerEntry()` serialize `BigInt` balances and sequence numbers to strings for API responses, preventing IEEE-754 precision loss.
+
+

@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "HoldStatus" ADD VALUE 'PARTIALLY_RELEASED';
