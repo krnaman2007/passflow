@@ -29,6 +29,7 @@ model User {
   refreshTokens RefreshToken[]
   admin        Admin?
   ticketInventories UserTicketInventory[]
+  inventoryCredits  UserInventoryCredit[]
 }
 
 enum Role {
@@ -173,6 +174,7 @@ model TicketCategory {
   inventory         TicketInventory?
   orders            Order[]
   userInventories   UserTicketInventory[]
+  inventoryCredits  UserInventoryCredit[]
 }
 
 model TicketInventory {
@@ -201,6 +203,21 @@ model UserTicketInventory {
   @@unique([userId, ticketCategoryId])
   @@index([userId])
   @@index([ticketCategoryId])
+}
+
+model UserInventoryCredit {
+  id               String         @id @default(uuid())
+  userId           String
+  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ticketCategoryId String
+  ticketCategory   TicketCategory @relation(fields: [ticketCategoryId], references: [id], onDelete: Cascade)
+  quantity         Int
+  idempotencyKey   String         @unique
+  purchaseId       String?
+  createdAt        DateTime       @default(now())
+
+  @@index([userId, ticketCategoryId])
+  @@index([idempotencyKey])
 }
 
 model Order {
