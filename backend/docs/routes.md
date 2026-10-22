@@ -79,6 +79,12 @@ This document tracks active API routes and planned route additions as the PassFl
 | `GET` | `/solvency/verify` *(also `/api/v1/solvency/verify`)* | Verify platform solvency (backing assets cover user liabilities) | Public | None | `{"success": true, "data": {"isSolvent": true, "verified": true, "proof": {...}}}` | Active |
 | `GET` | `/health` *(also `/api/health`, `/api/v1/health`)* | Liveness check for cloud deployment and load balancers | Public | None | `{"status": "ok", "message": "Backend server is running", "timestamp": "..."}` | Active |
 
+### Market Data & Analytics
+
+| `GET` | `/market/:eventId/:categoryId` *(also `/api/v1/market/:eventId/:categoryId`)* | MarketData snapshot: best bid/ask, last traded price, volume, spread | Public | None | `{"success": true, "data": {"id": "...", "eventId": "...", "categoryId": "...", "bestBid": 1500, "bestAsk": 1600, "lastPrice": 1550, "volume": 25, "spread": 100, "updatedAt": "..."}}` | Active |
+| `GET` | `/market/:eventId/:categoryId/depth` *(also `/api/v1/market/:eventId/:categoryId/depth`)* | MarketDepth price levels (bids descending, asks ascending) | Public | None (Query: `limit`) | `{"success": true, "data": {"id": "...", "bids": [{"price": 1900, "totalQuantity": 2, "orderCount": 1}], "asks": [{"price": 2100, "totalQuantity": 3, "orderCount": 1}], "timestamp": "..."}}` | Active |
+| `GET` | `/market/:eventId/:categoryId/trades` *(also `/api/v1/market/:eventId/:categoryId/trades`)* | Real-time TradeFeed stream of executed trades (last N trades) | Public | None (Query: `limit`) | `{"success": true, "data": {"trades": [{"id": "...", "price": 2050, "quantity": 1, "timestamp": "..."}], "total": 1}}` | Active |
+
 ---
 
 ## 2. Active Real-Time / WebSocket Events
