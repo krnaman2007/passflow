@@ -8,9 +8,10 @@ class HistoryService {
   /**
    * Get paginated financial transaction history for a user.
    * Reads from TransactionHistory model or derives from WalletLedgerEntry.
+   * Supports filtering by type, date range (startDate/endDate or from/to), and pagination.
    *
    * @param {string} userId
-   * @param {object} query - { type, status, page, limit }
+   * @param {object} query - { type, entryType, status, startDate, endDate, from, to, page, limit, source }
    * @returns {Promise<object>}
    */
   async getTransactions(userId, query = {}) {
@@ -18,31 +19,56 @@ class HistoryService {
     const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20));
     const skip = (page - 1) * limit;
 
-    // First try querying dedicated TransactionHistory table
-    let whereClause = { userId };
-    if (query.type) whereClause.type = query.type;
-    if (query.status) whereClause.status = query.status;
+    const typeFilter = query.type || query.entryType || null;
+    const rawStart = query.startDate || query.from || null;
+    const rawEnd = query.endDate || query.to || null;
+
+    let startDate = null;
+    if (rawStart) {
+      const parsed = new Date(rawStart);
+      if (!isNaN(parsed.getTime())) startDate = parsed;
+    }
+
+    let endDate = null;
+    if (rawEnd) {
+      const parsed = new Date(rawEnd);
+      if (!isNaN(parsed.getTime())) endDate = parsed;
+    }
+
+    const preferLedger = query.source === 'ledger';
 
     let total = 0;
     let transactions = [];
 
-    try {
-      [total, transactions] = await Promise.all([
-        prisma.transactionHistory.count({ where: whereClause }),
-        prisma.transactionHistory.findMany({
-          where: whereClause,
-          orderBy: { createdAt: 'desc' },
-          skip,
-          take: limit,
-        }),
-      ]);
-    } catch {
-      // Non-blocking fallback
-      total = 0;
-      transactions = [];
+    // Query TransactionHistory table if not explicitly requesting direct ledger
+    if (!preferLedger) {
+      const whereClause = { userId };
+      if (typeFilter) whereClause.type = typeFilter;
+      if (query.status) whereClause.status = query.status;
+      if (startDate || endDate) {
+        whereClause.createdAt = {};
+        if (startDate) whereClause.createdAt.gte = startDate;
+        if (endDate) whereClause.createdAt.lte = endDate;
+      }
+
+      try {
+        [total, transactions] = await Promise.all([
+          prisma.transactionHistory.count({ where: whereClause }),
+          prisma.transactionHistory.findMany({
+            where: whereClause,
+            orderBy: { createdAt: 'desc' },
+            skip,
+            take: limit,
+          }),
+        ]);
+      } catch {
+        // Non-blocking fallback
+        total = 0;
+        transactions = [];
+      }
     }
 
-    // If no direct records in TransactionHistory table, derive from WalletLedgerEntry
+    // If preferLedger OR no direct records in TransactionHistory table, query WalletLedgerEntry
     if (total === 0) {
       const userWallet = await prisma.wallet.findUnique({
         where: { userId },
@@ -51,7 +77,12 @@ class HistoryService {
 
       if (userWallet) {
         const ledgerWhere = { walletId: userWallet.id };
-        if (query.type) ledgerWhere.entryType = query.type;
+        if (typeFilter) ledgerWhere.entryType = typeFilter;
+        if (startDate || endDate) {
+          ledgerWhere.createdAt = {};
+          if (startDate) ledgerWhere.createdAt.gte = startDate;
+          if (endDate) ledgerWhere.createdAt.lte = endDate;
+        }
 
         const [ledgerTotal, ledgerEntries] = await Promise.all([
           prisma.walletLedgerEntry.count({ where: ledgerWhere }),
@@ -67,8 +98,16 @@ class HistoryService {
         transactions = ledgerEntries.map((entry) => ({
           id: entry.id,
           userId,
+          walletId: entry.walletId,
           type: entry.entryType,
-          amount: Number(entry.amount) / 100, // convert paise to base unit
+          entryType: entry.entryType,
+          amount: Number(entry.amount) / 100, // convert paise to base unit for backward compatibility
+          amountPaise: entry.amount.toString(),
+          availableDelta: entry.availableDelta !== null && entry.availableDelta !== undefined ? entry.availableDelta.toString() : '0',
+          reservedDelta: entry.reservedDelta !== null && entry.reservedDelta !== undefined ? entry.reservedDelta.toString() : '0',
+          balanceAfterAvailable: entry.balanceAfterAvailable !== null && entry.balanceAfterAvailable !== undefined ? entry.balanceAfterAvailable.toString() : '0',
+          balanceAfterReserved: entry.balanceAfterReserved !== null && entry.balanceAfterReserved !== undefined ? entry.balanceAfterReserved.toString() : '0',
+          sequenceNumber: entry.sequenceNumber !== null && entry.sequenceNumber !== undefined ? entry.sequenceNumber.toString() : null,
           status: 'COMPLETED',
           description: entry.description,
           createdAt: entry.createdAt,
@@ -82,7 +121,7 @@ class HistoryService {
         page,
         limit,
         total,
-        totalPages: Math.ceil(total / limit) || 1,
+        totalPages: Math.ceil(total / limit) || (total === 0 ? 0 : 1),
       },
     };
   }

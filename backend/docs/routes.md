@@ -65,6 +65,15 @@ This document tracks active API routes and planned route additions as the PassFl
 | `POST` | `/tickets/:id/transfer` *(also `/api/v1/tickets/:id/transfer`)* | Direct (non-market) peer-to-peer transfer to another user; creates TicketTransfer | User | `{"toUserId": "uuid"}` or `{"recipientEmail": "user@example.com"}` | `{"success": true, "data": {"message": "Ticket transferred successfully", "transferId": "...", "status": "COMPLETED"}}` | Active |
 | `GET` | `/transfers/:id` *(also `/api/v1/transfers/:id`)* | Transfer status, ticket details, sender and recipient | User (Sender / Recipient) / Admin | None | `{"success": true, "data": {"id": "...", "ticketId": "...", "status": "COMPLETED", "fromUser": {...}, "toUser": {...}}}` | Active |
 
+### Wallet & Financial Ledger Management
+
+| Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `GET` | `/wallet` *(also `/api/v1/wallet`)* | Current user wallet balance, reserved balance, available funds, and version | User | None | `{"success": true, "data": {"id": "...", "availableBalance": "100000", "reservedBalance": "0", "totalBalance": "100000", "balance": "100000", "available": "100000", "version": "1"}}` | Active |
+| `POST` | `/wallet/deposit` *(also `/api/v1/wallet/deposit`)* | Add funds via simulated payment gateway (Idempotency-Key required) | User | `{"amount": 50000, "description": "..."}` | `{"success": true, "data": {"isIdempotentReplay": false, "wallet": {...}, "operation": {...}, "ledgerEntry": {...}}}` | Active |
+| `POST` | `/wallet/withdraw` *(also `/api/v1/wallet/withdraw`)* | Withdraw available funds (Idempotency-Key required, overdrafts rejected with 422) | User | `{"amount": 25000, "description": "..."}` | `{"success": true, "data": {"isIdempotentReplay": false, "wallet": {...}, "operation": {...}, "ledgerEntry": {...}}}` | Active |
+| `GET` | `/wallet/transactions` *(also `/api/v1/wallet/transactions`)* | Paginated wallet ledger transactions with type & date range filters | User | None (Query: `type`, `entryType`, `startDate`, `endDate`, `page`, `limit`) | `{"success": true, "data": {"transactions": [...], "pagination": {"page": 1, "limit": 20, "total": 1, "totalPages": 1}}}` | Active |
+
 ### Platform Administration & Moderation
 
 | Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
@@ -2184,6 +2193,43 @@ model TradeSettlement {
   - Completed (`COMPLETED`), cancelled (`CANCELLED`), or expired (`EXPIRED`) auctions reject purchase attempts with specific domain error codes (`400 AUCTION_COMPLETED`, `400 AUCTION_CANCELLED`, `400 AUCTION_EXPIRED`).
   - Purchases before `startTime` reject with `400 AUCTION_NOT_STARTED`.
   - When an expired auction is accessed during a purchase attempt, the `EXPIRED` status is persisted outside the aborting transaction.
+
+---
+
+### 5.20 Phase 2 — Wallet HTTP API Implementation & Audit
+
+- **Scope & Objectives**:
+  - Expose authenticated REST endpoints for user wallet operations: `GET /api/v1/wallet`, `POST /api/v1/wallet/deposit`, `POST /api/v1/wallet/withdraw`, and `GET /api/v1/wallet/transactions` (with backward-compatible root aliases `/wallet`, `/wallet/deposit`, `/wallet/withdraw`, `/wallet/transactions`).
+  - Strict preservation of financial invariants: minor units (INR paise) integer arithmetic via BigInt, row-level pessimistic locking (`SELECT ... FOR UPDATE`), check constraints (`availableBalance >= 0`, `reservedBalance >= 0`), and append-only immutable ledger records guarded by PostgreSQL triggers.
+  - Mandatory idempotency protection on financial mutations (deposit, withdrawal).
+- **Endpoint Implementation Summary**:
+  1. `GET /api/v1/wallet` (and `/wallet`):
+     - Authenticated user retrieval of wallet balances.
+     - Auto-initializes zero-balance wallet for newly registered users via `WalletService.getOrCreateWallet({ userId })`.
+     - Returns stringified BigInt balances (`availableBalance`, `reservedBalance`, `totalBalance`) alongside Darkhold spec aliases (`balance`, `available`) to prevent JavaScript floating-point JSON serialization precision loss.
+  2. `POST /api/v1/wallet/deposit` (and `/wallet/deposit`):
+     - Authenticated user deposit of funds via simulated mock gateway.
+     - Mandatory `Idempotency-Key` resolved from `Idempotency-Key`, `X-Idempotency-Key` headers or body `idempotencyKey`. Missing keys reject with `400 VALIDATION_ERROR`.
+     - Validates positive integers in minor units (paise). Floats (e.g. `10.5`), negative amounts, zero, or non-numeric types reject with `400 VALIDATION_ERROR`. Rejects unknown body fields with `.strict()`.
+     - Calls `WalletService.creditAvailable({ userId, amount, idempotencyKey, entryType: 'DEPOSIT', operationType: 'DEPOSIT', referenceType: 'MOCK_GATEWAY' })`.
+     - Replays with identical parameters return original result with `200 OK` and `isIdempotentReplay: true` without double-crediting.
+     - Replays with conflicting parameters reject with `409 IDEMPOTENCY_CONFLICT`.
+  3. `POST /api/v1/wallet/withdraw` (and `/wallet/withdraw`):
+     - Authenticated user withdrawal of available funds.
+     - Mandatory `Idempotency-Key` header/body validation.
+     - Strictly enforces available balance sufficiency: attempts exceeding available funds reject with `422 INSUFFICIENT_FUNDS` with zero balance deduction.
+     - Direct withdrawal settlements debit available balance atomically and produce negative `availableDelta` `WalletLedgerEntry` records (`entryType = 'WITHDRAWAL_SETTLED'`).
+     - Idempotent replays return original result with `200 OK` without double-spending.
+  4. `GET /api/v1/wallet/transactions` (and `/wallet/transactions`):
+     - Authenticated user paginated retrieval of immutable ledger entries.
+     - Supports `type` / `entryType` filtering (`DEPOSIT`, `WITHDRAWAL_SETTLED`, `ORDER_HOLD`, etc.).
+     - Supports date range filtering (`startDate`, `endDate`, `from`, `to`). Rejects invalid dates or inverted ranges (`startDate > endDate`) with `400 VALIDATION_ERROR`.
+     - Supports standard pagination (`page`, `limit`).
+     - Reuses and extends `HistoryService.getTransactions` with direct ledger querying (`source: 'ledger'`), returning enriched fields (`amountPaise`, `availableDelta`, `balanceAfterAvailable`, etc.) while preserving backward compatibility with existing `/history/transactions` consumers.
+- **Data Model & Migration Status**:
+  - No database migration required. The existing Prisma schema, `Wallet`, `WalletLedgerEntry`, `FinancialOperation` models, check constraints, and immutability triggers already provide complete structural support.
+- **Verification & Test Suite**:
+  - Comprehensive integration test suite: `backend/tests/wallet/wallet-api.test.js` (30 test cases covering authentication, balance queries, deposits, withdrawals, overdraft rejections, idempotency replays/conflicts, pagination, and date filtering).
 
 
 

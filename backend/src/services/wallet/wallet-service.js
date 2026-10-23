@@ -95,6 +95,8 @@ export function serializeWallet(wallet) {
     availableBalance: available.toString(),
     reservedBalance: reserved.toString(),
     totalBalance: (available + reserved).toString(),
+    balance: (available + reserved).toString(),
+    available: available.toString(),
     version: BigInt(wallet.version).toString(),
     createdAt: wallet.createdAt instanceof Date ? wallet.createdAt.toISOString() : wallet.createdAt,
     updatedAt: wallet.updatedAt instanceof Date ? wallet.updatedAt.toISOString() : wallet.updatedAt,
@@ -485,7 +487,13 @@ export class WalletService {
     const amountBigInt = parseMonetaryAmount(amount, 'amount');
     this._validateIdempotencyKey(idempotencyKey);
 
-    const allowedEntryTypes = ['FEE_DEBIT', 'WITHDRAWAL_LOCK', 'TRADE_SETTLEMENT_DEBIT', 'COMPENSATING_ADJUSTMENT'];
+    const allowedEntryTypes = [
+      'FEE_DEBIT',
+      'WITHDRAWAL_LOCK',
+      'WITHDRAWAL_SETTLED',
+      'TRADE_SETTLEMENT_DEBIT',
+      'COMPENSATING_ADJUSTMENT',
+    ];
     if (!allowedEntryTypes.includes(entryType)) {
       throw new WalletValidationError(
         `Invalid entryType for debit: ${entryType}. Must be one of: ${allowedEntryTypes.join(', ')}`
