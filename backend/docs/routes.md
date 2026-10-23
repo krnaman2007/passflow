@@ -2068,6 +2068,27 @@ model TradeSettlement {
   - Test Suite: `backend/tests/matching/market-stream-socket.test.js` (19 tests, 100% pass against isolated PostgreSQL).
   - Comprehensive Core Regression: 24 test suites, 445 tests passed across matching, settlement, wallet, orders, readiness, and streaming.
 
+#### 5.18.22 Step 9.17 Secondary Market WebSocket Frontend Integration & Trade Feed Wireup
+- **Client Architecture & Lifecycle**:
+  - `MarketStreamClient` (`frontend/src/services/marketStream.js`): Reusable client managing Socket.IO lifecycle, public market subscriptions, bounded exponential backoff with jitter (`reconnectionDelay: 1000`, `reconnectionDelayMax: 10000`), connection status tracking (`CONNECTING`, `CONNECTED`, `RECONNECTING`, `DISCONNECTED`), and token-safe authentication.
+  - `useMarketStream` Hook (`frontend/src/hooks/useMarketStream.js`): React hook synchronizing market state, depth book ordering, cumulative depth calculation, real-time public trade stream, and status indicators.
+  - `MarketPage` (`frontend/src/pages/MarketPage.jsx`): UI view displaying real-time depth table, ticker summary, live trade feed, and stream health status.
+  - Read-Only Boundary: Client strictly listens to events. Order placement and cancellation execute exclusively over authenticated HTTP endpoints (`placeOrder`, `cancelOrder`).
+- **Sequence Handling & Gap Recovery**:
+  - Wire Format: `sequenceNumber` is transmitted as a string and parsed/compared via `BigInt` (preventing 64-bit integer precision loss).
+  - Monotonic Tracking: `BigInt(updateSeq) <= currentSequence` updates are discarded as duplicate or stale.
+  - Gap Detection: Sequence jumps (`BigInt(updateSeq) > currentSequence + 1n`) trigger debounced `market:snapshot_request` (coalesced with 1200ms delay, bounded to 3 retries) to authoritatively resynchronize depth and trade cursors from PostgreSQL.
+  - Contract Nuance: `sequenceNumber` strictly tracks trade executions (`Execution.sequenceNumber`). Order cancellations carry `sequenceNumber: '0'`. Non-matching placements reflect the existing execution cursor. Requesting an authoritative snapshot restores both order book resting levels and sequence cursors without reconnection.
+- **Monetary Unit Presentation**:
+  - Backend prices are integer minor units (paise; 1 INR = 100 paise).
+  - Minor-to-major currency conversion (`paise / 100`) occurs strictly at the presentation boundary via `frontend/src/utils/formatters.js`.
+- **Deduplication & Private Fills**:
+  - Public trades deduplicated by unique `tradeId`.
+  - Private `order:fill` notifications deduplicated by `${orderId}:${status}:${tradeId}` and dispatched to existing toast notification and order state handlers.
+  - Logout clears authentication tokens and resets socket to anonymous mode, purging private rooms.
+- **Automated Test Coverage**:
+  - Test Suite: `frontend/tests/marketStream.test.js` (15 deterministic unit and integration tests, 100% pass).
+
 
 
 

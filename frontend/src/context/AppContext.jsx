@@ -9,6 +9,9 @@ import {
   INITIAL_NOTIFICATIONS,
   INITIAL_ADMIN_DATA
 } from '../mockData';
+import { marketStream } from '../services/marketStream.js';
+import { useAppStore } from '../store/useStore.js';
+
 
 const AppContext = createContext(null);
 
@@ -131,6 +134,62 @@ export function AppProvider({ children }) {
       showToast('Switched to User: Ali K. (Buyer/Seller)', 'info');
     }
   };
+
+  // Private order fill notifications from WebSocket
+  useEffect(() => {
+    const unsubFills = marketStream.onOrderFill((fill) => {
+      const fillPricePaise = fill.fillPrice != null ? Number(fill.fillPrice) : null;
+      const fillPriceStr =
+        fillPricePaise != null
+          ? (fillPricePaise >= 100 ? fillPricePaise / 100 : fillPricePaise).toFixed(2)
+          : '0.00';
+
+      if (fill.status === 'FILLED') {
+        showToast(
+          `Order #${fill.orderId} filled! ${fill.fillQuantity} tickets @ ₹${fillPriceStr}`,
+          'success'
+        );
+      } else if (fill.status === 'PARTIALLY_FILLED') {
+        showToast(
+          `Order #${fill.orderId} partial fill: ${fill.fillQuantity} tickets @ ₹${fillPriceStr} (${fill.remainingQuantity} remaining)`,
+          'info'
+        );
+      } else if (fill.status === 'CANCELLED') {
+        showToast(`Order #${fill.orderId} cancelled`, 'info');
+      }
+
+      // Update userOrders state
+      setUserOrders((prev) =>
+        prev.map((ord) => {
+          if (ord.id === fill.orderId) {
+            return {
+              ...ord,
+              status: fill.status === 'PARTIALLY_FILLED' ? 'PARTIAL' : fill.status,
+              filled: (ord.filled || 0) + (fill.fillQuantity || 0),
+            };
+          }
+          return ord;
+        })
+      );
+    });
+
+    return () => {
+      unsubFills();
+    };
+  }, []);
+
+  // Sync authentication token with market streaming client
+  useEffect(() => {
+    if (!currentUser || currentRole === 'PUBLIC') {
+      marketStream.clearAuthToken();
+      useAppStore.getState().logout();
+    } else {
+      const storeToken = useAppStore.getState().token;
+      if (storeToken) {
+        marketStream.setAuthToken(storeToken);
+      }
+    }
+  }, [currentUser, currentRole]);
 
   // Primary Purchase Handler (Flow A)
   const purchasePrimaryTickets = (eventId, selectedTiers) => {
@@ -819,7 +878,8 @@ export function AppProvider({ children }) {
         rejectOrganizer,
         toggleUserSuspension,
         approveUserKyc,
-        regenerateSolvencyProof
+        regenerateSolvencyProof,
+        marketStream
       }}
     >
       {children}

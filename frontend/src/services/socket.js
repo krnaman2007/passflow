@@ -1,8 +1,7 @@
-import { io } from 'socket.io-client';
+import { marketStream, MarketStreamClient, CONNECTION_STATUS } from './marketStream.js';
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
+// Lazy-initialized or active shared socket instance
+export const socket = marketStream.initSocket();
 
-export const socket = io(BACKEND_URL, {
-  autoConnect: true,
-  transports: ['websocket', 'polling'],
-});
+export { marketStream, MarketStreamClient, CONNECTION_STATUS };
+export default marketStream;
