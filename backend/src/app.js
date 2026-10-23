@@ -17,6 +17,7 @@ import walletRoutes from './routes/wallet.routes.js';
 import tradeRoutes from './routes/trade.routes.js';
 import settlementRoutes from './routes/settlement.routes.js';
 import escrowRoutes from './routes/escrow.routes.js';
+import orderbookRoutes from './routes/orderbook.routes.js';
 import errorHandler from './middleware/errorHandler.js';
 
 const app = express();
@@ -72,6 +73,11 @@ app.use('/api/v1/solvency', solvencyRoutes);
 // Market Data & Analytics Routes (Public)
 app.use('/market', marketRoutes);
 app.use('/api/v1/market', marketRoutes);
+
+// Orderbook Read & Depth Routes (Public)
+app.use('/orderbook', orderbookRoutes);
+app.use('/api/v1/orderbook', orderbookRoutes);
+app.use('/api/orderbook', orderbookRoutes);
 
 // Secondary Market Order Routes (Authenticated)
 app.use('/orders', orderRoutes);

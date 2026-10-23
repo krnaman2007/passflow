@@ -383,7 +383,7 @@ export const marketService = {
     // 1. Fetch published/active events with their categories
     const events = await prisma.event.findMany({
       where: {
-        status: { in: ['PUBLISHED', 'COMPLETED', 'DRAFT'] },
+        status: { in: ['PUBLISHED', 'COMPLETED'] },
       },
       include: {
         categories: {
@@ -467,16 +467,26 @@ export const marketService = {
       })
     );
 
-    // 3. Sort based on criteria
+    // 3. Sort based on criteria with deterministic dateTime tie-breaking
     if (sortBy === 'priceMovement') {
       eventSummaries.sort(
-        (a, b) => Math.abs(b.priceChangePercent) - Math.abs(a.priceChangePercent)
+        (a, b) =>
+          Math.abs(b.priceChangePercent) - Math.abs(a.priceChangePercent) ||
+          new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime()
       );
     } else if (sortBy === 'trades') {
-      eventSummaries.sort((a, b) => b.tradeCount - a.tradeCount);
+      eventSummaries.sort(
+        (a, b) =>
+          b.tradeCount - a.tradeCount ||
+          new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime()
+      );
     } else {
       // Default: volume
-      eventSummaries.sort((a, b) => b.volume - a.volume);
+      eventSummaries.sort(
+        (a, b) =>
+          b.volume - a.volume ||
+          new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime()
+      );
     }
 
     const topEvents = eventSummaries.slice(0, limit);
@@ -630,6 +640,192 @@ export const marketService = {
       },
     };
   },
+
+  /**
+   * Retrieves active resting OrderBook for an event and ticket category tier in price-time priority.
+   * Public visibility: excludes private user IDs, wallet IDs, and hold IDs.
+   * Excludes cancelled, rejected, filled, or zero-remaining quantity orders.
+   *
+   * @param {string} eventId - Event UUID.
+   * @param {string} categoryId - TicketCategory UUID.
+   * @param {object} [options] - Pagination limit.
+   * @returns {Promise<object>} OrderBook snapshot.
+   */
+  async getOrderbook(eventId, categoryId, options = {}) {
+    const limitNum = Math.min(Math.max(parseInt(options.limit, 10) || 50, 1), 100);
+
+    // 1. Verify existence of event
+    const event = await prisma.event.findUnique({
+      where: { id: eventId },
+      select: { id: true, name: true, status: true },
+    });
+    if (!event) {
+      throw new AppError('Event not found', 404, 'EVENT_NOT_FOUND');
+    }
+
+    // 2. Verify existence of ticket category belonging to the event
+    const category = await prisma.ticketCategory.findFirst({
+      where: { id: categoryId, eventId },
+      select: {
+        id: true,
+        name: true,
+        originalPrice: true,
+      },
+    });
+    if (!category) {
+      throw new AppError('Ticket category not found for event', 404, 'CATEGORY_NOT_FOUND');
+    }
+
+    // 3. Query resting BIDs (OPEN or PARTIALLY_FILLED, remainingQuantity > 0)
+    // Price-time priority: price DESC (highest bid first), sequenceNumber ASC (earliest first)
+    const bidOrders = await prisma.order.findMany({
+      where: {
+        eventId,
+        ticketCategoryId: categoryId,
+        side: 'BID',
+        status: { in: ['OPEN', 'PARTIALLY_FILLED'] },
+        remainingQuantity: { gt: 0 },
+      },
+      orderBy: [{ price: 'desc' }, { sequenceNumber: 'asc' }],
+      select: {
+        id: true,
+        side: true,
+        price: true,
+        initialQuantity: true,
+        remainingQuantity: true,
+        sequenceNumber: true,
+        createdAt: true,
+      },
+    });
+
+    // 4. Query resting ASKs (OPEN or PARTIALLY_FILLED, remainingQuantity > 0)
+    // Price-time priority: price ASC (lowest ask first), sequenceNumber ASC (earliest first)
+    const askOrders = await prisma.order.findMany({
+      where: {
+        eventId,
+        ticketCategoryId: categoryId,
+        side: 'ASK',
+        status: { in: ['OPEN', 'PARTIALLY_FILLED'] },
+        remainingQuantity: { gt: 0 },
+      },
+      orderBy: [{ price: 'asc' }, { sequenceNumber: 'asc' }],
+      select: {
+        id: true,
+        side: true,
+        price: true,
+        initialQuantity: true,
+        remainingQuantity: true,
+        sequenceNumber: true,
+        createdAt: true,
+      },
+    });
+
+    // 5. Build price levels for depth aggregation
+    const bidMap = new Map();
+    for (const o of bidOrders) {
+      if (!bidMap.has(o.price)) {
+        bidMap.set(o.price, { price: o.price, totalQuantity: 0, orderCount: 0 });
+      }
+      const lvl = bidMap.get(o.price);
+      lvl.totalQuantity += o.remainingQuantity;
+      lvl.orderCount += 1;
+    }
+    const aggregatedBids = Array.from(bidMap.values());
+
+    const askMap = new Map();
+    for (const o of askOrders) {
+      if (!askMap.has(o.price)) {
+        askMap.set(o.price, { price: o.price, totalQuantity: 0, orderCount: 0 });
+      }
+      const lvl = askMap.get(o.price);
+      lvl.totalQuantity += o.remainingQuantity;
+      lvl.orderCount += 1;
+    }
+    const aggregatedAsks = Array.from(askMap.values());
+
+    // Public order mapper (strictly omits private user, wallet, or hold information)
+    const mapPublicOrder = (o) => ({
+      id: o.id,
+      side: o.side,
+      price: o.price,
+      quantity: o.remainingQuantity,
+      initialQuantity: o.initialQuantity,
+      sequenceNumber: o.sequenceNumber != null ? String(o.sequenceNumber) : null,
+      createdAt: o.createdAt instanceof Date ? o.createdAt.toISOString() : o.createdAt,
+    });
+
+    const bestBid = bidOrders.length > 0 ? bidOrders[0].price : null;
+    const bestAsk = askOrders.length > 0 ? askOrders[0].price : null;
+    const spread = bestBid !== null && bestAsk !== null ? bestAsk - bestBid : null;
+
+    return {
+      id: `${eventId}:${categoryId}`,
+      eventId,
+      categoryId,
+      eventName: event.name,
+      categoryName: category.name,
+      type: 'PRICE_TIME_PRIORITY',
+      bestBid,
+      bestAsk,
+      spread,
+      bids: bidOrders.slice(0, limitNum).map(mapPublicOrder),
+      asks: askOrders.slice(0, limitNum).map(mapPublicOrder),
+      depth: {
+        bids: aggregatedBids.slice(0, limitNum),
+        asks: aggregatedAsks.slice(0, limitNum),
+      },
+      updatedAt: new Date().toISOString(),
+    };
+  },
+
+  /**
+   * Resolves orderbook depth by identifier:
+   * 1. Composite identifier `eventId:categoryId`
+   * 2. TicketCategory identifier (1 Event : 1..* Category -> unique tier orderbook)
+   * 3. Order identifier (persisted order resolves market eventId and categoryId)
+   *
+   * @param {string} identifier - Orderbook, category, or order ID.
+   * @param {object} [options] - Pagination limit.
+   * @returns {Promise<object>} MarketDepth snapshot.
+   */
+  async resolveOrderbookDepth(identifier, options = {}) {
+    if (!identifier || typeof identifier !== 'string' || identifier.trim().length === 0) {
+      throw new AppError('Invalid orderbook identifier', 400, 'VALIDATION_ERROR');
+    }
+
+    const trimmed = identifier.trim();
+
+    // Strategy 1: Composite ID (eventId:categoryId)
+    if (trimmed.includes(':')) {
+      const parts = trimmed.split(':');
+      if (parts.length === 2 && parts[0] && parts[1]) {
+        return await this.getMarketDepth(parts[0], parts[1], options);
+      }
+      throw new AppError('Invalid composite orderbook identifier', 400, 'VALIDATION_ERROR');
+    }
+
+    // Strategy 2: TicketCategory ID
+    const category = await prisma.ticketCategory.findUnique({
+      where: { id: trimmed },
+      select: { id: true, eventId: true },
+    });
+    if (category) {
+      return await this.getMarketDepth(category.eventId, category.id, options);
+    }
+
+    // Strategy 3: Order ID
+    const order = await prisma.order.findUnique({
+      where: { id: trimmed },
+      select: { id: true, eventId: true, ticketCategoryId: true },
+    });
+    if (order) {
+      return await this.getMarketDepth(order.eventId, order.ticketCategoryId, options);
+    }
+
+    // If identifier is not found as a category, order, or composite ID
+    throw new AppError('Orderbook not found for identifier', 404, 'ORDERBOOK_NOT_FOUND');
+  },
 };
 
 export default marketService;
+

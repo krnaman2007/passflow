@@ -189,6 +189,24 @@ export const eventController = {
       next(err);
     }
   },
+
+  /**
+   * GET /events/:eventId/orderbook - Public resting orderbook for event+category
+   */
+  async getEventOrderbook(req, res, next) {
+    try {
+      const params = req.validatedParams || req.params;
+      const query = req.validatedQuery || req.query;
+      const eventId = params.eventId || params.id;
+      const categoryId = query.categoryId || query.ticketCategoryId;
+      const limit = query.limit;
+
+      const data = await marketService.getOrderbook(eventId, categoryId, { limit });
+      res.status(200).json(successResponse(data));
+    } catch (err) {
+      next(err);
+    }
+  },
 };
 
 export default eventController;

@@ -20,6 +20,10 @@ import {
   eventTradesParamsSchema,
   queryEventTradesSchema,
 } from '../schemas/trade.schema.js';
+import {
+  eventOrderbookParamsSchema,
+  eventOrderbookQuerySchema,
+} from '../schemas/orderbook.schema.js';
 
 const router = express.Router();
 
@@ -82,6 +86,14 @@ router.get(
   validate(eventTradesParamsSchema, 'params'),
   validate(queryEventTradesSchema, 'query'),
   eventController.getEventTrades
+);
+
+// GET /events/:eventId/orderbook - Public current resting orderbook for event tier (Public)
+router.get(
+  '/events/:eventId/orderbook',
+  validate(eventOrderbookParamsSchema, 'params'),
+  validate(eventOrderbookQuerySchema, 'query'),
+  eventController.getEventOrderbook
 );
 
 // ==========================================

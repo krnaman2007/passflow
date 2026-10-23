@@ -83,6 +83,10 @@ This document tracks active API routes and planned route additions as the PassFl
 | `GET` | `/orders/:id` *(also `/api/v1/orders/:id`)* | Return order details and execution fills (ownership strictly enforced) | User (Owner) | None | `{"success": true, "data": {"id": "...", "side": "BID", "status": "FILLED", "price": 2500, "initialQuantity": 2, "remainingQuantity": 0, "filledQuantity": 2, "executions": [...], "fills": [...]}}` | Active |
 | `GET` | `/orders/:id/trades` *(also `/api/v1/orders/:id/trades`)* | Return executions/trades associated with specified order (ownership strictly enforced) | User (Owner) | None | `{"success": true, "data": {"orderId": "...", "trades": [...], "executions": [...], "total": 1}}` | Active |
 | `DELETE` | `/orders/:id` *(also `/api/v1/orders/:id`)* | Cancel an open or partially filled order and release remaining unfilled reservations | User (Owner) | None (Header: `Idempotency-Key`) | `{"success": true, "data": {"orderId": "...", "status": "CANCELLED", "cancelledQuantity": 1, "remainingQuantity": 0, ...}}` | Active |
+| `GET` | `/events/:eventId/orderbook` *(also `/api/v1/events/:eventId/orderbook`)* | Public resting orderbook for event tier with price-time priority bids, asks, and aggregated depth levels | Public | None (Query: `categoryId`, `ticketCategoryId`, `limit`) | `{"success": true, "data": {"id": "eventId:categoryId", "eventId": "...", "categoryId": "...", "type": "PRICE_TIME_PRIORITY", "bestBid": 2100, "bestAsk": 2400, "spread": 300, "bids": [...], "asks": [...], "depth": {"bids": [...], "asks": [...]}}}` | Active |
+| `GET` | `/orderbook/:id/depth` *(also `/api/v1/orderbook/:id/depth`)* | Public aggregated bid/ask depth levels (resolves by composite `eventId:categoryId`, `categoryId`, or `orderId`) | Public | None (Query: `limit`) | `{"success": true, "data": {"id": "eventId:categoryId", "eventId": "...", "categoryId": "...", "bids": [{"price": 2100, "totalQuantity": 4, "orderCount": 2}], "asks": [{"price": 2400, "totalQuantity": 4, "orderCount": 2}], "timestamp": "..."}}` | Active |
+| `GET` | `/orderbook/:eventId/:categoryId/depth` *(also `/api/v1/orderbook/:eventId/:categoryId/depth`)* | Public compatibility route: aggregated bid/ask levels for an explicit event & category | Public | None (Query: `limit`) | `{"success": true, "data": {"id": "eventId:categoryId", "bids": [...], "asks": [...]}}` | Active |
+| `GET` | `/orderbook/:eventId/:categoryId` *(also `/api/v1/orderbook/:eventId/:categoryId`)* | Public compatibility route: resting orderbook snapshot for an explicit event & category | Public | None (Query: `limit`) | `{"success": true, "data": {"id": "eventId:categoryId", "bids": [...], "asks": [...]}}` | Active |
 
 ### Secondary Market Trades (`/trades`, `/api/v1/trades`, `/events/:id/trades`)
 
@@ -2363,6 +2367,47 @@ model TradeSettlement {
 - **Test Suite & Verification**:
   - Dedicated HTTP integration suite: `backend/tests/settlement/settlement-escrow-api.test.js` (33 test cases covering authentication, admin authorization, participant privacy, missing/invalid IDs, pending/settled/manual-review states, escrow hold amounts, retry state transitions, audit logging, and concurrent idempotency protection).
   - Combined regression verification: 180 tests passing across `settlement-escrow-api.test.js` (33 tests), `trade-read-api.test.js` (32 tests), `order-read-api.test.js` (31 tests), `order-api.test.js` (18 tests), `wallet-api.test.js` (34 tests), `trade-settlement-postgres.test.js` (18 tests), and `durable-settlement-recovery.test.js` (14 tests).
+
+### 5.24 Phase 6 — Orderbook Read APIs & Contract Compatibility Implementation
+
+- **Scope & Objectives**:
+  - Implement and expose REST orderbook read endpoints and read-only API compatibility routes specified in the Darkhold Exchange API reference:
+    1. `GET /events/:eventId/orderbook?categoryId=...` (and `/api/v1/events/:eventId/orderbook`) — public current resting book for an event tier displaying active orders in price-time priority (`bids` descending by price then ascending by sequence, `asks` ascending by price then ascending by sequence), best bid, best ask, bid-ask spread, and aggregated depth levels.
+    2. `GET /orderbook/:id/depth` (and `/api/v1/orderbook/:id/depth`) — public aggregated bid/ask price levels resolving the `:id` parameter unambiguously via:
+       - Strategy A (Composite Identifier): `${eventId}:${categoryId}` (matching the `id` format defined in `MarketDepth` and `MarketData`).
+       - Strategy B (TicketCategory Identifier): `ticketCategory.id` (since 1 TicketCategory maps 1-to-1 to an event tier order book).
+       - Strategy C (Order Identifier): `order.id` (persisted order record resolves `eventId` and `ticketCategoryId`).
+    3. Thin compatibility routes:
+       - `GET /orderbook/:eventId/:categoryId/depth` — aggregated depth for explicit event and category.
+       - `GET /orderbook/:eventId/:categoryId` — resting orderbook snapshot for explicit event and category.
+  - Strict Public Access & Participant Privacy:
+    - Endpoints are public: accessible without authentication tokens while supporting optional authenticated contexts.
+    - Public orderbook responses strictly omit sensitive participant data: `userId`, `walletId`, `holdId`, `buyerHoldId`, `idempotencyKey`, and `stoppedReason` are completely stripped from exposed order objects.
+  - Liquidity Integrity & Market Isolation:
+    - Orders marked as `CANCELLED`, `REJECTED`, `FILLED`, or with `remainingQuantity <= 0` are strictly excluded from active resting liquidity and depth calculations.
+    - Multi-tenant market isolation is preserved by querying orders filtered strictly by `(eventId, ticketCategoryId)`.
+  - Zero Schema Migrations:
+    - 100% compliant with existing Prisma models (`Event`, `TicketCategory`, `Order`, `Execution`).
+- **Endpoint Implementation Details**:
+  1. `GET /api/v1/events/:eventId/orderbook` (and `/events/:eventId/orderbook`):
+     - Validates `eventId` UUID parameter via `eventOrderbookParamsSchema` (`400 VALIDATION_ERROR` for malformed IDs).
+     - Validates `categoryId` (or alias `ticketCategoryId`) UUID query parameter via `eventOrderbookQuerySchema` (`400 VALIDATION_ERROR` if omitted or malformed).
+     - Verifies event existence (`404 EVENT_NOT_FOUND`) and verifies ticket category belongs to requested event (`404 CATEGORY_NOT_FOUND`).
+     - Queries resting orders (`status: { in: ['OPEN', 'PARTIALLY_FILLED'] }`, `remainingQuantity: { gt: 0 }`).
+     - Preserves price-time priority: bids ordered `[{ price: 'desc' }, { sequenceNumber: 'asc' }]`; asks ordered `[{ price: 'asc' }, { sequenceNumber: 'asc' }]`.
+     - Returns envelope with `id`, `eventId`, `categoryId`, `eventName`, `categoryName`, `type: 'PRICE_TIME_PRIORITY'`, `bestBid`, `bestAsk`, `spread`, `bids`, `asks`, `depth: { bids, asks }`, and `updatedAt`.
+  2. `GET /api/v1/orderbook/:id/depth` (and `/orderbook/:id/depth`):
+     - Validates `:id` via `orderbookDepthParamsSchema` (accepts standard UUID or composite `uuid:uuid`; returns `400 VALIDATION_ERROR` for invalid formats).
+     - Resolves market context without guessing:
+       - If composite `eventId:categoryId`, queries depth directly.
+       - If UUID matches a `TicketCategory`, queries depth using category's `eventId` and `id`.
+       - If UUID matches an `Order`, queries depth using order's `eventId` and `ticketCategoryId`.
+       - If not found as any valid market entity, returns `404 ORDERBOOK_NOT_FOUND`.
+     - Reuses existing `marketService.getMarketDepth(eventId, categoryId, { limit })`, guaranteeing identical depth levels and zero logic duplication.
+- **Test Suite & Verification**:
+  - Dedicated HTTP integration suite: `backend/tests/orderbook/orderbook-api.test.js` (28 test cases covering public unauthenticated access, root and versioned path aliases, price-time priority order sorting, depth level aggregations with orderCount and totalQuantity, exclusion of cancelled/rejected/filled orders, multi-event market isolation, participant privacy guarantees, ticketCategoryId query alias, limit pagination, 400 validation errors, 404 not found errors, composite/category/order depth resolutions, identical depth response matching existing market routes, and thin compatibility routes).
+  - Combined regression verification: 229 tests passing across all 9 primary test suites (`orderbook-api.test.js` [28], `market.test.js` [20], `settlement-escrow-api.test.js` [33], `trade-read-api.test.js` [32], `order-read-api.test.js` [31], `order-api.test.js` [18], `wallet-api.test.js` [34], `market-isolation.test.js` [17], `price-time-priority.test.js` [16]).
+
 
 
 
