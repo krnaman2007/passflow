@@ -222,34 +222,76 @@ export class HistoryService {
    * Get past trades / executions involving the user.
    *
    * @param {string} userId
-   * @param {object} query - { page, limit }
+   * @param {object} query - { status, settlementStatus, side, eventId, event, ticketCategoryId, categoryId, page, limit }
    * @returns {Promise<object>}
    */
   async getTrades(userId, query = {}) {
+    const db = this?.prisma || prisma;
     const page = Math.max(1, parseInt(query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20));
     const skip = (page - 1) * limit;
 
+    let normalizedSide = query.side ? String(query.side).trim().toUpperCase() : undefined;
+    if (normalizedSide === 'BUY') normalizedSide = 'BID';
+    if (normalizedSide === 'SELL') normalizedSide = 'ASK';
+
+    const statusFilter = (query.settlementStatus || query.status)
+      ? String(query.settlementStatus || query.status).trim().toUpperCase()
+      : undefined;
+
+    const eventId = query.eventId || query.event;
+    const ticketCategoryId = query.ticketCategoryId || query.categoryId;
+
+    const incomingMatch = {
+      userId,
+      ...(normalizedSide ? { side: normalizedSide } : {}),
+      ...(eventId ? { eventId } : {}),
+      ...(ticketCategoryId ? { ticketCategoryId } : {}),
+    };
+    const restingMatch = {
+      userId,
+      ...(normalizedSide ? { side: normalizedSide } : {}),
+      ...(eventId ? { eventId } : {}),
+      ...(ticketCategoryId ? { ticketCategoryId } : {}),
+    };
+
     const whereClause = {
       OR: [
-        { incomingOrder: { userId } },
-        { restingOrder: { userId } },
+        { incomingOrder: incomingMatch },
+        { restingOrder: restingMatch },
       ],
+      ...(statusFilter ? { settlementStatus: statusFilter } : {}),
     };
 
     const [total, executions] = await Promise.all([
-      prisma.execution.count({ where: whereClause }),
-      prisma.execution.findMany({
+      db.execution.count({ where: whereClause }),
+      db.execution.findMany({
         where: whereClause,
-        orderBy: { executedAt: 'desc' },
+        orderBy: [{ sequenceNumber: 'desc' }, { executedAt: 'desc' }],
         skip,
         take: limit,
         include: {
           incomingOrder: {
-            select: { id: true, userId: true, side: true, eventId: true, ticketCategoryId: true },
+            select: {
+              id: true,
+              userId: true,
+              side: true,
+              eventId: true,
+              ticketCategoryId: true,
+              event: { select: { id: true, name: true, location: true, dateTime: true } },
+              ticketCategory: { select: { id: true, name: true, originalPrice: true } },
+            },
           },
           restingOrder: {
-            select: { id: true, userId: true, side: true, eventId: true, ticketCategoryId: true },
+            select: {
+              id: true,
+              userId: true,
+              side: true,
+              eventId: true,
+              ticketCategoryId: true,
+              event: { select: { id: true, name: true, location: true, dateTime: true } },
+              ticketCategory: { select: { id: true, name: true, originalPrice: true } },
+            },
           },
         },
       }),
@@ -257,18 +299,33 @@ export class HistoryService {
 
     const trades = executions.map((exec) => {
       const isIncoming = exec.incomingOrder.userId === userId;
-      const userSide = isIncoming ? exec.incomingOrder.side : exec.restingOrder.side;
+      const userOrder = isIncoming ? exec.incomingOrder : exec.restingOrder;
+      const userSide = userOrder.side;
+      const userRole = isIncoming ? 'TAKER' : 'MAKER';
 
       return {
         id: exec.id,
+        tradeId: exec.id,
+        executionId: exec.id,
+        orderId: userOrder.id,
+        role: userRole,
+        side: userSide,
         price: exec.price,
         quantity: exec.quantity,
         totalAmount: (exec.price * exec.quantity) / 100,
+        totalAmountPaise: String(BigInt(exec.price) * BigInt(exec.quantity)),
+        sequenceNumber: exec.sequenceNumber != null ? String(exec.sequenceNumber) : null,
         settlementStatus: exec.settlementStatus,
-        side: userSide,
-        eventId: exec.incomingOrder.eventId,
-        ticketCategoryId: exec.incomingOrder.ticketCategoryId,
-        executedAt: exec.executedAt,
+        eventId: userOrder.eventId,
+        eventName: userOrder.event?.name,
+        ticketCategoryId: userOrder.ticketCategoryId,
+        categoryName: userOrder.ticketCategory?.name,
+        event: userOrder.event,
+        ticketCategory: userOrder.ticketCategory,
+        executedAt:
+          exec.executedAt instanceof Date
+            ? exec.executedAt.toISOString()
+            : exec.executedAt,
       };
     });
 
@@ -282,7 +339,133 @@ export class HistoryService {
       },
     };
   }
+
+  /**
+   * Retrieves trade/execution details for a specific execution ID.
+   * Enforces strict participant authorization: the authenticated user must be either
+   * the incomingOrder owner or the restingOrder owner.
+   *
+   * @param {Object} params
+   * @param {string} params.tradeId
+   * @param {string} params.userId
+   * @returns {Promise<Object>} Sanitized trade details with persisted settlement state
+   */
+  async getTradeById({ tradeId, userId }) {
+    const db = this?.prisma || prisma;
+
+    if (!tradeId) {
+      const err = new Error('Trade ID is required');
+      err.code = 'VALIDATION_ERROR';
+      throw err;
+    }
+    if (!userId) {
+      const err = new Error('User ID is required');
+      err.code = 'UNAUTHORIZED';
+      throw err;
+    }
+
+    const execution = await db.execution.findUnique({
+      where: { id: tradeId },
+      include: {
+        incomingOrder: {
+          select: {
+            id: true,
+            userId: true,
+            side: true,
+            eventId: true,
+            ticketCategoryId: true,
+            event: { select: { id: true, name: true, location: true, dateTime: true } },
+            ticketCategory: { select: { id: true, name: true, originalPrice: true } },
+          },
+        },
+        restingOrder: {
+          select: {
+            id: true,
+            userId: true,
+            side: true,
+            eventId: true,
+            ticketCategoryId: true,
+            event: { select: { id: true, name: true, location: true, dateTime: true } },
+            ticketCategory: { select: { id: true, name: true, originalPrice: true } },
+          },
+        },
+        settlement: {
+          select: {
+            id: true,
+            quantity: true,
+            executionPricePaise: true,
+            executionCostPaise: true,
+            priceImprovementPaise: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+
+    if (!execution) {
+      const err = new Error(`Trade not found: ${tradeId}`);
+      err.code = 'TRADE_NOT_FOUND';
+      throw err;
+    }
+
+    const isIncoming = execution.incomingOrder.userId === userId;
+    const isResting = execution.restingOrder.userId === userId;
+
+    if (!isIncoming && !isResting) {
+      const err = new Error('You are not authorized to view this trade');
+      err.code = 'FORBIDDEN';
+      throw err;
+    }
+
+    const userOrder = isIncoming ? execution.incomingOrder : execution.restingOrder;
+    const userRole = isIncoming ? 'TAKER' : 'MAKER';
+    const userSide = userOrder.side;
+
+    return {
+      id: execution.id,
+      tradeId: execution.id,
+      executionId: execution.id,
+      orderId: userOrder.id,
+      role: userRole,
+      side: userSide,
+      price: execution.price,
+      quantity: execution.quantity,
+      totalAmount: (execution.price * execution.quantity) / 100,
+      totalAmountPaise: String(BigInt(execution.price) * BigInt(execution.quantity)),
+      sequenceNumber: execution.sequenceNumber != null ? String(execution.sequenceNumber) : null,
+      settlementStatus: execution.settlementStatus,
+      settlement: execution.settlement
+        ? {
+            id: execution.settlement.id,
+            settledAt:
+              execution.settlement.createdAt instanceof Date
+                ? execution.settlement.createdAt.toISOString()
+                : execution.settlement.createdAt,
+            executionPricePaise: execution.settlement.executionPricePaise,
+            executionCostPaise:
+              execution.settlement.executionCostPaise != null
+                ? String(execution.settlement.executionCostPaise)
+                : undefined,
+            priceImprovementPaise:
+              execution.settlement.priceImprovementPaise != null
+                ? String(execution.settlement.priceImprovementPaise)
+                : undefined,
+          }
+        : null,
+      eventId: userOrder.eventId,
+      eventName: userOrder.event?.name,
+      event: userOrder.event,
+      ticketCategoryId: userOrder.ticketCategoryId,
+      categoryName: userOrder.ticketCategory?.name,
+      ticketCategory: userOrder.ticketCategory,
+      executedAt:
+        execution.executedAt instanceof Date
+          ? execution.executedAt.toISOString()
+          : execution.executedAt,
+    };
+  }
 }
 
 export const historyService = new HistoryService();
 export default historyService;
+

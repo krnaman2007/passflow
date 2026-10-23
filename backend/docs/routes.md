@@ -84,6 +84,14 @@ This document tracks active API routes and planned route additions as the PassFl
 | `GET` | `/orders/:id/trades` *(also `/api/v1/orders/:id/trades`)* | Return executions/trades associated with specified order (ownership strictly enforced) | User (Owner) | None | `{"success": true, "data": {"orderId": "...", "trades": [...], "executions": [...], "total": 1}}` | Active |
 | `DELETE` | `/orders/:id` *(also `/api/v1/orders/:id`)* | Cancel an open or partially filled order and release remaining unfilled reservations | User (Owner) | None (Header: `Idempotency-Key`) | `{"success": true, "data": {"orderId": "...", "status": "CANCELLED", "cancelledQuantity": 1, "remainingQuantity": 0, ...}}` | Active |
 
+### Secondary Market Trades (`/trades`, `/api/v1/trades`, `/events/:id/trades`)
+
+| Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `GET` | `/trades` *(also `/api/v1/trades`)* | List authenticated user's executed trades with status, side, event, category filters & pagination | User | None (Query: `settlementStatus`, `status`, `side`, `eventId`, `event`, `ticketCategoryId`, `categoryId`, `page`, `limit`) | `{"success": true, "data": {"trades": [...], "pagination": {"page": 1, "limit": 20, "total": 2, "totalPages": 1}}}` | Active |
+| `GET` | `/trades/:id` *(also `/api/v1/trades/:id`)* | Return trade/execution details, role (MAKER/TAKER), and actual persisted settlement receipt facts (participant authorized) | User (Participant) | None | `{"success": true, "data": {"id": "...", "tradeId": "...", "executionId": "...", "orderId": "...", "role": "TAKER", "side": "BID", "price": 3000, "quantity": 1, "totalAmount": 30, "totalAmountPaise": "3000", "sequenceNumber": "1", "settlementStatus": "SETTLED", "settlement": {"id": "...", "settledAt": "...", "executionPricePaise": 3000, "executionCostPaise": "3000", "priceImprovementPaise": "0"}, ...}}` | Active |
+| `GET` | `/events/:id/trades` *(also `/api/v1/events/:id/trades`)* | Public recent executions for an event with optional category filter, ordered descending by sequence | Public | None (Query: `categoryId`, `ticketCategoryId`, `page`, `limit`) | `{"success": true, "data": {"trades": [{"id": "...", "price": 3000, "quantity": 1, "sequenceNumber": "1", "timestamp": "...", "executedAt": "...", "eventId": "...", "categoryId": "..."}], "total": 1, "pagination": {"page": 1, "limit": 20, "total": 1, "totalPages": 1}}}` | Active |
+
 ### Platform Administration & Moderation
 
 | Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
@@ -2273,6 +2281,42 @@ model TradeSettlement {
 - **Test Suite & Verification**:
   - Dedicated HTTP integration suite: `backend/tests/order/order-read-api.test.js` (35 test cases covering authentication, ownership denial, nonexistent IDs, empty listings, side/status/event filtering, pagination boundaries, maker/taker execution roles, order trades, and Map-based deduplication invariant).
   - Combined regression verification: 83 tests passing across `order-read-api.test.js`, `order-api.test.js`, and `wallet-api.test.js`.
+
+### 5.22 Phase 4 — Secondary Market Trade Read APIs Implementation
+
+- **Scope & Objectives**:
+  - Implement and expose REST read endpoints for secondary market executions and trades:
+    1. `GET /api/v1/trades` (with backward-compatible root alias `/trades`) — authenticated user's executed trades, with supported status, side, event, and category filters plus pagination.
+    2. `GET /api/v1/trades/:id` (with backward-compatible root alias `/trades/:id`) — trade/execution details, authenticated participant's perspective role (`MAKER`/`TAKER`), side (`BID`/`ASK`), order ID, and actual persisted settlement receipt facts.
+    3. `GET /api/v1/events/:id/trades` (with backward-compatible root alias `/events/:id/trades`) — public recent executions for an event, with optional ticket category filtering and descending sequence ordering.
+  - Strict participant authorization: `GET /api/v1/trades/:id` strictly enforces that the calling authenticated user is an execution participant (`incomingOrder.userId === userId || restingOrder.userId === userId`). Non-participants receive `403 FORBIDDEN`. Non-existent IDs return `404 TRADE_NOT_FOUND`.
+  - Privacy guard: Never expose counterparty `userId`, counterparty `orderId`, wallet IDs, or internal hold IDs (`buyerHoldId`) in private trade responses or public event streams.
+  - Role & side perspective mapping: Private trades project role (`TAKER` for incoming order, `MAKER` for resting order), order side (`BID`/`ASK`), and authenticated user's own `orderId`.
+  - Durable settlement receipts: Return actual persisted settlement status (`PENDING`, `SETTLED`, `MANUAL_REVIEW`) and underlying `TradeSettlement` receipt facts (`executionPricePaise`, `executionCostPaise`, `priceImprovementPaise`, `createdAt`) without inventing synthetic states.
+  - Public visibility: `GET /events/:id/trades` exposes strictly public execution fields (`id`, `price`, `quantity`, `sequenceNumber`, `timestamp`, `executedAt`, `eventId`, `categoryId`), validates event and ticket category existence (`404 EVENT_NOT_FOUND`, `404 CATEGORY_NOT_FOUND`), and sorts in reverse chronological / sequence order.
+  - Zero schema changes: 100% compliant with existing Prisma models (`Execution`, `TradeSettlement`, `Order`, `Event`, `TicketCategory`) and enums (`SettlementStatus`).
+- **Endpoint Implementation Details**:
+  1. `GET /api/v1/trades` (and `/trades`):
+     - Authenticated user paginated executed trade listing.
+     - Supports filters: `settlementStatus` / `status` (`PENDING`, `SETTLED`, `MANUAL_REVIEW`), `side` (`BID`, `ASK`, `BUY`, `SELL`), `eventId` / `event`, `ticketCategoryId` / `categoryId`.
+     - Validates query params via Zod `queryTradesSchema` (rejects invalid sides, statuses, or non-positive pagination with `400 VALIDATION_ERROR`).
+     - Returns envelope `{ success: true, data: { trades: [...], pagination: { page, limit, total, totalPages } } }` sorted descending by `sequenceNumber` and `executedAt`.
+  2. `GET /api/v1/trades/:id` (and `/trades/:id`):
+     - Authenticated trade details lookup with persisted settlement receipt facts.
+     - Validates params via Zod `getTradeParamsSchema`.
+     - Enforces participant check: returns `403 FORBIDDEN` if caller is neither incoming nor resting order owner; returns `404 TRADE_NOT_FOUND` if trade does not exist.
+     - Returns trade details with caller's perspective role and side, calculated total amounts, and nullable `settlement` object containing durable settlement receipt facts.
+  3. `GET /api/v1/events/:id/trades` (and `/events/:id/trades`):
+     - Public unauthenticated recent executions feed for an event.
+     - Validates params and query via Zod `eventTradesParamsSchema` and `queryEventTradesSchema`.
+     - Verifies event existence (`404 EVENT_NOT_FOUND`) and category existence (`404 CATEGORY_NOT_FOUND`) before execution query.
+     - Returns envelope `{ success: true, data: { trades: [...], total, pagination: { page, limit, total, totalPages } } }` containing only safe public attributes.
+- **Data Model & Schema Verification**:
+  - No database migration required. Prisma `Execution`, `TradeSettlement`, `Order`, `Event`, and `TicketCategory` models provide complete relational support.
+- **Test Suite & Verification**:
+  - Dedicated HTTP integration suite: `backend/tests/trade/trade-read-api.test.js` (32 test cases covering authentication, participant authorization denial, privacy exclusion of counterparty IDs, missing IDs, side/settlementStatus/event/category filtering, pagination boundaries, maker/taker perspective, settlement receipt projection, and public event trades).
+  - Combined regression verification: 115 tests passing across `trade-read-api.test.js` (32 tests), `order-read-api.test.js` (31 tests), `order-api.test.js` (18 tests), and `wallet-api.test.js` (34 tests).
+
 
 
 

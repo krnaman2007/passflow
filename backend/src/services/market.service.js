@@ -278,6 +278,99 @@ export const marketService = {
   },
 
   /**
+   * Public recent executions for an event, with optional ticket category filtering and pagination.
+   * Exposes only approved public execution fields; omits all internal user, order, hold, or counterparty IDs.
+   *
+   * @param {string} eventId - Target event UUID.
+   * @param {object} [query] - { categoryId, ticketCategoryId, page, limit }
+   * @returns {Promise<object>} Public recent executions list.
+   */
+  async getEventTrades(eventId, query = {}) {
+    const page = Math.max(1, parseInt(query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 50));
+    const skip = (page - 1) * limit;
+
+    const categoryId = query.categoryId || query.ticketCategoryId || null;
+
+    // 1. Verify event exists
+    const event = await prisma.event.findUnique({
+      where: { id: eventId },
+      select: { id: true, name: true, location: true, dateTime: true },
+    });
+    if (!event) {
+      throw new AppError('Event not found', 404, 'EVENT_NOT_FOUND');
+    }
+
+    // 2. If category is supplied, verify it exists for this event
+    let category = null;
+    if (categoryId) {
+      category = await prisma.ticketCategory.findFirst({
+        where: { id: categoryId, eventId },
+        select: { id: true, name: true },
+      });
+      if (!category) {
+        throw new AppError('Ticket category not found for event', 404, 'CATEGORY_NOT_FOUND');
+      }
+    }
+
+    // 3. Query executions for this event (and optional category)
+    const where = {
+      incomingOrder: {
+        eventId,
+        ...(categoryId ? { ticketCategoryId: categoryId } : {}),
+      },
+    };
+
+    const [total, executions] = await Promise.all([
+      prisma.execution.count({ where }),
+      prisma.execution.findMany({
+        where,
+        take: limit,
+        skip,
+        orderBy: [{ sequenceNumber: 'desc' }, { executedAt: 'desc' }],
+        select: {
+          id: true,
+          price: true,
+          quantity: true,
+          sequenceNumber: true,
+          executedAt: true,
+          incomingOrder: {
+            select: {
+              ticketCategoryId: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const trades = executions.map((e) => ({
+      id: e.id,
+      tradeId: e.id,
+      eventId,
+      categoryId: e.incomingOrder.ticketCategoryId,
+      ticketCategoryId: e.incomingOrder.ticketCategoryId,
+      price: e.price,
+      quantity: e.quantity,
+      sequenceNumber: e.sequenceNumber != null ? String(e.sequenceNumber) : null,
+      timestamp: e.executedAt instanceof Date ? e.executedAt.toISOString() : e.executedAt,
+      executedAt: e.executedAt instanceof Date ? e.executedAt.toISOString() : e.executedAt,
+    }));
+
+    return {
+      eventId,
+      eventName: event.name,
+      ...(categoryId ? { categoryId, categoryName: category?.name } : {}),
+      trades,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit) || 1,
+      },
+    };
+  },
+
+  /**
    * Retrieves summary of top events by volume and price movement.
    *
    * @param {object} [options] - limit, sortBy ('volume' | 'priceMovement' | 'trades'), timeframe

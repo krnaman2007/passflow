@@ -175,6 +175,21 @@ export const eventController = {
       next(err);
     }
   },
+
+  /**
+   * GET /events/:id/trades - Public recent executions for an event (optional category filter)
+   */
+  async getEventTrades(req, res, next) {
+    try {
+      const eventId = req.params.id;
+      const query = req.validatedQuery || req.query;
+      const data = await marketService.getEventTrades(eventId, query);
+      res.status(200).json(successResponse(data));
+    } catch (err) {
+      next(err);
+    }
+  },
 };
 
 export default eventController;
+

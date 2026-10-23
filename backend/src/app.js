@@ -14,6 +14,7 @@ import notificationRoutes from './routes/notification.routes.js';
 import dutchAuctionRoutes from './routes/dutch-auction.routes.js';
 import ticketRoutes from './routes/ticket.routes.js';
 import walletRoutes from './routes/wallet.routes.js';
+import tradeRoutes from './routes/trade.routes.js';
 import errorHandler from './middleware/errorHandler.js';
 
 const app = express();
@@ -73,6 +74,10 @@ app.use('/api/v1/market', marketRoutes);
 // Secondary Market Order Routes (Authenticated)
 app.use('/orders', orderRoutes);
 app.use('/api/v1/orders', orderRoutes);
+
+// Secondary Market Trade Routes (Authenticated)
+app.use('/trades', tradeRoutes);
+app.use('/api/v1/trades', tradeRoutes);
 
 // Wallet & Ledger Routes (Authenticated)
 app.use('/wallet', walletRoutes);

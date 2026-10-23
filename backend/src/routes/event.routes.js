@@ -16,6 +16,10 @@ import {
   priceHistoryParamsSchema,
   queryPriceHistorySchema,
 } from '../schemas/market.schema.js';
+import {
+  eventTradesParamsSchema,
+  queryEventTradesSchema,
+} from '../schemas/trade.schema.js';
 
 const router = express.Router();
 
@@ -70,6 +74,14 @@ router.get(
   validate(priceHistoryParamsSchema, 'params'),
   validate(queryPriceHistorySchema, 'query'),
   eventController.getPriceHistory
+);
+
+// GET /events/:id/trades - Public recent executed trades for an event (Public)
+router.get(
+  '/events/:id/trades',
+  validate(eventTradesParamsSchema, 'params'),
+  validate(queryEventTradesSchema, 'query'),
+  eventController.getEventTrades
 );
 
 // ==========================================
