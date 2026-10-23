@@ -92,6 +92,14 @@ This document tracks active API routes and planned route additions as the PassFl
 | `GET` | `/trades/:id` *(also `/api/v1/trades/:id`)* | Return trade/execution details, role (MAKER/TAKER), and actual persisted settlement receipt facts (participant authorized) | User (Participant) | None | `{"success": true, "data": {"id": "...", "tradeId": "...", "executionId": "...", "orderId": "...", "role": "TAKER", "side": "BID", "price": 3000, "quantity": 1, "totalAmount": 30, "totalAmountPaise": "3000", "sequenceNumber": "1", "settlementStatus": "SETTLED", "settlement": {"id": "...", "settledAt": "...", "executionPricePaise": 3000, "executionCostPaise": "3000", "priceImprovementPaise": "0"}, ...}}` | Active |
 | `GET` | `/events/:id/trades` *(also `/api/v1/events/:id/trades`)* | Public recent executions for an event with optional category filter, ordered descending by sequence | Public | None (Query: `categoryId`, `ticketCategoryId`, `page`, `limit`) | `{"success": true, "data": {"trades": [{"id": "...", "price": 3000, "quantity": 1, "sequenceNumber": "1", "timestamp": "...", "executedAt": "...", "eventId": "...", "categoryId": "..."}], "total": 1, "pagination": {"page": 1, "limit": 20, "total": 1, "totalPages": 1}}}` | Active |
 
+### Secondary Market Settlements & Escrows (`/settlements`, `/api/v1/settlements`, `/escrows`, `/api/v1/escrows`)
+
+| Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `GET` | `/settlements/:id` *(also `/api/v1/settlements/:id`)* | Retrieve settlement status and available persisted settlement receipt details (participant or admin authorized) | User (Participant / Admin) | None | `{"success": true, "data": {"id": "...", "executionId": "...", "status": "SETTLED", "role": "TAKER", "side": "BID", "orderId": "...", "price": 3000, "quantity": 1, "totalAmountPaise": "3000", "sequenceNumber": "1", "hasReceipt": true, "settlement": {"id": "...", "settledAt": "...", "executionPricePaise": 3000, "executionCostPaise": "3000", "priceImprovementPaise": "0", "quantity": 1}}}` | Active |
+| `POST` | `/settlements/:id/retry` *(also `/api/v1/settlements/:id/retry`)* | Authorized administrator request to safely retry a failed or recoverable pending settlement | Admin | None | `{"success": true, "data": {"executionId": "...", "status": "SETTLED", "message": "Settlement retry completed successfully", "isIdempotentReplay": false, "settlement": {...}}}` | Active |
+| `GET` | `/escrows/:id` *(also `/api/v1/escrows/:id`)* | Retrieve persisted escrow hold status and amounts (resolves by WalletHold ID or linked Order ID) | User (Owner / Admin) | None | `{"success": true, "data": {"id": "...", "orderId": "...", "reason": "ORDER_ESCROW", "status": "ACTIVE", "heldAmountPaise": "3000", "remainingAmountPaise": "3000", "releasedAmountPaise": "0", "createdAt": "...", "updatedAt": "..."}}` | Active |
+
 ### Platform Administration & Moderation
 
 | Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
@@ -2316,6 +2324,46 @@ model TradeSettlement {
 - **Test Suite & Verification**:
   - Dedicated HTTP integration suite: `backend/tests/trade/trade-read-api.test.js` (32 test cases covering authentication, participant authorization denial, privacy exclusion of counterparty IDs, missing IDs, side/settlementStatus/event/category filtering, pagination boundaries, maker/taker perspective, settlement receipt projection, and public event trades).
   - Combined regression verification: 115 tests passing across `trade-read-api.test.js` (32 tests), `order-read-api.test.js` (31 tests), `order-api.test.js` (18 tests), and `wallet-api.test.js` (34 tests).
+
+### 5.23 Phase 5 — Settlement & Escrow APIs Implementation
+
+- **Scope & Objectives**:
+  - Implement and expose REST read and administrative retry endpoints for secondary market settlements and escrow holds:
+    1. `GET /api/v1/settlements/:id` (with backward-compatible root alias `/settlements/:id`) — retrieve settlement status, participant perspective role/side/orderId, and available persisted settlement receipt details.
+    2. `GET /api/v1/escrows/:id` (with backward-compatible root alias `/escrows/:id`) — retrieve real persisted escrow hold status and amounts from `WalletHold` records (resolving by hold ID or linked order ID).
+    3. `POST /api/v1/settlements/:id/retry` (with backward-compatible root alias `/settlements/:id/retry`) — authorized administrator request to safely retry an eligible `PENDING` execution without duplicate financial effects.
+  - Strict authorization and privacy guards:
+    - `GET /settlements/:id`: participant authorization or administrator access (`403 FORBIDDEN` for non-participants). Counterparty user IDs, counterparty order IDs, wallet IDs, and internal hold IDs (`buyerHoldId`) are strictly excluded from participant payloads.
+    - `GET /escrows/:id`: hold owner or administrator access (`403 FORBIDDEN` for non-owners). Internal `walletId` and `operationId` are omitted for regular users.
+    - `POST /settlements/:id/retry`: administrator authorization required (`requireAdmin`, `403 FORBIDDEN` for regular users).
+  - Concrete persisted records:
+    - Escrow and fund holds are represented by real `WalletHold` records (`reason: 'ORDER_ESCROW'`, `'WITHDRAWAL_ESCROW'`, `'ADMINISTRATIVE_HOLD'`) rather than an invented model.
+    - Settlements are represented by separate `Execution` (matching) and `TradeSettlement` (receipt) records. Missing settlement receipts (`status: 'PENDING'` or `'MANUAL_REVIEW'`) are clearly distinguished from completed settlements (`hasReceipt: false`, `settlement: null`).
+  - Safe recovery and retry semantics:
+    - Rejects already-settled executions (`409 SETTLEMENT_ALREADY_SETTLED`).
+    - Rejects executions marked for manual review (`409 SETTLEMENT_MANUAL_REVIEW_REQUIRED`).
+    - Reuses existing atomic, serializable `TradeSettlementService.settleExecution` to eliminate race conditions, duplicate wallet movements, duplicate ticket transfers, or duplicate settlement receipts during concurrent retry requests.
+    - Records append-only administrative audit log entries (`action: 'SETTLEMENT_RETRY'`) in `AuditLog`.
+  - Zero database migrations required: 100% compliant with existing Prisma models (`Execution`, `TradeSettlement`, `WalletHold`, `Wallet`, `Ticket`, `AuditLog`) and enums (`SettlementStatus`, `HoldStatus`, `HoldReason`).
+- **Endpoint Implementation Details**:
+  1. `GET /api/v1/settlements/:id` (and `/settlements/:id`):
+     - Validates UUID via Zod `getSettlementParamsSchema` (`400 VALIDATION_ERROR`).
+     - Looks up execution by `executionId` or `tradeSettlement.id` (`404 SETTLEMENT_NOT_FOUND`).
+     - Participant perspective returns `{ executionId, status, role, side, orderId, price, quantity, totalAmountPaise, sequenceNumber, executedAt, hasReceipt, settlement }`.
+     - Admin perspective returns operational context including `buyerOrderId` and `sellerOrderId`.
+  2. `GET /api/v1/escrows/:id` (and `/escrows/:id`):
+     - Validates UUID via Zod `getEscrowParamsSchema` (`400 VALIDATION_ERROR`).
+     - Looks up `WalletHold` by hold `id` or linked `orderId` (`404 ESCROW_NOT_FOUND`).
+     - Returns real persisted status (`ACTIVE`, `PARTIALLY_SETTLED`, `SETTLED`, `PARTIALLY_RELEASED`, `RELEASED`) and stringified minor-unit paise amounts (`heldAmountPaise`, `remainingAmountPaise`, `releasedAmountPaise`).
+  3. `POST /api/v1/settlements/:id/retry` (and `/settlements/:id/retry`):
+     - Validates UUID via Zod `retrySettlementParamsSchema` (`400 VALIDATION_ERROR`).
+     - Enforces administrator authorization (`requireAdmin`, `403 FORBIDDEN`).
+     - Validates execution eligibility under existing state machine (`409` if `SETTLED` or `MANUAL_REVIEW`).
+     - Executes retry via `TradeSettlementService.settleExecution`, records non-blocking `AuditLog` entry, and returns resulting settlement receipt facts.
+- **Test Suite & Verification**:
+  - Dedicated HTTP integration suite: `backend/tests/settlement/settlement-escrow-api.test.js` (33 test cases covering authentication, admin authorization, participant privacy, missing/invalid IDs, pending/settled/manual-review states, escrow hold amounts, retry state transitions, audit logging, and concurrent idempotency protection).
+  - Combined regression verification: 180 tests passing across `settlement-escrow-api.test.js` (33 tests), `trade-read-api.test.js` (32 tests), `order-read-api.test.js` (31 tests), `order-api.test.js` (18 tests), `wallet-api.test.js` (34 tests), `trade-settlement-postgres.test.js` (18 tests), and `durable-settlement-recovery.test.js` (14 tests).
+
 
 
 
