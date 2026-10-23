@@ -2003,6 +2003,60 @@ model TradeSettlement {
   - Step 9.14 Integration Suite: `backend/tests/matching/distributed-market-leases.test.js` (12 tests, 100% pass).
   - Complete Core Backend Regression: 24 test suites, 427 tests passed, 0 failures.
 
+#### 5.18.21 Step 9.16 Secondary Market Real-Time WebSocket Streaming & Event Subscriptions
+- **Objective & Architecture**:
+  - Real-time event streaming for secondary market trading using the project's existing Socket.IO server (`server.js`).
+  - Completely read-only from the client socket perspective: clients cannot submit order placements, cancellations, matching, wallet mutations, or settlements via WebSocket events.
+  - Integrated post-commit publication with `OrderService` and `PersistentMatchingService` while strictly preserving financial invariants, distributed market leases, fencing tokens, and durable settlement recovery.
+- **Versioned Event Contracts (`v: 1`)**:
+  - `market:snapshot` (Server -> Client):
+    - Emitted upon public market subscription or explicit resync request.
+    - Authoritative persisted state generated from PostgreSQL (`bids`, `asks`, `bestBid`, `bestAsk`, `lastPrice`, `spread`, `sequenceNumber`, `timestamp`).
+    - Monotonic sequence cursor reflects the highest execution sequence number in the market.
+  - `market:orderbook` (Server -> Public Room):
+    - Emitted on depth and resting level updates triggered by order placements, matches, or cancellations (`action`: `'LEVEL_UPDATE'` | `'TRADE_MATCH'` | `'ORDER_CANCEL'`).
+    - Contains current aggregated bids and asks, sequence number, and timestamp.
+  - `market:trade` (Server -> Public Room):
+    - Emitted for newly executed and persisted trades (`tradeId`, `price`, `quantity`, `sequenceNumber`, `executedAt`).
+    - Strict Data Sanitization: zero exposure of `userId`, `walletId`, `fencingToken`, or private hold IDs.
+  - `order:fill` (Server -> Private Room `user:${userId}`):
+    - Emitted strictly to the authenticated order owner's server-controlled room.
+    - Contains `orderId`, `side`, `status`, `fillPrice`, `fillQuantity`, `remainingQuantity`, `sequenceNumber`, `tradeId`, `timestamp`.
+    - Emitted for both the incoming order owner and resting order counterparty owner upon match execution.
+    - Emitted with `status: 'CANCELLED'` upon order cancellation.
+  - `market:error` (Server -> Client):
+    - Sanitized error notification (`code`, `message`, `eventId`, `ticketCategoryId`, `timestamp`).
+    - Codes include: `INVALID_PAYLOAD`, `MARKET_NOT_FOUND`, `UNAUTHORIZED`, `SUBSCRIPTION_LIMIT_EXCEEDED`, `RATE_LIMITED`, `FORBIDDEN_MUTATION`, `SNAPSHOT_ERROR`.
+- **Authentication & Server-Controlled Room Authorization**:
+  - Handshake Authentication: validates `auth.token` or `headers.authorization` via `verifyAccessToken`. Rejects invalid credentials with explicit handshake error.
+  - Unauthenticated Connections: allowed for public order-book viewing; unauthenticated sockets cannot receive private `order:fill` notifications.
+  - In-Band Authentication: clients can authenticate post-connect via `socket.emit('authenticate', { token })`.
+  - Room Isolation:
+    - Private user room: `user:${userId}` derived strictly from verified JWT `decoded.userId`, never from client input.
+    - Public market room: `market:${eventId}:${ticketCategoryId}` derived from validated market identifiers.
+    - Arbitrary room joins and room-name injections (e.g. colons in identifiers) are strictly rejected.
+- **Snapshot Consistency & Gap Resynchronization Protocol**:
+  - Safe Subscription Sequencing: socket joins the Socket.IO room *before* querying PostgreSQL for snapshot state, ensuring concurrent events during query execution are delivered.
+  - Gap Detection: every trade and order-book event carries the monotonic execution sequence number (`sequenceNumber`). If a client detects a sequence jump (`E > expectedSequence + 1`), it emits `market:snapshot_request`.
+  - Self-Healing Resync: server responds with a fresh authoritative snapshot with current sequence cursor, re-anchoring client state without requiring socket reconnection.
+- **Commit-to-Broadcast Boundary & Crash Window**:
+  - Strict Post-Commit Guarantee: broadcast occurs strictly AFTER matching or cancellation database transactions successfully commit to PostgreSQL.
+  - Rollback Safety: rejected submissions and aborted transactions never trigger trade or depth broadcasts.
+  - Idempotent Deduplication: idempotent order submissions (`isDuplicate: true`) return committed results but suppress duplicate trade and fill broadcasts.
+  - Crash Window Disclosure: Socket.IO provides best-effort real-time delivery over authoritative PostgreSQL storage. If a process crashes in the millisecond window between database commit and socket emission, the committed state is preserved durably in PostgreSQL; clients reconnecting or querying snapshots automatically recover the committed state.
+- **Multi-Instance Scaling & Adapter Status**:
+  - Default deployment uses the in-memory `socket.io-adapter`.
+  - Under multi-instance backend deployments without a distributed pub/sub adapter (e.g. Redis adapter), room broadcasts remain local to the instance where matching executed.
+  - Multi-node production deployment requires sticky socket sessions or configuring `@socket.io/redis-adapter` when Redis is enabled. Market write authority remains governed exclusively by database-backed market leases and fencing tokens.
+- **Resource & Security Bounds**:
+  - Rate limit: max 30 subscription requests per 10-second sliding window per socket.
+  - Subscription cap: max 50 active market subscriptions per socket.
+  - Disconnect cleanup: subscription sets and tracking state are purged immediately upon socket disconnect.
+  - Mutation blocking: client emissions of `order:place`, `order:cancel`, `wallet:mutate`, etc. return `FORBIDDEN_MUTATION`.
+- **Automated Test Coverage**:
+  - Test Suite: `backend/tests/matching/market-stream-socket.test.js` (19 tests, 100% pass against isolated PostgreSQL).
+  - Comprehensive Core Regression: 24 test suites, 445 tests passed across matching, settlement, wallet, orders, readiness, and streaming.
+
 
 
 

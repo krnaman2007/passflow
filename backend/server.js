@@ -7,6 +7,7 @@ import { checkDatabaseConnections } from './src/db/index.js';
 import { tradeSettlementService, settlementRecoveryWorker } from './src/services/settlement/index.js';
 import { appLifecycleState } from './src/services/app-state.js';
 import { orderService } from './src/services/order/index.js';
+import { marketStreamService } from './src/services/market-stream/index.js';
 
 const server = http.createServer(app);
 
@@ -36,6 +37,10 @@ const io = new Server(server, {
     credentials: true,
   },
 });
+
+// Attach MarketStreamService to Socket.IO and OrderService
+marketStreamService.setServer(io);
+orderService.setMarketStreamService(marketStreamService);
 
 io.on('connection', (socket) => {
   logger.info(`⚡ Socket client connected: ${socket.id}`);
@@ -164,5 +169,5 @@ if (isDirectExecution && process.env.NODE_ENV !== 'test') {
   startServer().catch(() => {});
 }
 
-export { app, server, io, settlementRecoveryWorker };
+export { app, server, io, settlementRecoveryWorker, marketStreamService };
 export default server;

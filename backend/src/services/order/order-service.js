@@ -116,12 +116,22 @@ export class OrderService {
     }),
     orderRepository = new OrderRepository({ prismaClient }),
     settlementService = new TradeSettlementService({ prismaClient }),
+    marketStreamService = null,
   } = {}) {
     this.prisma = prismaClient;
     this.walletService = walletService;
     this.matchingService = matchingService;
     this.orderRepository = orderRepository;
     this.settlementService = settlementService;
+    this.marketStreamService = marketStreamService;
+  }
+
+  /**
+   * Sets or replaces the real-time MarketStreamService instance.
+   * @param {Object} service
+   */
+  setMarketStreamService(service) {
+    this.marketStreamService = service;
   }
 
   /**
@@ -589,6 +599,16 @@ export class OrderService {
     }
 
     await this._settleExecutions(submissionResult.executions);
+
+    // Step 9.16: Real-time WebSocket streaming (post-commit broadcast)
+    if (
+      this.marketStreamService &&
+      !submissionResult.isDuplicate &&
+      !submissionResult.isAmbiguousCommitResolved
+    ) {
+      await this._publishPlacementEvents(submissionResult, { eventId, ticketCategoryId });
+    }
+
     return {
       ...submissionResult,
       holdId: holdRecord ? holdRecord.id : null,
@@ -749,6 +769,32 @@ export class OrderService {
           },
         });
         releasedReservation = cancelledQuantity;
+      }
+    }
+
+    // Step 9.16: Real-time WebSocket streaming (post-commit cancellation broadcast)
+    if (this.marketStreamService && !cancelResult.isDuplicate && cancelledQuantity > 0) {
+      try {
+        this.marketStreamService.publishOrderFill({
+          userId: order.userId,
+          fill: {
+            orderId: order.id,
+            eventId: order.eventId,
+            ticketCategoryId: order.ticketCategoryId,
+            side: order.side,
+            status: 'CANCELLED',
+            fillPrice: null,
+            fillQuantity: 0,
+            remainingQuantity: 0,
+            sequenceNumber: '0',
+            tradeId: null,
+            timestamp: new Date().toISOString(),
+          },
+        });
+
+        await this._publishOrderBookUpdate(order.eventId, order.ticketCategoryId, 'ORDER_CANCEL');
+      } catch (broadcastErr) {
+        console.error('Failed to broadcast market stream events after order cancellation:', broadcastErr);
       }
     }
 
@@ -1005,6 +1051,127 @@ export class OrderService {
       return { ready: false, reason: 'Matching service uninitialized' };
     }
     return this.matchingService.checkReadiness();
+  }
+
+  /**
+   * Broadcasts public trades, private fills, and updated order book after an order commits.
+   *
+   * Invariants:
+   * 1. Executed ONLY after database transactions successfully commit.
+   * 2. Counterparty user IDs are resolved from authoritative database records.
+   * 3. Broadcast failures are caught and logged; they never roll back committed transactions.
+   *
+   * @private
+   * @param {Object} submissionResult
+   * @param {Object} marketInfo
+   * @param {string} marketInfo.eventId
+   * @param {string} marketInfo.ticketCategoryId
+   */
+  async _publishPlacementEvents(submissionResult, { eventId, ticketCategoryId }) {
+    if (!this.marketStreamService) return;
+
+    try {
+      const executions = submissionResult.executions || [];
+
+      if (executions.length > 0) {
+        // Query resting orders to resolve counterparty user IDs
+        const restingOrderIds = executions.map((e) => e.restingOrderId);
+        const restingOrders = await this.prisma.order.findMany({
+          where: { id: { in: restingOrderIds } },
+          select: { id: true, userId: true, side: true, status: true, remainingQuantity: true },
+        });
+        const restingOrderMap = new Map(restingOrders.map((o) => [o.id, o]));
+
+        for (const exec of executions) {
+          // Public trade execution broadcast (zero private data)
+          this.marketStreamService.publishMarketTrade({
+            eventId,
+            ticketCategoryId,
+            tradeId: exec.id,
+            price: exec.price,
+            quantity: exec.quantity,
+            sequenceNumber: exec.sequenceNumber,
+            executedAt: exec.executedAt,
+          });
+
+          // Private fill notification to incoming order owner
+          this.marketStreamService.publishOrderFill({
+            userId: submissionResult.userId,
+            fill: {
+              orderId: submissionResult.orderId,
+              eventId,
+              ticketCategoryId,
+              side: submissionResult.side,
+              status: submissionResult.status,
+              fillPrice: exec.price,
+              fillQuantity: exec.quantity,
+              remainingQuantity: submissionResult.remainingQuantity,
+              sequenceNumber: exec.sequenceNumber,
+              tradeId: exec.id,
+              timestamp: exec.executedAt ? new Date(exec.executedAt).toISOString() : new Date().toISOString(),
+            },
+          });
+
+          // Private fill notification to counterparty resting order owner
+          const resting = restingOrderMap.get(exec.restingOrderId);
+          if (resting && resting.userId) {
+            this.marketStreamService.publishOrderFill({
+              userId: resting.userId,
+              fill: {
+                orderId: resting.id,
+                eventId,
+                ticketCategoryId,
+                side: resting.side,
+                status: resting.remainingQuantity === 0 ? 'FILLED' : 'PARTIALLY_FILLED',
+                fillPrice: exec.price,
+                fillQuantity: exec.quantity,
+                remainingQuantity: resting.remainingQuantity,
+                sequenceNumber: exec.sequenceNumber,
+                tradeId: exec.id,
+                timestamp: exec.executedAt ? new Date(exec.executedAt).toISOString() : new Date().toISOString(),
+              },
+            });
+          }
+        }
+      }
+
+      // Broadcast updated orderbook depth to public room
+      await this._publishOrderBookUpdate(
+        eventId,
+        ticketCategoryId,
+        executions.length > 0 ? 'TRADE_MATCH' : 'LEVEL_UPDATE',
+        executions.length > 0 ? executions[executions.length - 1].sequenceNumber : null
+      );
+    } catch (broadcastErr) {
+      console.error('Failed to broadcast market stream events after order placement:', broadcastErr);
+    }
+  }
+
+  /**
+   * Broadcasts the current authoritative order book depth to the public market room.
+   *
+   * @private
+   * @param {string} eventId
+   * @param {string} ticketCategoryId
+   * @param {string} [action='LEVEL_UPDATE']
+   * @param {string|number|BigInt} [sequenceNumber=null]
+   */
+  async _publishOrderBookUpdate(eventId, ticketCategoryId, action = 'LEVEL_UPDATE', sequenceNumber = null) {
+    if (!this.marketStreamService) return;
+
+    try {
+      const snapshot = await this.marketStreamService.getAuthoritativeSnapshot(eventId, ticketCategoryId);
+      this.marketStreamService.publishOrderBookUpdate({
+        eventId,
+        ticketCategoryId,
+        sequenceNumber: sequenceNumber != null ? sequenceNumber.toString() : snapshot.sequenceNumber,
+        action,
+        bids: snapshot.bids,
+        asks: snapshot.asks,
+      });
+    } catch (err) {
+      console.error('Failed to publish orderbook update:', err);
+    }
   }
 }
 
