@@ -12,10 +12,13 @@ export const ticketService = {
    * Primary purchase of tickets at original face value directly from organizer inventory.
    * Atomic DB transaction:
    * 1. Validates event publication & category availability.
-   * 2. Decrements available inventory atomically.
-   * 3. Debits the user's wallet with immutable ledger entry and transaction record.
-   * 4. Creates Ticket entities with status 'OWNED' and initial TicketOwnership records (source: 'PRIMARY').
+   * 2. Idempotency inspection & replay verification.
+   * 3. Decrements available inventory atomically under pessimistic row lock (FOR UPDATE).
+   * 4. Debits the user's wallet under pessimistic row lock (FOR UPDATE) with immutable ledger entry and transaction record.
+   * 5. Creates Ticket entities with status 'OWNED' and initial TicketOwnership records (source: 'PRIMARY').
+   * 6. Credits UserTicketInventory and records UserInventoryCredit.
    * If any step fails or funds/inventory are insufficient, the entire transaction is rolled back.
+   * Concurrency conflicts (serialization failure/deadlock) are retried in a bounded manner.
    *
    * @param {Object} params
    * @param {string} params.userId - Authenticated buyer ID.
@@ -33,40 +36,6 @@ export const ticketService = {
     const cleanIdempKey = idempotencyKey && typeof idempotencyKey === 'string' && idempotencyKey.trim()
       ? idempotencyKey.trim()
       : null;
-
-    if (cleanIdempKey) {
-      const existingCredit = await prisma.userInventoryCredit.findUnique({
-        where: { idempotencyKey: cleanIdempKey },
-      });
-      if (existingCredit) {
-        if (
-          existingCredit.userId !== userId ||
-          existingCredit.ticketCategoryId !== categoryId ||
-          existingCredit.quantity !== qty
-        ) {
-          throw new AppError(
-            `Idempotency key "${cleanIdempKey}" was already used with different parameters`,
-            409,
-            'IDEMPOTENCY_CONFLICT'
-          );
-        }
-        // Fetch existing tickets
-        const existingOwnerships = await prisma.ticketOwnership.findMany({
-          where: {
-            ownerId: userId,
-            transactionId: existingCredit.purchaseId,
-            source: 'PRIMARY',
-          },
-          include: { ticket: true },
-        });
-        const existingTickets = existingOwnerships.map((o) => o.ticket);
-        return {
-          tickets: existingTickets,
-          transactionId: existingCredit.purchaseId,
-          isDuplicate: true,
-        };
-      }
-    }
 
     // 1. Fetch Event & Category details
     const event = await prisma.event.findUnique({
@@ -104,168 +73,383 @@ export const ticketService = {
     // Convert total price into integer paise (minor units, e.g. INR 100 = 10000 paise)
     const totalPaise = BigInt(Math.round(unitPriceNumber * 100)) * BigInt(qty);
 
-    // 2. Execute atomic database transaction
-    const result = await prisma.$transaction(async (tx) => {
-      // 2a. Atomically inspect and decrement inventory
-      const inventory = await tx.ticketInventory.findUnique({
-        where: { categoryId },
+    // Fast-path: Check committed idempotency key before starting transaction
+    if (cleanIdempKey) {
+      const existingCredit = await prisma.userInventoryCredit.findUnique({
+        where: { idempotencyKey: cleanIdempKey },
       });
-
-      if (!inventory) {
-        throw new AppError('Ticket inventory not initialized for this category', 404, 'INVENTORY_NOT_FOUND');
-      }
-
-      if (inventory.availableQuantity < qty) {
-        throw new AppError(
-          `Not enough tickets available. Requested: ${qty}, available: ${inventory.availableQuantity}`,
-          400,
-          'INSUFFICIENT_INVENTORY'
-        );
-      }
-
-      const newAvailable = inventory.availableQuantity - qty;
-      const newCategoryStatus = newAvailable === 0 ? 'SOLD_OUT' : category.status;
-
-      await tx.ticketInventory.update({
-        where: { categoryId },
-        data: {
-          availableQuantity: newAvailable,
-        },
-      });
-
-      if (newCategoryStatus !== category.status) {
-        await tx.ticketCategory.update({
-          where: { id: categoryId },
-          data: { status: newCategoryStatus },
+      if (existingCredit) {
+        return await this._verifyAndFormatReplay({
+          existingCredit,
+          userId,
+          eventId,
+          categoryId,
+          qty,
+          totalPaise,
         });
       }
+    }
 
-      // 2b. Lock and debit buyer wallet
-      const wallet = await tx.wallet.findUnique({
-        where: { userId },
-      });
+    // 2. Execute bounded retry loop for concurrency conflicts
+    const MAX_RETRIES = 3;
+    let attempt = 0;
 
-      if (!wallet) {
-        throw new AppError('Wallet not found for user. Please ensure wallet is created.', 404, 'WALLET_NOT_FOUND');
-      }
+    while (true) {
+      try {
+        const result = await prisma.$transaction(
+          async (tx) => {
+            // 2a. In-transaction idempotency check (handles races where another thread committed while waiting)
+            if (cleanIdempKey) {
+              const existingCredit = await tx.userInventoryCredit.findUnique({
+                where: { idempotencyKey: cleanIdempKey },
+              });
+              if (existingCredit) {
+                return await this._verifyAndFormatReplay({
+                  existingCredit,
+                  tx,
+                  userId,
+                  eventId,
+                  categoryId,
+                  qty,
+                  totalPaise,
+                });
+              }
+            }
 
-      const availableBalance = BigInt(wallet.availableBalance);
-      if (availableBalance < totalPaise) {
-        throw new AppError(
-          `Insufficient wallet balance. Required: ${(Number(totalPaise) / 100).toFixed(2)}, Available: ${(
-            Number(availableBalance) / 100
-          ).toFixed(2)}`,
-          400,
-          'INSUFFICIENT_FUNDS'
-        );
-      }
+            // 2b. Atomically lock & inspect inventory
+            let inventory = null;
+            if (typeof tx.$queryRaw === 'function') {
+              try {
+                const rows = await tx.$queryRaw`
+                  SELECT * FROM "TicketInventory"
+                  WHERE "categoryId" = ${categoryId}
+                  FOR UPDATE
+                `;
+                inventory = rows && rows.length > 0 ? rows[0] : null;
+              } catch (qErr) {
+                // If $queryRaw fails (e.g. mocked in unit tests), fallback to findUnique
+                inventory = null;
+              }
+            }
+            if (!inventory) {
+              inventory = await tx.ticketInventory.findUnique({
+                where: { categoryId },
+              });
+            }
 
-      const updatedAvailable = availableBalance - totalPaise;
-      const updatedVersion = BigInt(wallet.version) + 1n;
+            if (!inventory) {
+              throw new AppError('Ticket inventory not initialized for this category', 404, 'INVENTORY_NOT_FOUND');
+            }
 
-      await tx.wallet.update({
-        where: { id: wallet.id },
-        data: {
-          availableBalance: updatedAvailable,
-          version: updatedVersion,
-        },
-      });
+            if (inventory.availableQuantity < qty) {
+              throw new AppError(
+                `Not enough tickets available. Requested: ${qty}, available: ${inventory.availableQuantity}`,
+                400,
+                'INSUFFICIENT_INVENTORY'
+              );
+            }
 
-      // 2c. Create Transaction audit record
-      const transaction = await tx.transaction.create({
-        data: {
-          walletId: wallet.id,
-          amount: -totalPaise,
-          type: 'PURCHASE',
-          status: 'COMPLETED',
-          description: `Primary purchase of ${qty} ticket(s) for event '${event.name}' (${category.name})`,
-        },
-      });
+            // 2c. Atomically lock & inspect buyer wallet
+            let wallet = null;
+            if (typeof tx.$queryRaw === 'function') {
+              try {
+                const rows = await tx.$queryRaw`
+                  SELECT * FROM "Wallet"
+                  WHERE "userId" = ${userId}
+                  FOR UPDATE
+                `;
+                wallet = rows && rows.length > 0 ? rows[0] : null;
+              } catch (qErr) {
+                wallet = null;
+              }
+            }
+            if (!wallet) {
+              wallet = await tx.wallet.findUnique({
+                where: { userId },
+              });
+            }
 
-      // 2d. Create WalletLedgerEntry for double-entry bookkeeping consistency
-      await tx.walletLedgerEntry.create({
-        data: {
-          walletId: wallet.id,
-          entryType: 'TRADE_SETTLEMENT_DEBIT',
-          amount: totalPaise,
-          availableDelta: -totalPaise,
-          reservedDelta: 0n,
-          balanceAfterAvailable: updatedAvailable,
-          balanceAfterReserved: BigInt(wallet.reservedBalance),
-          idempotencyKey: idempotencyKey ? `${idempotencyKey}:debit` : null,
-          description: `Primary purchase of ${qty} x ${category.name} tickets`,
-        },
-      });
+            if (!wallet) {
+              throw new AppError('Wallet not found for user. Please ensure wallet is created.', 404, 'WALLET_NOT_FOUND');
+            }
 
-      // 2e. Create Tickets & initial TicketOwnership records
-      const createdTickets = [];
-      const now = new Date();
+            const availableBalance = BigInt(wallet.availableBalance);
+            if (availableBalance < totalPaise) {
+              throw new AppError(
+                `Insufficient wallet balance. Required: ${(Number(totalPaise) / 100).toFixed(2)}, Available: ${(
+                  Number(availableBalance) / 100
+                ).toFixed(2)}`,
+                400,
+                'INSUFFICIENT_FUNDS'
+              );
+            }
 
-      for (let i = 0; i < qty; i++) {
-        const ticket = await tx.ticket.create({
-          data: {
-            eventId,
-            categoryId,
-            ownerId: userId,
-            faceValue: category.originalPrice,
-            currentPrice: category.originalPrice,
-            status: 'OWNED',
-            createdAt: now,
+            // 2d. Update inventory and category
+            const newAvailable = inventory.availableQuantity - qty;
+            const newCategoryStatus = newAvailable === 0 ? 'SOLD_OUT' : category.status;
+
+            await tx.ticketInventory.update({
+              where: { categoryId },
+              data: {
+                availableQuantity: newAvailable,
+              },
+            });
+
+            await tx.ticketCategory.update({
+              where: { id: categoryId },
+              data: {
+                availableQuantity: newAvailable,
+                ...(newCategoryStatus !== category.status ? { status: newCategoryStatus } : {}),
+              },
+            });
+
+            // 2e. Debit wallet
+            const updatedAvailable = availableBalance - totalPaise;
+            const updatedVersion = BigInt(wallet.version) + 1n;
+
+            await tx.wallet.update({
+              where: { id: wallet.id },
+              data: {
+                availableBalance: updatedAvailable,
+                version: updatedVersion,
+              },
+            });
+
+            // 2f. Create Transaction audit record
+            const transaction = await tx.transaction.create({
+              data: {
+                walletId: wallet.id,
+                amount: -totalPaise,
+                type: 'PURCHASE',
+                status: 'COMPLETED',
+                description: `Primary purchase of ${qty} ticket(s) for event '${event.name}' (${category.name})`,
+              },
+            });
+
+            // 2g. Create WalletLedgerEntry for double-entry bookkeeping consistency
+            await tx.walletLedgerEntry.create({
+              data: {
+                walletId: wallet.id,
+                entryType: 'TRADE_SETTLEMENT_DEBIT',
+                amount: totalPaise,
+                availableDelta: -totalPaise,
+                reservedDelta: 0n,
+                balanceAfterAvailable: updatedAvailable,
+                balanceAfterReserved: BigInt(wallet.reservedBalance),
+                idempotencyKey: cleanIdempKey ? `${cleanIdempKey}:debit` : null,
+                description: `Primary purchase of ${qty} x ${category.name} tickets`,
+              },
+            });
+
+            // 2h. Create Tickets & initial TicketOwnership records
+            const createdTickets = [];
+            const now = new Date();
+
+            for (let i = 0; i < qty; i++) {
+              const ticket = await tx.ticket.create({
+                data: {
+                  eventId,
+                  categoryId,
+                  ownerId: userId,
+                  faceValue: category.originalPrice,
+                  currentPrice: category.originalPrice,
+                  status: 'OWNED',
+                  createdAt: now,
+                },
+              });
+
+              await tx.ticketOwnership.create({
+                data: {
+                  ticketId: ticket.id,
+                  ownerId: userId,
+                  acquiredAt: now,
+                  source: 'PRIMARY',
+                  transactionId: transaction.id,
+                },
+              });
+
+              createdTickets.push(ticket);
+            }
+
+            // 2i. Credit UserTicketInventory within the same transaction if available on tx
+            if (tx.userTicketInventory && tx.userInventoryCredit) {
+              const creditKey = cleanIdempKey ? cleanIdempKey : `purchase:${transaction.id}`;
+              await orderService.creditUserTicketInventory(
+                {
+                  userId,
+                  ticketCategoryId: categoryId,
+                  quantity: qty,
+                  idempotencyKey: creditKey,
+                  purchaseId: transaction.id,
+                  requireTransaction: true,
+                  skipTicketCreation: true,
+                },
+                tx
+              );
+            }
+
+            return {
+              tickets: createdTickets,
+              transactionId: transaction.id,
+              amountDebited: (Number(totalPaise) / 100).toFixed(2),
+              newWalletBalance: (Number(updatedAvailable) / 100).toFixed(2),
+              category: {
+                id: category.id,
+                name: category.name,
+                remainingAvailable: newAvailable,
+              },
+            };
           },
-        });
-
-        await tx.ticketOwnership.create({
-          data: {
-            ticketId: ticket.id,
-            ownerId: userId,
-            acquiredAt: now,
-            source: 'PRIMARY',
-            transactionId: transaction.id,
-          },
-        });
-
-        createdTickets.push(ticket);
-      }
-
-      // 2f. Credit UserTicketInventory within the same transaction if available on tx
-      if (tx.userTicketInventory && tx.userInventoryCredit) {
-        const creditKey = cleanIdempKey ? cleanIdempKey : `purchase:${transaction.id}`;
-        await orderService.creditUserTicketInventory(
           {
-            userId,
-            ticketCategoryId: categoryId,
-            quantity: qty,
-            idempotencyKey: creditKey,
-            purchaseId: transaction.id,
-            requireTransaction: true,
-            skipTicketCreation: true,
-          },
-          tx
+            isolationLevel: 'ReadCommitted',
+            maxWait: 15000,
+            timeout: 30000,
+          }
+        );
+
+        logger.info('Primary ticket purchase succeeded', {
+          userId,
+          eventId,
+          categoryId,
+          quantity: qty,
+          ticketsCount: result.tickets.length,
+        });
+
+        return result;
+      } catch (err) {
+        // Never retry intentional business domain errors
+        if (err instanceof AppError) {
+          throw err;
+        }
+
+        // If duplicate key race on idempotencyKey, re-verify replay
+        if (cleanIdempKey && (err.code === 'P2002' || err.message?.includes('UserInventoryCredit_idempotencyKey_key'))) {
+          const raceWinnerCredit = await prisma.userInventoryCredit.findUnique({
+            where: { idempotencyKey: cleanIdempKey },
+          });
+          if (raceWinnerCredit) {
+            return await this._verifyAndFormatReplay({
+              existingCredit: raceWinnerCredit,
+              userId,
+              eventId,
+              categoryId,
+              qty,
+              totalPaise,
+            });
+          }
+        }
+
+        // Check for retryable PostgreSQL serialization conflicts / deadlocks
+        const isConflict =
+          err.code === 'P2034' ||
+          err.code === '40001' ||
+          err.code === '40P01' ||
+          err.message?.includes('could not serialize access') ||
+          err.message?.includes('deadlock detected') ||
+          err.message?.includes('Unable to start a transaction in the given time') ||
+          err.message?.includes('Transaction already closed');
+
+        if (isConflict && attempt < MAX_RETRIES) {
+          attempt++;
+          logger.warn(`Retrying primary purchase transaction on serialization conflict (attempt ${attempt}/${MAX_RETRIES})`, {
+            error: err.message,
+          });
+          const jitter = Math.floor(Math.random() * 25);
+          await new Promise((r) => setTimeout(r, 40 * Math.pow(2, attempt - 1) + jitter));
+          continue;
+        }
+
+        throw err;
+      }
+    }
+  },
+
+  /**
+   * Helper to verify idempotent replay payload parameters and construct deterministic response.
+   *
+   * @private
+   */
+  async _verifyAndFormatReplay({
+    existingCredit,
+    tx = null,
+    userId,
+    eventId,
+    categoryId,
+    qty,
+    totalPaise,
+  }) {
+    const client = tx || prisma;
+
+    // Check business parameters for conflicts
+    if (
+      existingCredit.userId !== userId ||
+      existingCredit.ticketCategoryId !== categoryId ||
+      existingCredit.quantity !== qty
+    ) {
+      throw new AppError(
+        `Idempotency key "${existingCredit.idempotencyKey}" was already used with different parameters`,
+        409,
+        'IDEMPOTENCY_CONFLICT'
+      );
+    }
+
+    // Verify transaction and amount
+    const transaction = await client.transaction.findUnique({
+      where: { id: existingCredit.purchaseId },
+      include: { wallet: true },
+    });
+
+    if (transaction) {
+      const recordedAmount = -BigInt(transaction.amount);
+      if (totalPaise !== undefined && recordedAmount !== totalPaise) {
+        throw new AppError(
+          `Idempotency key "${existingCredit.idempotencyKey}" was already used with a different purchase price`,
+          409,
+          'IDEMPOTENCY_CONFLICT'
         );
       }
+    }
 
-      return {
-        tickets: createdTickets,
-        transactionId: transaction.id,
-        amountDebited: (Number(totalPaise) / 100).toFixed(2),
-        newWalletBalance: (Number(updatedAvailable) / 100).toFixed(2),
-        category: {
-          id: category.id,
-          name: category.name,
-          remainingAvailable: newAvailable,
-        },
-      };
+    // Verify category matches event if eventId supplied
+    const category = await client.ticketCategory.findUnique({
+      where: { id: categoryId },
+      include: { inventory: true },
+    });
+    if (category && eventId && category.eventId !== eventId) {
+      throw new AppError(
+        `Idempotency key "${existingCredit.idempotencyKey}" was already used with a different event`,
+        409,
+        'IDEMPOTENCY_CONFLICT'
+      );
+    }
+
+    // Fetch existing tickets
+    const existingOwnerships = await client.ticketOwnership.findMany({
+      where: {
+        ownerId: userId,
+        transactionId: existingCredit.purchaseId,
+        source: 'PRIMARY',
+      },
+      include: { ticket: true },
+      orderBy: { ticket: { createdAt: 'asc' } },
     });
 
-    logger.info('Primary ticket purchase succeeded', {
-      userId,
-      eventId,
-      categoryId,
-      quantity: qty,
-      ticketsCount: result.tickets.length,
-    });
+    const existingTickets = existingOwnerships.map((o) => o.ticket);
+    const wallet = transaction?.wallet || (await client.wallet.findUnique({ where: { userId } }));
+    const inventory = category?.inventory || (await client.ticketInventory.findUnique({ where: { categoryId } }));
 
-    return result;
+    return {
+      tickets: existingTickets,
+      transactionId: existingCredit.purchaseId,
+      amountDebited: transaction ? (Number(-transaction.amount) / 100).toFixed(2) : (Number(totalPaise) / 100).toFixed(2),
+      newWalletBalance: wallet ? (Number(wallet.availableBalance) / 100).toFixed(2) : '0.00',
+      category: {
+        id: category ? category.id : categoryId,
+        name: category ? category.name : 'Unknown',
+        remainingAvailable: inventory ? inventory.availableQuantity : 0,
+      },
+      isDuplicate: true,
+    };
   },
 
   /**

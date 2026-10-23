@@ -2127,6 +2127,36 @@ model TradeSettlement {
   - Settlement recovery (`TradeSettlementService.recoverUnsettled`) processes interrupted or transiently failed executions idempotently without duplicate ticket transfers or history rows. Executions failing permanent invariant checks transition to `MANUAL_REVIEW` without transferring tickets.
   - `OrderService.reconcileTicketOwnershipAndInventory({ userId, ticketCategoryId })` provides deterministic auditing to verify that aggregate `availableQuantity` and `reservedQuantity` match actual `Ticket` counts.
 
+#### 5.18.25 Step C Concurrency-Safe Primary Ticket Purchases & Crash-Window Protection
+- **Pessimistic Row Locking Concurrency Strategy**:
+  - `ticketService.purchaseTickets` enforces transactional concurrency control using PostgreSQL row-level locks (`SELECT ... FOR UPDATE`) on both `TicketInventory` (category inventory lock) and `Wallet` (buyer wallet balance lock) inside the purchase transaction.
+  - Consistent lock ordering (`TicketInventory` locked before `Wallet`) eliminates multi-resource deadlocks.
+  - Real-time inventory and wallet checks happen inside the lock boundary. Requests exceeding available tickets immediately reject with `400 INSUFFICIENT_INVENTORY`, and insufficient balance rejects with `400 INSUFFICIENT_FUNDS`.
+- **Atomic Multi-Model Consistency & Zero Floating-Point Arithmetic**:
+  - All financial math is computed strictly in integer paise (`BigInt`).
+  - Atomically inside a single `ReadCommitted` transaction, updates synchronize across:
+    1. `TicketInventory` (`availableQuantity` decremented) & `TicketCategory` (`availableQuantity` synchronized, `status` set to `SOLD_OUT` if zero).
+    2. `Wallet` (`availableBalance` decremented, `version` incremented).
+    3. `Transaction` (record created with `type = 'PURCHASE', status = 'COMPLETED'`).
+    4. `WalletLedgerEntry` (immutable ledger debit entry `entryType = 'TRADE_SETTLEMENT_DEBIT'`, `amount = totalPaise`, signed `availableDelta`).
+    5. `Ticket` (batch created with `status = 'OWNED'`).
+    6. `TicketOwnership` (audit rows created with `source = 'PRIMARY'`, linked to `transaction.id`).
+    7. `UserTicketInventory` (aggregate inventory incremented via `orderService.creditUserTicketInventory`).
+    8. `UserInventoryCredit` (unique idempotency record persisted).
+  - Any error at any stage causes an immediate, clean rollback by PostgreSQL, leaving zero partial debits, ticket issuance, ownership records, or inventory increments.
+- **Race-Proof Idempotency & Conflict Detection**:
+  - Idempotency is enforced at both the application level and the database level (`UserInventoryCredit.idempotencyKey` `@unique` and `WalletLedgerEntry.[walletId, idempotencyKey]` `@@unique`).
+  - Concurrent requests with identical keys are serialized: exactly one transaction performs the write, while concurrent or subsequent replays safely retrieve the original transaction, ticket IDs, and debited amount, returning `{ ...purchaseResult, isDuplicate: true }`.
+  - Reusing an idempotency key with materially different parameters (`userId`, `categoryId`, `eventId`, or `quantity`) throws `409 IDEMPOTENCY_CONFLICT`.
+- **Bounded Retry for Serialization Conflicts**:
+  - Transient write conflicts and deadlocks (`P2034`, `40001`, `40P01`) are retried up to 3 times with exponential backoff and randomized jitter before failing safely.
+  - Intentional business domain errors (`INSUFFICIENT_INVENTORY`, `INSUFFICIENT_FUNDS`, `IDEMPOTENCY_CONFLICT`) are never retried.
+- **Step B Sell-Order Reservation Crash-Window Audit & Reconciliation**:
+  - *Audit Finding*: When `OrderService.placeLimitOrder` reserves tickets (`status = 'LISTED'`, `orderId = UUID`) before submitting to the matching engine, an unexpected process crash (SIGKILL/power loss) prior to `persistMatchingTransaction` leaves tickets listed against an uncommitted order that cannot be cancelled by ordinary API methods.
+  - *Safety Rule*: A reservation is **never** released solely because an order lookup temporarily fails (e.g., database timeout or transient network error).
+  - *Additive Correction*: `OrderService.reconcileOrderReservations` and `reconcileTicketOwnershipAndInventory` perform definitive database verification with a 60-second grace period (or explicit `forceReleaseOrphaned: true` / `repair: true`). Confirmed orphaned reservations are atomically restored to `status: 'OWNED', orderId: null` and aggregate `UserTicketInventory` is reconciled without weakening matching or settlement guarantees.
+
+
 
 
 

@@ -922,12 +922,15 @@ export class OrderService {
    *    This is reported only; an unlocked snapshot must not release inventory that a concurrent execution needs.
    *
    * @param {Object} [options]
+   * @param {Object} [options]
    * @param {string} [options.eventId]
    * @param {string} [options.ticketCategoryId]
    * @param {boolean} [options.dryRun=false]
+   * @param {boolean} [options.forceReleaseOrphaned=false]
    * @returns {Promise<Object>} Reconciliation summary
    */
-  async reconcileOrderReservations({ eventId, ticketCategoryId, dryRun = false } = {}) {
+  async reconcileOrderReservations(options = {}) {
+    const { eventId, ticketCategoryId, dryRun = false, forceReleaseOrphaned = false } = options;
     const summary = {
       unlinkedHoldsFixed: 0,
       orphanedHoldsDetected: 0,
@@ -935,6 +938,8 @@ export class OrderService {
       underfundedOrders: [],
       orphanedInventoryDetected: 0,
       orphanedInventoryRestored: 0,
+      orphanedTicketReservationsDetected: 0,
+      orphanedTicketReservationsRestored: 0,
       isConsistent: true,
     };
 
@@ -953,7 +958,14 @@ export class OrderService {
       const targetOrderId = hold.orderId || hold.operation?.referenceId;
       if (!targetOrderId) continue;
 
-      const order = await this.orderRepository.findById(targetOrderId);
+      let order = null;
+      try {
+        order = await this.orderRepository.findById(targetOrderId);
+      } catch (lookupErr) {
+        console.error(`Hold order lookup failed during reconciliation for order ${targetOrderId}:`, lookupErr.message);
+        summary.isConsistent = false;
+        continue;
+      }
 
       if (order) {
         // Link hold if unlinked
@@ -1032,6 +1044,114 @@ export class OrderService {
         // settlement and could make a durable execution impossible to settle.
         // Keep reconciliation observational until an operator performs a
         // separately serialized repair with execution history in scope.
+      }
+    }
+
+    // 3. Audit individual Ticket reservations for missing or stale orders (Crash-Window Audit)
+    const ticketWhere = {
+      status: 'LISTED',
+      orderId: { not: null },
+    };
+    if (ticketCategoryId) {
+      ticketWhere.categoryId = ticketCategoryId;
+    }
+    if (eventId) {
+      ticketWhere.eventId = eventId;
+    }
+
+    const listedTickets = await this.prisma.ticket.findMany({
+      where: ticketWhere,
+      select: {
+        id: true,
+        orderId: true,
+        ownerId: true,
+        categoryId: true,
+        eventId: true,
+        createdAt: true,
+      },
+    });
+
+    // Group listed tickets by orderId
+    const ticketsByOrderId = new Map();
+    for (const t of listedTickets) {
+      if (!ticketsByOrderId.has(t.orderId)) {
+        ticketsByOrderId.set(t.orderId, []);
+      }
+      ticketsByOrderId.get(t.orderId).push(t);
+    }
+
+    const STALE_THRESHOLD_MS = 60_000; // 60 seconds
+    const now = Date.now();
+
+    for (const [targetOrderId, groupTickets] of ticketsByOrderId.entries()) {
+      let order = null;
+      try {
+        order = await this.orderRepository.findById(targetOrderId);
+      } catch (lookupErr) {
+        // Never release a reservation solely because an order lookup temporarily fails!
+        console.error(`Order lookup failed during reservation audit for order ${targetOrderId}:`, lookupErr.message);
+        summary.isConsistent = false;
+        continue;
+      }
+
+      if (!order) {
+        // The order definitively does NOT exist in the Order table.
+        const oldestCreatedAt = Math.min(...groupTickets.map((t) => new Date(t.createdAt).getTime()));
+        const isStale = (now - oldestCreatedAt) > STALE_THRESHOLD_MS;
+
+        if (forceReleaseOrphaned || isStale) {
+          summary.orphanedTicketReservationsDetected += groupTickets.length;
+          summary.isConsistent = false;
+
+          if (!dryRun) {
+            try {
+              await this.prisma.$transaction(async (tx) => {
+                const doubleCheck = await tx.order.findUnique({
+                  where: { id: targetOrderId },
+                });
+                if (doubleCheck) return;
+
+                const ticketIds = groupTickets.map((t) => t.id);
+                const ownerId = groupTickets[0].ownerId;
+                const catId = groupTickets[0].categoryId;
+
+                // Revert tickets to OWNED and unlink orderId
+                await tx.ticket.updateMany({
+                  where: {
+                    id: { in: ticketIds },
+                    status: 'LISTED',
+                    orderId: targetOrderId,
+                  },
+                  data: {
+                    status: 'OWNED',
+                    orderId: null,
+                  },
+                });
+
+                // Restore aggregate inventory
+                await tx.userTicketInventory.update({
+                  where: {
+                    userId_ticketCategoryId: {
+                      userId: ownerId,
+                      ticketCategoryId: catId,
+                    },
+                  },
+                  data: {
+                    availableQuantity: { increment: groupTickets.length },
+                    reservedQuantity: { decrement: groupTickets.length },
+                  },
+                });
+              });
+              summary.orphanedTicketReservationsRestored += groupTickets.length;
+            } catch (repairErr) {
+              console.error(`Failed to repair orphaned ticket reservation for order ${targetOrderId}:`, repairErr);
+            }
+          }
+        } else {
+          // Absent order detected, but reservation was created recently (within safety window)
+          summary.orphanedTicketReservationsDetected += groupTickets.length;
+          summary.isConsistent = false;
+        }
       }
     }
 
@@ -1282,9 +1402,10 @@ export class OrderService {
    * @param {Object} params
    * @param {string} params.userId
    * @param {string} params.ticketCategoryId
+   * @param {boolean} [params.repair=false]
    * @returns {Promise<Object>}
    */
-  async reconcileTicketOwnershipAndInventory({ userId, ticketCategoryId }) {
+  async reconcileTicketOwnershipAndInventory({ userId, ticketCategoryId, repair = false }) {
     if (!userId || !ticketCategoryId) {
       throw new OrderValidationError('Both userId and ticketCategoryId must be provided');
     }
@@ -1310,13 +1431,52 @@ export class OrderService {
 
     const ownedTickets = tickets.filter((t) => t.status === 'OWNED' && !t.orderId);
     const listedTickets = tickets.filter((t) => t.status === 'LISTED' && t.orderId);
+    const discrepancies = [];
+
+    // Audit listed tickets for missing order references
+    const orphanedTickets = [];
+    for (const ticket of listedTickets) {
+      try {
+        const order = await this.orderRepository.findById(ticket.orderId);
+        if (!order) {
+          discrepancies.push(`Ticket ${ticket.id} references non-existent order ${ticket.orderId}`);
+          orphanedTickets.push(ticket);
+        }
+      } catch (lookupErr) {
+        // Never release a reservation solely because an order lookup temporarily fails!
+        discrepancies.push(`Lookup error verifying order ${ticket.orderId} for ticket ${ticket.id}: ${lookupErr.message}`);
+      }
+    }
+
+    if (repair && orphanedTickets.length > 0) {
+      const orphanedIds = orphanedTickets.map((t) => t.id);
+      await this.prisma.$transaction(async (tx) => {
+        await tx.ticket.updateMany({
+          where: { id: { in: orphanedIds }, status: 'LISTED' },
+          data: { status: 'OWNED', orderId: null },
+        });
+        await tx.userTicketInventory.update({
+          where: {
+            userId_ticketCategoryId: {
+              userId: cleanUserId,
+              ticketCategoryId: cleanCategoryId,
+            },
+          },
+          data: {
+            availableQuantity: { increment: orphanedTickets.length },
+            reservedQuantity: { decrement: orphanedTickets.length },
+          },
+        });
+      });
+      return this.reconcileTicketOwnershipAndInventory({ userId: cleanUserId, ticketCategoryId: cleanCategoryId, repair: false });
+    }
+
     const totalActiveTickets = ownedTickets.length + listedTickets.length;
 
     const totalQuantity = inventory ? inventory.totalQuantity : 0;
     const availableQuantity = inventory ? inventory.availableQuantity : 0;
     const reservedQuantity = inventory ? inventory.reservedQuantity : 0;
 
-    const discrepancies = [];
     if (totalQuantity !== totalActiveTickets) {
       discrepancies.push(
         `Total quantity mismatch: aggregate has ${totalQuantity}, but user owns ${totalActiveTickets} active tickets`
