@@ -60,7 +60,8 @@ export const purchase = async (req, res, next) => {
   try {
     const { id } = req.params;
     const quantity = parseInt(req.body?.quantity, 10) || 1;
-    const result = await dutchAuctionService.purchase(id, req.user.id, quantity);
+    const idempotencyKey = req.headers['idempotency-key'] || req.body?.idempotencyKey || null;
+    const result = await dutchAuctionService.purchase(id, req.user.id, quantity, idempotencyKey);
     res.status(200).json({
       success: true,
       message: 'Dutch auction purchase successful',

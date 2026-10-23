@@ -2156,6 +2156,35 @@ model TradeSettlement {
   - *Safety Rule*: A reservation is **never** released solely because an order lookup temporarily fails (e.g., database timeout or transient network error).
   - *Additive Correction*: `OrderService.reconcileOrderReservations` and `reconcileTicketOwnershipAndInventory` perform definitive database verification with a 60-second grace period (or explicit `forceReleaseOrphaned: true` / `repair: true`). Confirmed orphaned reservations are atomically restored to `status: 'OWNED', orderId: null` and aggregate `UserTicketInventory` is reconciled without weakening matching or settlement guarantees.
 
+#### 5.18.26 Step D Dutch Auction Transactional Integrity & Concurrency Hardening
+- **Pessimistic Row-Level Lock Hierarchy**:
+  - `dutchAuctionService.purchase` enforces strict monotonic row-level locking (`SELECT ... FOR UPDATE`) in the following global order:
+    1. `DutchAuction` (locks the auction record, validating active lifecycle status and calculating decayed price).
+    2. `TicketInventory` (locks the category inventory, ensuring available tickets are decremented atomically).
+    3. `Wallet` (locks the buyer's wallet, ensuring available balance is debited atomically without double-spending).
+  - This consistent lock hierarchy prevents multi-resource circular wait deadlocks across concurrent Dutch auction and primary market purchases.
+- **Atomic Multi-Model Consistency Across 8 Entities**:
+  - All writes commit or roll back together in a single `ReadCommitted` transaction:
+    1. `DutchAuction`: Updates `currentPrice` to the execution price, and transitions `status` to `COMPLETED` when category inventory is exhausted (`newAvailable === 0`). If inventory remains, `status` stays `ACTIVE`.
+    2. `TicketInventory`: Decrements `availableQuantity` atomically.
+    3. `TicketCategory`: Decrements `availableQuantity` and transitions `status` to `SOLD_OUT` if zero tickets remain.
+    4. `Wallet`: Debits `availableBalance` using integer minor units (paise with `BigInt`), increments monotonic `version`.
+    5. `Transaction`: Creates purchase audit record (`amount = -totalPricePaise`, `type = 'PURCHASE'`, `status = 'COMPLETED'`).
+    6. `WalletLedgerEntry`: Appends immutable ledger debit (`entryType = 'TRADE_SETTLEMENT_DEBIT'`, signed `availableDelta`, `balanceAfterAvailable` snapshot, `idempotencyKey`).
+    7. `Ticket`: Batch creates individual `Ticket` rows with `status = 'OWNED'`, `faceValue = category.originalPrice`, and `currentPrice = executionPrice`.
+    8. `TicketOwnership`: Creates audit rows (`source = 'PRIMARY'`, pointing to `transaction.id`).
+    9. `UserTicketInventory` & `UserInventoryCredit`: Aggregates credited and idempotency record persisted via `orderService.creditUserTicketInventory`.
+  - Zero floating-point arithmetic is used; integer minor units (paise) are preserved.
+- **Replay-Safe Idempotency & Conflict Detection**:
+  - Protected by `UserInventoryCredit(idempotencyKey)` unique constraint and `_verifyAndFormatReplay`.
+  - Exact replays return the identical original purchase response with `isDuplicate: true`, original ticket IDs, and original transaction ID without duplicate debits or ticket issuance.
+  - Reusing an idempotency key with conflicting parameters (`quantity`, `userId`, or `auctionId`/`categoryId`) throws `409 IDEMPOTENCY_CONFLICT`.
+- **Auction Lifecycle & Completion Semantics**:
+  - Dutch auctions support multiple consecutive purchases until category inventory is exhausted.
+  - Completed (`COMPLETED`), cancelled (`CANCELLED`), or expired (`EXPIRED`) auctions reject purchase attempts with specific domain error codes (`400 AUCTION_COMPLETED`, `400 AUCTION_CANCELLED`, `400 AUCTION_EXPIRED`).
+  - Purchases before `startTime` reject with `400 AUCTION_NOT_STARTED`.
+  - When an expired auction is accessed during a purchase attempt, the `EXPIRED` status is persisted outside the aborting transaction.
+
 
 
 

@@ -49,8 +49,11 @@ export const createDutchAuctionSchema = z
 /**
  * Schema for purchasing from a Dutch auction
  */
-export const purchaseDutchAuctionSchema = z.object({
-  quantity: z.coerce.number().int().positive().default(1),
-});
+export const purchaseDutchAuctionSchema = z
+  .object({
+    quantity: z.coerce.number().int().positive().default(1),
+    idempotencyKey: z.string().optional(),
+  })
+  .default({});
 
 export default dutchAuctionSchema;

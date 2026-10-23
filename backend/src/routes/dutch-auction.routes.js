@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { authenticateUser, requireOrganizer } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
-import { createDutchAuctionSchema } from '../schemas/dutch-auction.schema.js';
+import { createDutchAuctionSchema, purchaseDutchAuctionSchema } from '../schemas/dutch-auction.schema.js';
 import * as dutchAuctionController from '../controllers/dutch-auction.controller.js';
 
 const router = Router();
@@ -38,6 +38,11 @@ router.get('/:id/price', dutchAuctionController.getCurrentPrice);
  * @desc    Buy at current price (locks price, debits wallet)
  * @access  Private (User)
  */
-router.post('/:id/purchase', authenticateUser, dutchAuctionController.purchase);
+router.post(
+  '/:id/purchase',
+  authenticateUser,
+  validate(purchaseDutchAuctionSchema),
+  dutchAuctionController.purchase
+);
 
 export default router;
