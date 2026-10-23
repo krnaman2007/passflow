@@ -74,6 +74,16 @@ This document tracks active API routes and planned route additions as the PassFl
 | `POST` | `/wallet/withdraw` *(also `/api/v1/wallet/withdraw`)* | Withdraw available funds (Idempotency-Key required, overdrafts rejected with 422) | User | `{"amount": 25000, "description": "..."}` | `{"success": true, "data": {"isIdempotentReplay": false, "wallet": {...}, "operation": {...}, "ledgerEntry": {...}}}` | Active |
 | `GET` | `/wallet/transactions` *(also `/api/v1/wallet/transactions`)* | Paginated wallet ledger transactions with type & date range filters | User | None (Query: `type`, `entryType`, `startDate`, `endDate`, `page`, `limit`) | `{"success": true, "data": {"transactions": [...], "pagination": {"page": 1, "limit": 20, "total": 1, "totalPages": 1}}}` | Active |
 
+### Secondary Market Orders (`/orders`, `/api/v1/orders`)
+
+| Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `POST` | `/orders` *(also `/api/v1/orders`)* | Place limit order (BID or ASK) with pre-matching reservation | User | `{"eventId": "...", "ticketCategoryId": "...", "side": "BID" \| "ASK", "price": 2500, "quantity": 2, "idempotencyKey": "..."}` | `{"success": true, "data": {"orderId": "...", "status": "OPEN", "initialQuantity": 2, "remainingQuantity": 2, ...}}` | Active |
+| `GET` | `/orders` *(also `/api/v1/orders`)* | List authenticated user's orders with status, side, event, category filters & pagination | User | None (Query: `status`, `side`, `eventId`, `event`, `ticketCategoryId`, `categoryId`, `page`, `limit`) | `{"success": true, "data": {"orders": [...], "pagination": {"page": 1, "limit": 20, "total": 2, "totalPages": 1}}}` | Active |
+| `GET` | `/orders/:id` *(also `/api/v1/orders/:id`)* | Return order details and execution fills (ownership strictly enforced) | User (Owner) | None | `{"success": true, "data": {"id": "...", "side": "BID", "status": "FILLED", "price": 2500, "initialQuantity": 2, "remainingQuantity": 0, "filledQuantity": 2, "executions": [...], "fills": [...]}}` | Active |
+| `GET` | `/orders/:id/trades` *(also `/api/v1/orders/:id/trades`)* | Return executions/trades associated with specified order (ownership strictly enforced) | User (Owner) | None | `{"success": true, "data": {"orderId": "...", "trades": [...], "executions": [...], "total": 1}}` | Active |
+| `DELETE` | `/orders/:id` *(also `/api/v1/orders/:id`)* | Cancel an open or partially filled order and release remaining unfilled reservations | User (Owner) | None (Header: `Idempotency-Key`) | `{"success": true, "data": {"orderId": "...", "status": "CANCELLED", "cancelledQuantity": 1, "remainingQuantity": 0, ...}}` | Active |
+
 ### Platform Administration & Moderation
 
 | Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
@@ -2230,6 +2240,40 @@ model TradeSettlement {
   - No database migration required. The existing Prisma schema, `Wallet`, `WalletLedgerEntry`, `FinancialOperation` models, check constraints, and immutability triggers already provide complete structural support.
 - **Verification & Test Suite**:
   - Comprehensive integration test suite: `backend/tests/wallet/wallet-api.test.js` (30 test cases covering authentication, balance queries, deposits, withdrawals, overdraft rejections, idempotency replays/conflicts, pagination, and date filtering).
+
+### 5.21 Phase 3 — Secondary Market Order Read APIs Implementation
+
+- **Scope & Objectives**:
+  - Implement and expose authenticated REST read endpoints for secondary market orders: `GET /api/v1/orders`, `GET /api/v1/orders/:id`, and `GET /api/v1/orders/:id/trades` (with backward-compatible root aliases `/orders`, `/orders/:id`, `/orders/:id/trades`).
+  - Strict security and ownership enforcement: users can only view their own orders and executions. Non-owners are denied with `403 FORBIDDEN` without leaking any order existence, counterparty identity, or fill details.
+  - Non-existent orders return `404 ORDER_NOT_FOUND`.
+  - Execution deduplication invariant: Each `Execution` appears strictly once in an order's execution list even if query paths overlap, deduplicated via `Map<id, execution>` across `incomingExecutions` (role: `TAKER`) and `restingExecutions` (role: `MAKER`).
+  - No synthetic settlement state: persisted execution and order states are returned verbatim from PostgreSQL (`settlementStatus` reflects database truth).
+  - Robust query validation: integer pagination boundaries (`page >= 1`, `1 <= limit <= 100`), side filter normalization (`BUY` -> `BID`, `SELL` -> `ASK`), status filter normalization (`PARTIAL` -> `PARTIALLY_FILLED`), and event/category aliases (`event` / `eventId`, `categoryId` / `ticketCategoryId`).
+  - Zero schema changes: 100% compliant with existing Prisma models and enums.
+- **Endpoint Implementation Details**:
+  1. `GET /api/v1/orders` (and `/orders`):
+     - Authenticated user paginated order listing.
+     - Supports filters: `status` (`OPEN`, `PARTIALLY_FILLED`, `FILLED`, `CANCELLED`, `REJECTED`, `PARTIAL`), `side` (`BID`, `ASK`, `BUY`, `SELL`), `eventId` / `event`, `ticketCategoryId` / `categoryId`.
+     - Validates input via Zod `queryOrdersSchema` (rejects invalid sides or statuses with `400 VALIDATION_ERROR`).
+     - Returns envelope `{ success: true, data: { orders: [...], pagination: { page, limit, total, totalPages } } }` with computed `filledQuantity` and safely stringified `sequenceNumber`.
+  2. `GET /api/v1/orders/:id` (and `/orders/:id`):
+     - Authenticated user order details lookup.
+     - Validates params via Zod `getOrderParamsSchema`.
+     - Enforces ownership: returns `403 FORBIDDEN` if `order.userId !== req.user.id`; `404 ORDER_NOT_FOUND` if order does not exist.
+     - Deduplicates executions across incoming and resting relations; assigns execution role (`TAKER` for incoming orders, `MAKER` for resting orders).
+     - Returns both `executions` and `fills` aliases for API specification compatibility while omitting counterparty user/wallet IDs.
+  3. `GET /api/v1/orders/:id/trades` (and `/orders/:id/trades`):
+     - Authenticated user order executions list.
+     - Validates params via Zod `getOrderParamsSchema`.
+     - Reuses `OrderService.getOrderDetails` to guarantee identical ownership checks and execution deduplication.
+     - Returns envelope `{ success: true, data: { orderId, trades: [...], executions: [...], total } }`.
+- **Data Model & Schema Verification**:
+  - No migrations required. Prisma `Order`, `Execution`, `Event`, and `TicketCategory` models provide complete relational support.
+- **Test Suite & Verification**:
+  - Dedicated HTTP integration suite: `backend/tests/order/order-read-api.test.js` (35 test cases covering authentication, ownership denial, nonexistent IDs, empty listings, side/status/event filtering, pagination boundaries, maker/taker execution roles, order trades, and Map-based deduplication invariant).
+  - Combined regression verification: 83 tests passing across `order-read-api.test.js`, `order-api.test.js`, and `wallet-api.test.js`.
+
 
 
 

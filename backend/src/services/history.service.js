@@ -4,7 +4,15 @@ import prisma from '../db/prisma.js';
  * HistoryService
  * Read model of a user's financial and trade history.
  */
-class HistoryService {
+export class HistoryService {
+  /**
+   * @param {Object} [options]
+   * @param {import('@prisma/client').PrismaClient} [options.prismaClient]
+   */
+  constructor({ prismaClient = prisma } = {}) {
+    this.prisma = prismaClient;
+  }
+
   /**
    * Get paginated financial transaction history for a user.
    * Reads from TransactionHistory model or derives from WalletLedgerEntry.
@@ -130,22 +138,34 @@ class HistoryService {
    * Get past orders placed by the user.
    *
    * @param {string} userId
-   * @param {object} query - { status, side, eventId, page, limit }
+   * @param {object} query - { status, side, eventId, event, ticketCategoryId, categoryId, page, limit }
    * @returns {Promise<object>}
    */
   async getOrders(userId, query = {}) {
+    const db = this?.prisma || prisma;
     const page = Math.max(1, parseInt(query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20));
     const skip = (page - 1) * limit;
 
+    let normalizedSide = query.side ? String(query.side).trim().toUpperCase() : undefined;
+    if (normalizedSide === 'BUY') normalizedSide = 'BID';
+    if (normalizedSide === 'SELL') normalizedSide = 'ASK';
+
+    let normalizedStatus = query.status ? String(query.status).trim().toUpperCase() : undefined;
+    if (normalizedStatus === 'PARTIAL') normalizedStatus = 'PARTIALLY_FILLED';
+
+    const eventId = query.eventId || query.event;
+    const ticketCategoryId = query.ticketCategoryId || query.categoryId;
+
     const whereClause = { userId };
-    if (query.status) whereClause.status = query.status;
-    if (query.side) whereClause.side = query.side;
-    if (query.eventId) whereClause.eventId = query.eventId;
+    if (normalizedStatus) whereClause.status = normalizedStatus;
+    if (normalizedSide) whereClause.side = normalizedSide;
+    if (eventId) whereClause.eventId = eventId;
+    if (ticketCategoryId) whereClause.ticketCategoryId = ticketCategoryId;
 
     const [total, orders] = await Promise.all([
-      prisma.order.count({ where: whereClause }),
-      prisma.order.findMany({
+      db.order.count({ where: whereClause }),
+      db.order.findMany({
         where: whereClause,
         orderBy: { createdAt: 'desc' },
         skip,
@@ -162,20 +182,33 @@ class HistoryService {
     ]);
 
     return {
-      orders: orders.map((o) => ({
-        id: o.id,
-        side: o.side,
-        status: o.status,
-        price: o.price,
-        initialQuantity: o.initialQuantity,
-        remainingQuantity: o.remainingQuantity,
-        eventId: o.eventId,
-        eventName: o.event?.name,
-        ticketCategoryId: o.ticketCategoryId,
-        categoryName: o.ticketCategory?.name,
-        createdAt: o.createdAt,
-        updatedAt: o.updatedAt,
-      })),
+      orders: orders.map((o) => {
+        const initialQuantity = o.initialQuantity;
+        const remainingQuantity = o.remainingQuantity;
+        const filledQuantity = initialQuantity - remainingQuantity;
+
+        return {
+          id: o.id,
+          orderId: o.id,
+          side: o.side,
+          status: o.status,
+          price: o.price,
+          initialQuantity,
+          originalQuantity: initialQuantity,
+          remainingQuantity,
+          filledQuantity,
+          stoppedReason: o.stoppedReason || null,
+          sequenceNumber: o.sequenceNumber != null ? String(o.sequenceNumber) : null,
+          eventId: o.eventId,
+          eventName: o.event?.name,
+          ticketCategoryId: o.ticketCategoryId,
+          categoryName: o.ticketCategory?.name,
+          event: o.event,
+          ticketCategory: o.ticketCategory,
+          createdAt: o.createdAt instanceof Date ? o.createdAt.toISOString() : o.createdAt,
+          updatedAt: o.updatedAt instanceof Date ? o.updatedAt.toISOString() : o.updatedAt,
+        };
+      }),
       pagination: {
         page,
         limit,

@@ -5,12 +5,25 @@ import { validate } from '../middleware/validate.js';
 import {
   placeLimitOrderSchema,
   cancelOrderParamsSchema,
+  getOrderParamsSchema,
+  queryOrdersSchema,
 } from '../schemas/order.schema.js';
 
 const router = Router();
 
 // Base protection: All order operations require authenticated user session
 router.use(authenticateUser);
+
+/**
+ * @route   GET /orders (and /api/v1/orders)
+ * @desc    List authenticated user's orders with optional status, side, event filters and pagination
+ * @access  User (Authenticated)
+ */
+router.get(
+  '/',
+  validate(queryOrdersSchema, 'query'),
+  (req, res, next) => orderController.getOrders(req, res, next)
+);
 
 /**
  * @route   POST /orders (and /api/v1/orders)
@@ -21,6 +34,28 @@ router.post(
   '/',
   validate(placeLimitOrderSchema, 'body'),
   (req, res, next) => orderController.placeOrder(req, res, next)
+);
+
+/**
+ * @route   GET /orders/:id/trades (and /api/v1/orders/:id/trades)
+ * @desc    Return executions associated with the specified order
+ * @access  User (Authenticated, Order Owner)
+ */
+router.get(
+  '/:id/trades',
+  validate(getOrderParamsSchema, 'params'),
+  (req, res, next) => orderController.getOrderTrades(req, res, next)
+);
+
+/**
+ * @route   GET /orders/:id (and /api/v1/orders/:id)
+ * @desc    Return order details and execution fills
+ * @access  User (Authenticated, Order Owner)
+ */
+router.get(
+  '/:id',
+  validate(getOrderParamsSchema, 'params'),
+  (req, res, next) => orderController.getOrderById(req, res, next)
 );
 
 /**
@@ -35,3 +70,4 @@ router.delete(
 );
 
 export default router;
+

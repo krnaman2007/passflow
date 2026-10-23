@@ -49,6 +49,7 @@ import {
   InsufficientFundsError,
   IdempotencyConflictError,
 } from '../wallet/wallet-errors.js';
+import defaultHistoryService, { HistoryService } from '../history.service.js';
 
 /**
  * Error thrown when a seller does not possess sufficient available inventory to list an order.
@@ -117,6 +118,7 @@ export class OrderService {
     orderRepository = new OrderRepository({ prismaClient }),
     settlementService = new TradeSettlementService({ prismaClient }),
     marketStreamService = null,
+    historyService = null,
   } = {}) {
     this.prisma = prismaClient;
     this.walletService = walletService;
@@ -124,6 +126,7 @@ export class OrderService {
     this.orderRepository = orderRepository;
     this.settlementService = settlementService;
     this.marketStreamService = marketStreamService;
+    this.historyService = historyService || new HistoryService({ prismaClient });
   }
 
   /**
@@ -1504,6 +1507,168 @@ export class OrderService {
         available: ownedTickets.length,
         reserved: listedTickets.length,
       },
+    };
+  }
+
+  /**
+   * Retrieves paginated orders for a user with filtering.
+   * Delegates to historyService.getOrders to avoid duplicating query logic.
+   *
+   * @param {Object} params
+   * @param {string} params.userId
+   * @returns {Promise<Object>}
+   */
+  async getUserOrders({ userId, ...filters }) {
+    if (!userId) {
+      const err = new Error('userId is required');
+      err.code = 'UNAUTHORIZED';
+      throw err;
+    }
+    return this.historyService.getOrders(userId, filters);
+  }
+
+  /**
+   * Retrieves order details and execution fills for a specific order.
+   * Enforces strict user ownership: throws FORBIDDEN (403) if order does not belong to userId.
+   * If order does not exist, throws ORDER_NOT_FOUND (404).
+   *
+   * Deduping Invariant:
+   * Inspects incomingExecutions and restingExecutions relations.
+   * Each Execution appears exactly once in the execution/fill list even if query paths overlap.
+   *
+   * @param {Object} params
+   * @param {string} params.orderId
+   * @param {string} params.userId
+   * @returns {Promise<Object>} Order details with deduplicated executions and fills
+   */
+  async getOrderDetails({ orderId, userId }) {
+    if (!orderId) {
+      const err = new Error('orderId is required');
+      err.code = 'ORDER_VALIDATION_ERROR';
+      throw err;
+    }
+    if (!userId) {
+      const err = new Error('userId is required');
+      err.code = 'UNAUTHORIZED';
+      throw err;
+    }
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        incomingExecutions: {
+          orderBy: { sequenceNumber: 'asc' },
+        },
+        restingExecutions: {
+          orderBy: { sequenceNumber: 'asc' },
+        },
+        event: {
+          select: { id: true, name: true, location: true, dateTime: true },
+        },
+        ticketCategory: {
+          select: { id: true, name: true, originalPrice: true },
+        },
+      },
+    });
+
+    if (!order) {
+      const err = new Error(`Order not found: ${orderId}`);
+      err.code = 'ORDER_NOT_FOUND';
+      throw err;
+    }
+
+    if (order.userId !== userId) {
+      const err = new Error('You are not authorized to view this order');
+      err.code = 'FORBIDDEN';
+      throw err;
+    }
+
+    // Deduplicate executions across incoming and resting relations using Map
+    const executionsMap = new Map();
+
+    for (const exec of order.incomingExecutions || []) {
+      executionsMap.set(exec.id, {
+        id: exec.id,
+        orderId: order.id,
+        price: exec.price,
+        quantity: exec.quantity,
+        sequenceNumber: exec.sequenceNumber != null ? String(exec.sequenceNumber) : null,
+        settlementStatus: exec.settlementStatus,
+        role: 'TAKER',
+        side: order.side,
+        executedAt: exec.executedAt instanceof Date ? exec.executedAt.toISOString() : exec.executedAt,
+      });
+    }
+
+    for (const exec of order.restingExecutions || []) {
+      if (!executionsMap.has(exec.id)) {
+        executionsMap.set(exec.id, {
+          id: exec.id,
+          orderId: order.id,
+          price: exec.price,
+          quantity: exec.quantity,
+          sequenceNumber: exec.sequenceNumber != null ? String(exec.sequenceNumber) : null,
+          settlementStatus: exec.settlementStatus,
+          role: 'MAKER',
+          side: order.side,
+          executedAt: exec.executedAt instanceof Date ? exec.executedAt.toISOString() : exec.executedAt,
+        });
+      }
+    }
+
+    const executions = Array.from(executionsMap.values()).sort((a, b) => {
+      if (a.sequenceNumber && b.sequenceNumber) {
+        return BigInt(a.sequenceNumber) < BigInt(b.sequenceNumber) ? -1 : 1;
+      }
+      return new Date(a.executedAt).getTime() - new Date(b.executedAt).getTime();
+    });
+
+    const initialQuantity = order.initialQuantity;
+    const remainingQuantity = order.remainingQuantity;
+    const filledQuantity = initialQuantity - remainingQuantity;
+
+    return {
+      id: order.id,
+      orderId: order.id,
+      userId: order.userId,
+      eventId: order.eventId,
+      eventName: order.event?.name,
+      event: order.event,
+      ticketCategoryId: order.ticketCategoryId,
+      categoryName: order.ticketCategory?.name,
+      ticketCategory: order.ticketCategory,
+      side: order.side,
+      status: order.status,
+      price: order.price,
+      initialQuantity,
+      originalQuantity: initialQuantity,
+      remainingQuantity,
+      filledQuantity,
+      stoppedReason: order.stoppedReason || null,
+      sequenceNumber: order.sequenceNumber != null ? String(order.sequenceNumber) : null,
+      createdAt: order.createdAt instanceof Date ? order.createdAt.toISOString() : order.createdAt,
+      updatedAt: order.updatedAt instanceof Date ? order.updatedAt.toISOString() : order.updatedAt,
+      executions,
+      fills: executions,
+    };
+  }
+
+  /**
+   * Retrieves trades/executions associated with a specific order.
+   * Enforces strict user ownership via getOrderDetails.
+   *
+   * @param {Object} params
+   * @param {string} params.orderId
+   * @param {string} params.userId
+   * @returns {Promise<Object>} { orderId, trades, executions, total }
+   */
+  async getOrderTrades({ orderId, userId }) {
+    const orderDetails = await this.getOrderDetails({ orderId, userId });
+    return {
+      orderId: orderDetails.id,
+      trades: orderDetails.executions,
+      executions: orderDetails.executions,
+      total: orderDetails.executions.length,
     };
   }
 }

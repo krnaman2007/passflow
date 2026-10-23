@@ -43,7 +43,71 @@ export const cancelOrderParamsSchema = z
   })
   .strict();
 
+/**
+ * Zod schema for order lookup route parameters.
+ * GET /api/v1/orders/:id and GET /api/v1/orders/:id/trades
+ */
+export const getOrderParamsSchema = z
+  .object({
+    id: z.string().min(1, 'Order ID is required'),
+  })
+  .strict();
+
+const VALID_SIDES = ['BID', 'ASK', 'BUY', 'SELL'];
+const VALID_STATUSES = [
+  'OPEN',
+  'PARTIALLY_FILLED',
+  'FILLED',
+  'CANCELLED',
+  'REJECTED',
+  'PARTIAL',
+];
+
+/**
+ * Zod schema for querying paginated orders.
+ * GET /api/v1/orders
+ */
+export const queryOrdersSchema = z.object({
+  status: z
+    .string()
+    .optional()
+    .refine(
+      (val) => !val || VALID_STATUSES.includes(val.trim().toUpperCase()),
+      {
+        message:
+          'status must be one of: OPEN, PARTIALLY_FILLED, FILLED, CANCELLED, REJECTED, PARTIAL',
+      }
+    ),
+  side: z
+    .string()
+    .optional()
+    .refine(
+      (val) => !val || VALID_SIDES.includes(val.trim().toUpperCase()),
+      {
+        message: 'side must be one of: BID, ASK, BUY, SELL',
+      }
+    ),
+  eventId: z.string().optional(),
+  event: z.string().optional(),
+  ticketCategoryId: z.string().optional(),
+  categoryId: z.string().optional(),
+  page: z.coerce
+    .number({ invalid_type_error: 'page must be a number' })
+    .int('page must be an integer')
+    .positive('page must be positive')
+    .default(1),
+  limit: z.coerce
+    .number({ invalid_type_error: 'limit must be a number' })
+    .int('limit must be an integer')
+    .positive('limit must be positive')
+    .max(100, 'limit cannot exceed 100')
+    .default(20),
+});
+
 export default {
   placeLimitOrderSchema,
   cancelOrderParamsSchema,
+  getOrderParamsSchema,
+  queryOrdersSchema,
 };
+
