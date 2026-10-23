@@ -69,6 +69,16 @@ export const requireOrganizer = (req, res, next) => {
     return next(new AppError('Organizer profile required for this action', 403, 'FORBIDDEN'));
   }
 
+  if (req.user.organizer.verificationStatus !== 'VERIFIED') {
+    return next(
+      new AppError(
+        'A verified organizer profile is required for this action',
+        403,
+        'ORGANIZER_NOT_VERIFIED'
+      )
+    );
+  }
+
   next();
 };
 

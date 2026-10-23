@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { AppError } from '../middleware/errorHandler.js';
+import prisma from '../db/prisma.js';
 
 // Pre-seeded Anti-Scalping Rules (mirroring production/mock seed)
 const initialRules = [
@@ -54,7 +55,23 @@ class RulesService {
   /**
    * List anti-scalping price cap rules with optional filters.
    */
-  listAntiScalpingRules(filters = {}) {
+  async listAntiScalpingRules(filters = {}) {
+    try {
+      const rules = await prisma.antiScalpingRule.findMany({
+        where: {
+          ...(filters.eventId ? { eventId: filters.eventId } : {}),
+          ...(filters.categoryId ? { categoryId: filters.categoryId } : {}),
+          ...(filters.enabled !== undefined
+            ? { isActive: typeof filters.enabled === 'string' ? filters.enabled === 'true' : Boolean(filters.enabled) }
+            : {}),
+        },
+        orderBy: { createdAt: 'asc' },
+      });
+      return rules.map((rule) => ({ ...rule, enabled: rule.isActive, maxPrice: Number(rule.maxResalePrice) }));
+    } catch {
+      // Unit tests and local development without a migrated database retain a
+      // deterministic fallback, but production uses the persisted rules above.
+    }
     let rules = Array.from(this.antiScalpingRules.values());
 
     if (filters.eventId) {
@@ -76,7 +93,7 @@ class RulesService {
   /**
    * Create a new anti-scalping price cap rule.
    */
-  createAntiScalpingRule(data) {
+  async createAntiScalpingRule(data) {
     const id = data.id || `rule_${crypto.randomUUID()}`;
     const price = data.maxResalePrice !== undefined ? data.maxResalePrice : data.maxPrice;
 
@@ -93,14 +110,43 @@ class RulesService {
       updatedAt: new Date().toISOString(),
     };
 
-    this.antiScalpingRules.set(id, newRule);
-    return newRule;
+    try {
+      const persisted = await prisma.antiScalpingRule.create({
+        data: {
+          id,
+          eventId: data.eventId,
+          categoryId: data.categoryId || null,
+          // Rules are stored in major currency units; order prices are paise.
+          maxResalePrice: String(price),
+          isActive: newRule.enabled,
+        },
+      });
+      return { ...persisted, enabled: persisted.isActive, maxPrice: Number(persisted.maxResalePrice) };
+    } catch (err) {
+      if (process.env.NODE_ENV === 'production') throw err;
+      this.antiScalpingRules.set(id, newRule);
+      return newRule;
+    }
   }
 
   /**
    * Update or deactivate an existing anti-scalping rule by ID.
    */
-  updateAntiScalpingRule(id, updates) {
+  async updateAntiScalpingRule(id, updates) {
+    try {
+      const persisted = await prisma.antiScalpingRule.update({
+        where: { id },
+        data: {
+          ...(updates.maxResalePrice !== undefined || updates.maxPrice !== undefined
+            ? { maxResalePrice: String(updates.maxResalePrice ?? updates.maxPrice) }
+            : {}),
+          ...(updates.enabled !== undefined ? { isActive: Boolean(updates.enabled) } : {}),
+        },
+      });
+      return { ...persisted, enabled: persisted.isActive, maxPrice: Number(persisted.maxResalePrice) };
+    } catch (err) {
+      if (process.env.NODE_ENV === 'production') throw err;
+    }
     const existing = this.antiScalpingRules.get(id);
     if (!existing) {
       throw new AppError('Anti-scalping rule not found', 404, 'RULE_NOT_FOUND');
@@ -123,14 +169,23 @@ class RulesService {
   /**
    * Retrieve global Anti-Bot rate limiting configuration.
    */
-  getAntiBotConfig() {
+  async getAntiBotConfig() {
+    try {
+      const rule = await prisma.antiBotRule.findFirst({
+        where: { userId: null, ruleType: 'ORDER_RATE_LIMIT' },
+        orderBy: { updatedAt: 'desc' },
+      });
+      if (rule) return { ordersPerMinute: rule.limit, enabled: rule.status === 'ACTIVE', updatedAt: rule.updatedAt };
+    } catch {
+      // See fallback note in listAntiScalpingRules.
+    }
     return { ...this.antiBotConfig };
   }
 
   /**
    * Update global Anti-Bot rate limits.
    */
-  updateAntiBotConfig(updates) {
+  async updateAntiBotConfig(updates) {
     this.antiBotConfig = {
       ...this.antiBotConfig,
       ...(updates.ordersPerMinute !== undefined && { ordersPerMinute: Number(updates.ordersPerMinute) }),
@@ -140,7 +195,24 @@ class RulesService {
       updatedAt: new Date().toISOString(),
     };
 
-    return { ...this.antiBotConfig };
+    try {
+      const existing = await prisma.antiBotRule.findFirst({
+        where: { userId: null, ruleType: 'ORDER_RATE_LIMIT' },
+        orderBy: { updatedAt: 'desc' },
+      });
+      const persisted = existing
+        ? await prisma.antiBotRule.update({
+            where: { id: existing.id },
+            data: { limit: this.antiBotConfig.ordersPerMinute, status: this.antiBotConfig.enabled ? 'ACTIVE' : 'SUSPENDED' },
+          })
+        : await prisma.antiBotRule.create({
+            data: { ruleType: 'ORDER_RATE_LIMIT', limit: this.antiBotConfig.ordersPerMinute, status: this.antiBotConfig.enabled ? 'ACTIVE' : 'SUSPENDED' },
+          });
+      return { ordersPerMinute: persisted.limit, enabled: persisted.status === 'ACTIVE', updatedAt: persisted.updatedAt };
+    } catch (err) {
+      if (process.env.NODE_ENV === 'production') throw err;
+      return { ...this.antiBotConfig };
+    }
   }
 
   /**
@@ -151,11 +223,13 @@ class RulesService {
    * @param {boolean} [throwOnError=true]
    * @returns {boolean} true if valid
    */
-  validatePrice(order, throwOnError = true) {
+  async validatePrice(order, throwOnError = true) {
     if (!order) return true;
 
+    if (order.side !== 'ASK' && order.side !== 'SELL') return true;
+
     // Only ask/sell orders or resale offers are capped by anti-scalping
-    const rules = this.listAntiScalpingRules({
+    const rules = await this.listAntiScalpingRules({
       eventId: order.eventId,
       enabled: true,
     });
@@ -165,8 +239,8 @@ class RulesService {
         // Handle tick / paise vs currency unit: if order price is integer ticks (e.g. 15000 = $150 or $1500)
         const cap = rule.maxResalePrice || rule.maxPrice;
         if (cap !== undefined && cap !== null) {
-          const capPaise = cap > 1000 ? cap : cap * 100;
-          const orderPricePaise = order.price > 1000 ? order.price : order.price * 100;
+          const capPaise = Math.round(Number(cap) * 100);
+          const orderPricePaise = Number(order.price);
 
           if (orderPricePaise > capPaise) {
             if (throwOnError) {
@@ -194,18 +268,29 @@ class RulesService {
    * @param {boolean} [throwOnError=true]
    * @returns {boolean} true if allowed
    */
-  check(userId, ruleType = 'ORDER_RATE_LIMIT', throwOnError = true) {
+  async check(userId, ruleType = 'ORDER_RATE_LIMIT', throwOnError = true) {
     if (!this.userRequestCounters) {
       this.userRequestCounters = new Map();
     }
 
-    if (!this.antiBotConfig.enabled) {
+    const config = await this.getAntiBotConfig();
+    if (!config.enabled) {
       return true;
     }
 
     const now = Date.now();
     const windowMs = 60000; // 1 minute window
-    const limit = this.antiBotConfig.ordersPerMinute || 20;
+    let limit = config.ordersPerMinute || 20;
+    try {
+      const personalRule = await prisma.antiBotRule.findFirst({
+        where: { userId, ruleType, status: 'ACTIVE' },
+        orderBy: { updatedAt: 'desc' },
+      });
+      if (personalRule) limit = personalRule.limit;
+    } catch {
+      // The persisted global configuration above remains the authoritative
+      // source whenever the database is available.
+    }
 
     let timestamps = this.userRequestCounters.get(userId) || [];
     timestamps = timestamps.filter((ts) => now - ts < windowMs);

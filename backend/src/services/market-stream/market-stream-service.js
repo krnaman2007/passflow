@@ -219,9 +219,17 @@ export class MarketStreamService {
     socket.on('market:subscribe', (payload, callback) => {
       this.handleSubscribe(socket, payload, callback);
     });
+    // Keep the reference protocol available while clients migrate to the
+    // namespaced protocol. Both routes share identical authorization checks.
+    socket.on('subscribe', (payload, callback) => {
+      this.handleSubscribe(socket, payload, callback);
+    });
 
     // 3. Public market unsubscription
     socket.on('market:unsubscribe', (payload, callback) => {
+      this.handleUnsubscribe(socket, payload, callback);
+    });
+    socket.on('unsubscribe', (payload, callback) => {
       this.handleUnsubscribe(socket, payload, callback);
     });
 
@@ -643,6 +651,7 @@ export class MarketStreamService {
     };
 
     this.io.to(room).emit('market:trade', payload);
+    this.io.to(room).emit('trade:new', payload);
   }
 
   /**
@@ -681,6 +690,8 @@ export class MarketStreamService {
     };
 
     this.io.to(room).emit('market:orderbook', payload);
+    this.io.to(room).emit('depth:update', payload);
+    this.io.to(room).emit('market:update', payload);
   }
 
   /**
@@ -715,6 +726,7 @@ export class MarketStreamService {
     };
 
     this.io.to(room).emit('order:fill', payload);
+    this.io.to(room).emit('order:status', payload);
   }
 
   /**

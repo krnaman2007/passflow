@@ -1,9 +1,17 @@
 import prisma from '../db/prisma.js';
+import redis from '../db/redis.js';
 
 /**
  * Service for system monitoring, health checks, operational logs, and performance metrics.
  */
 export const monitoringService = {
+  io: null,
+  orderService: null,
+
+  setRuntime({ io = null, orderService = null } = {}) {
+    this.io = io;
+    this.orderService = orderService;
+  },
   /**
    * Evaluates health status across DB, Redis, WebSocket, and Matching Engine.
    *
@@ -11,7 +19,7 @@ export const monitoringService = {
    */
   async getHealth() {
     let dbStatus = 'HEALTHY';
-    let latencyMs = 5;
+    let latencyMs = null;
     let dbMessage = 'Database connection operational';
 
     const start = Date.now();
@@ -29,22 +37,25 @@ export const monitoringService = {
         latencyMs,
         message: dbMessage,
       },
-      redis: {
-        status: 'HEALTHY',
-        message: 'Redis cache and pub/sub operational',
-      },
-      websocket: {
-        status: 'HEALTHY',
-        activeConnections: 0,
-      },
-      matchingEngine: {
-        status: 'HEALTHY',
-        activeMarkets: 0,
-      },
+      redis: redis
+        ? { status: redis.status === 'ready' ? 'HEALTHY' : 'DEGRADED', message: `Redis status: ${redis.status}` }
+        : { status: 'DOWN', message: 'Redis is not configured' },
+      websocket: this.io
+        ? {
+            status: 'HEALTHY',
+            activeConnections: this.io.engine?.clientsCount ?? null,
+          }
+        : { status: 'DOWN', activeConnections: null, message: 'Socket.IO server is not attached' },
+      matchingEngine: this.orderService?.matchingService
+        ? {
+            status: this.orderService.checkReadiness?.().ready === false ? 'DEGRADED' : 'HEALTHY',
+            activeMarkets: this.orderService.matchingService._marketBooks?.size ?? null,
+          }
+        : { status: 'DOWN', activeMarkets: null, message: 'Matching service is not attached' },
     };
 
-    const overallStatus =
-      dbStatus === 'HEALTHY' ? 'HEALTHY' : 'DEGRADED';
+    const statuses = Object.values(services).map((service) => service.status);
+    const overallStatus = statuses.includes('DOWN') ? 'DEGRADED' : statuses.every((status) => status === 'HEALTHY') ? 'HEALTHY' : 'DEGRADED';
 
     return {
       status: overallStatus,
@@ -84,35 +95,6 @@ export const monitoringService = {
       prisma.monitoring.count({ where }),
     ]);
 
-    // If no logs exist yet in database, seed initial operational logs
-    if (total === 0 && !type && !status && !startDate && !endDate) {
-      const defaultLogs = [
-        {
-          id: 'log_boot_001',
-          type: 'SYSTEM_BOOT',
-          status: 'HEALTHY',
-          details: { message: 'Core HTTP & WebSocket services started', nodeEnv: process.env.NODE_ENV || 'test' },
-          createdAt: new Date(Date.now() - 3600000),
-        },
-        {
-          id: 'log_engine_002',
-          type: 'MATCHING_ENGINE',
-          status: 'HEALTHY',
-          details: { message: 'In-memory matching engine and FIFO queues initialized' },
-          createdAt: new Date(Date.now() - 1800000),
-        },
-        {
-          id: 'log_health_003',
-          type: 'HEALTH_CHECK',
-          status: 'HEALTHY',
-          details: { message: 'Automated infrastructure health verification passed' },
-          createdAt: new Date(),
-        },
-      ];
-      logs = defaultLogs;
-      total = defaultLogs.length;
-    }
-
     return {
       logs,
       total,
@@ -136,11 +118,13 @@ export const monitoringService = {
     const memoryUsage = process.memoryUsage();
 
     return {
-      ordersPerSec: 48.6,
-      avgLatency: 3.8,
-      avgLatencyMs: 3.8,
-      throughput: 1450,
-      errorRate: 0.0008,
+      // No load-test instrumentation has reported a windowed measurement.
+      // Returning null is safer than presenting made-up benchmark numbers.
+      ordersPerSec: null,
+      avgLatency: null,
+      avgLatencyMs: null,
+      throughput: null,
+      errorRate: null,
       uptime: Math.round(process.uptime()),
       memory: {
         heapUsedMb: Math.round((memoryUsage.heapUsed / 1024 / 1024) * 100) / 100,
@@ -149,12 +133,12 @@ export const monitoringService = {
       },
       orders: {
         total: totalOrders,
-        ordersPerSec: 48.6,
+        ordersPerSec: null,
       },
       executions: {
         total: totalExecutions,
       },
-      activeMarkets: 0,
+      activeMarkets: this.orderService?.matchingService?._marketBooks?.size ?? null,
       createdAt: new Date().toISOString(),
     };
   },
@@ -168,11 +152,15 @@ export const monitoringService = {
    */
   async recordMetrics(sample = {}) {
     const data = {
-      ordersPerSec: Number(sample.ordersPerSec ?? 48.6),
-      avgLatency: Number(sample.avgLatency ?? 3.8),
-      throughput: Number(sample.throughput ?? 1450),
-      errorRate: Number(sample.errorRate ?? 0.0008),
+      ordersPerSec: Number(sample.ordersPerSec),
+      avgLatency: Number(sample.avgLatency),
+      throughput: Number(sample.throughput),
+      errorRate: Number(sample.errorRate),
     };
+
+    if (Object.values(data).some((value) => !Number.isFinite(value))) {
+      throw new Error('Measured ordersPerSec, avgLatency, throughput, and errorRate are required');
+    }
 
     let record;
     try {

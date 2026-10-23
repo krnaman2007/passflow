@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import prisma from '../db/prisma.js';
+import { AppError } from '../middleware/errorHandler.js';
 
 /**
  * Service for Proof of Solvency generation and public verification.
@@ -8,36 +9,6 @@ import prisma from '../db/prisma.js';
 class SolvencyService {
   constructor() {
     this.proofs = [];
-    this.generateInitialProof();
-  }
-
-  generateInitialProof() {
-    const id = crypto.randomUUID();
-    const verifiedAt = new Date().toISOString();
-    const liabilities = 1250000.0;
-    const escrowBalance = 420000.0;
-    const backingAssets = 1850000.0;
-    const isSolvent = backingAssets >= liabilities;
-    const ratio = Math.round((backingAssets / liabilities) * 100) / 100;
-    const proofHash = crypto
-      .createHash('sha256')
-      .update(`${id}:${liabilities}:${escrowBalance}:${backingAssets}:${verifiedAt}`)
-      .digest('hex');
-
-    const initialProof = {
-      id,
-      liabilities,
-      escrowBalance,
-      backingAssets,
-      isSolvent,
-      ratio,
-      verifiedAt,
-      proofHash,
-      notes: 'Initial genesis solvency snapshot',
-    };
-
-    this.proofs.push(initialProof);
-    return initialProof;
   }
 
   /**
@@ -47,44 +18,32 @@ class SolvencyService {
    * @returns {Promise<object>} Generated SolvencyProof record
    */
   async generateProof(options = {}) {
-    // 1. Compute real-time user liabilities from wallet balances
-    let totalLiabilitiesPaise = 0n;
-    try {
-      const wallets = await prisma.wallet.findMany({
-        select: { availableBalance: true, reservedBalance: true },
-      });
-      for (const w of wallets) {
-        totalLiabilitiesPaise += BigInt(w.availableBalance) + BigInt(w.reservedBalance);
-      }
-    } catch {
-      // Non-blocking fallback
+    if (!Number.isFinite(Number(options.backingAssets)) || Number(options.backingAssets) < 0) {
+      throw new AppError(
+        'Authoritative backingAssets attestation is required to generate a solvency proof',
+        422,
+        'BACKING_ASSETS_REQUIRED'
+      );
     }
 
-    // 2. Compute escrow balance from active holds
+    // Holds are already included in reserved wallet balances, so liabilities
+    // deliberately do not add escrow a second time.
+    let totalLiabilitiesPaise = 0n;
     let totalEscrowPaise = 0n;
     try {
-      const holds = await prisma.walletHold.findMany({
-        where: { status: 'ACTIVE' },
-        select: { remainingAmount: true },
-      });
-      for (const h of holds) {
-        totalEscrowPaise += BigInt(h.remainingAmount);
-      }
-    } catch {
-      // Non-blocking fallback
+      const [wallets, holds] = await Promise.all([
+        prisma.wallet.findMany({ select: { availableBalance: true, reservedBalance: true } }),
+        prisma.walletHold.findMany({ where: { status: 'ACTIVE' }, select: { remainingAmount: true } }),
+      ]);
+      for (const wallet of wallets) totalLiabilitiesPaise += BigInt(wallet.availableBalance) + BigInt(wallet.reservedBalance);
+      for (const hold of holds) totalEscrowPaise += BigInt(hold.remainingAmount);
+    } catch (error) {
+      throw new AppError('Authoritative wallet data is unavailable', 503, 'SOLVENCY_DATA_UNAVAILABLE');
     }
 
-    const calculatedLiabilities =
-      totalLiabilitiesPaise > 0n ? Number(totalLiabilitiesPaise) / 100 : 1250000.0;
-    const calculatedEscrow =
-      totalEscrowPaise > 0n ? Number(totalEscrowPaise) / 100 : 420000.0;
-
-    const liabilities = options.liabilities || calculatedLiabilities;
-    const escrowBalance = options.escrowBalance || calculatedEscrow;
-    const backingAssets =
-      options.backingAssets !== undefined
-        ? Number(options.backingAssets)
-        : Math.round((liabilities + escrowBalance) * 1.25 * 100) / 100;
+    const liabilities = Number(totalLiabilitiesPaise) / 100;
+    const escrowBalance = Number(totalEscrowPaise) / 100;
+    const backingAssets = Number(options.backingAssets);
 
     const isSolvent = backingAssets >= liabilities;
     const ratio = liabilities > 0 ? Math.round((backingAssets / liabilities) * 100) / 100 : 1.0;
@@ -108,60 +67,31 @@ class SolvencyService {
       notes: options.notes || 'Automated solvency verification proof',
     };
 
-    this.proofs.unshift(proof);
-
-    // Persist to SolvencyProof table in DB (non-blocking fallback)
-    try {
-      await prisma.solvencyProof.create({
-        data: {
-          id: proof.id,
-          userId: options.userId || null,
-          liabilities: proof.liabilities,
-          escrowBalance: proof.escrowBalance,
-          backingAssets: proof.backingAssets,
-          isSolvent: proof.isSolvent,
-          ratio: proof.ratio,
-          proofHash: proof.proofHash,
-          notes: proof.notes,
-          verifiedAt: new Date(proof.verifiedAt),
-        },
+    const persisted = await prisma.$transaction(async (tx) => {
+      const stored = await tx.solvencyProof.create({
+        data: { ...proof, verifiedAt: new Date(proof.verifiedAt), userId: options.userId || null },
       });
-    } catch {
-      // Non-blocking fallback
-    }
-
-    // Persist to monitoring log in DB (non-blocking)
-    try {
-      await prisma.monitoring.create({
-        data: {
-          type: 'SOLVENCY_PROOF',
-          status: isSolvent ? 'HEALTHY' : 'ERROR',
-          details: proof,
-        },
+      await tx.monitoring.create({
+        data: { type: 'SOLVENCY_PROOF', status: isSolvent ? 'HEALTHY' : 'ERROR', details: proof },
       });
-    } catch {
-      // Non-blocking
-    }
-
-    return proof;
+      return stored;
+    });
+    this.proofs.unshift(persisted);
+    return persisted;
   }
 
   /**
    * Retrieves the latest SolvencyProof.
    */
-  getLatestProof() {
-    if (this.proofs.length === 0) {
-      return this.generateInitialProof();
-    }
-    return this.proofs[0];
-  }
-
   /**
    * Public verification check. Confirms whether assets cover liabilities.
    */
-  verify() {
-    const latest = this.getLatestProof();
-    const isSolvent = latest.backingAssets >= latest.liabilities;
+  async verify() {
+    const latest = await prisma.solvencyProof.findFirst({ orderBy: { verifiedAt: 'desc' } });
+    if (!latest) {
+      throw new AppError('No persisted solvency proof is available', 503, 'SOLVENCY_PROOF_UNAVAILABLE');
+    }
+    const isSolvent = Number(latest.backingAssets) >= Number(latest.liabilities);
     return {
       isSolvent,
       proof: latest,

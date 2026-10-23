@@ -50,6 +50,7 @@ import {
   IdempotencyConflictError,
 } from '../wallet/wallet-errors.js';
 import defaultHistoryService, { HistoryService } from '../history.service.js';
+import defaultRulesService from '../rules.service.js';
 
 /**
  * Error thrown when a seller does not possess sufficient available inventory to list an order.
@@ -119,6 +120,7 @@ export class OrderService {
     settlementService = new TradeSettlementService({ prismaClient }),
     marketStreamService = null,
     historyService = null,
+    rulesService = defaultRulesService,
   } = {}) {
     this.prisma = prismaClient;
     this.walletService = walletService;
@@ -127,6 +129,7 @@ export class OrderService {
     this.settlementService = settlementService;
     this.marketStreamService = marketStreamService;
     this.historyService = historyService || new HistoryService({ prismaClient });
+    this.rulesService = rulesService;
   }
 
   /**
@@ -371,7 +374,12 @@ export class OrderService {
   async placeLimitOrder(input) {
     // 1. Validate business parameters
     const validated = await this._validatePlacementInput(input);
-    const { userId, eventId, ticketCategoryId, side, price, quantity, idempotencyKey } = validated;
+    const { userId, eventId, ticketCategoryId, side, price, quantity, idempotencyKey, orderType } = validated;
+
+    // These checks are deliberately before any hold, ticket reservation, or
+    // matching mutation.  A rejected order must leave no financial residue.
+    await this.rulesService.validatePrice({ eventId, categoryId: ticketCategoryId, side, price });
+    await this.rulesService.check(userId, 'ORDER_RATE_LIMIT');
 
     // 2. Check for existing order by (userId, idempotencyKey)
     const existingOrder = await this.orderRepository.findByIdempotencyKey(userId, idempotencyKey);
@@ -380,6 +388,7 @@ export class OrderService {
         eventId,
         ticketCategoryId,
         side,
+        orderType,
         price,
         initialQuantity: quantity,
         idempotencyKey,
@@ -524,6 +533,7 @@ export class OrderService {
         eventId,
         ticketCategoryId,
         side,
+        orderType,
         price,
         quantity,
         idempotencyKey,
@@ -695,6 +705,45 @@ export class OrderService {
       ...submissionResult,
       holdId: holdRecord ? holdRecord.id : null,
     };
+  }
+
+  /**
+   * A market order receives a bounded, immediately executable limit derived
+   * from the authoritative opposing book, then any unfilled remainder is
+   * cancelled before it can rest. Prices remain integer paise internally.
+   */
+  async placeMarketOrder(input) {
+    const side = input.side;
+    const oppositeSide = side === 'BID' ? 'ASK' : 'BID';
+    const opposite = await this.prisma.order.findMany({
+      where: {
+        eventId: input.eventId,
+        ticketCategoryId: input.ticketCategoryId,
+        side: oppositeSide,
+        status: { in: ['OPEN', 'PARTIALLY_FILLED'] },
+        remainingQuantity: { gt: 0 },
+      },
+      orderBy: side === 'BID' ? [{ price: 'asc' }, { sequenceNumber: 'asc' }] : [{ price: 'desc' }, { sequenceNumber: 'asc' }],
+      select: { price: true },
+      take: Math.max(1, input.quantity),
+    });
+    if (opposite.length === 0) {
+      throw new OrderValidationError('No executable liquidity is available for this market order', 'type');
+    }
+    const price = side === 'BID'
+      ? Math.max(...opposite.map((order) => order.price))
+      : Math.min(...opposite.map((order) => order.price));
+    const result = await this.placeLimitOrder({ ...input, price, orderType: 'MARKET' });
+    if (result.remainingQuantity > 0) {
+      await this.cancelLimitOrder({
+        userId: input.userId,
+        orderId: result.orderId,
+        idempotencyKey: `market-remainder:${input.idempotencyKey}`,
+      });
+      result.remainingQuantity = 0;
+      result.marketRemainderCancelled = true;
+    }
+    return result;
   }
 
   /**
@@ -1191,7 +1240,7 @@ export class OrderService {
       throw new OrderValidationError('Order placement input must be a non-null object');
     }
 
-    const { userId, eventId, ticketCategoryId, side, price, quantity, idempotencyKey } = input;
+    const { userId, eventId, ticketCategoryId, side, price, quantity, idempotencyKey, orderType = 'LIMIT' } = input;
 
     if (!userId || typeof userId !== 'string' || !userId.trim()) {
       throw new OrderValidationError('userId must be a non-empty string', 'userId');
@@ -1204,6 +1253,9 @@ export class OrderService {
     }
     if (side !== 'BID' && side !== 'ASK') {
       throw new OrderValidationError('side must be either "BID" or "ASK"', 'side');
+    }
+    if (orderType !== 'LIMIT' && orderType !== 'MARKET') {
+      throw new OrderValidationError('orderType must be LIMIT or MARKET', 'orderType');
     }
 
     if (typeof price !== 'number' || !Number.isInteger(price) || price <= 0 || !Number.isSafeInteger(price)) {
@@ -1264,6 +1316,7 @@ export class OrderService {
       price,
       quantity,
       idempotencyKey: idempotencyKey.trim(),
+      orderType,
     };
   }
 

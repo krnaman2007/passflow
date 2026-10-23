@@ -129,7 +129,9 @@ export class OrderController {
 
       const userId = req.user.id;
       const body = req.validatedBody || req.body;
-      const { eventId, ticketCategoryId, side, price, quantity } = body;
+      const { eventId, ticketCategoryId, price, quantity } = body;
+      const side = body.side === 'BUY' ? 'BID' : body.side === 'SELL' ? 'ASK' : body.side;
+      const orderType = body.type || 'LIMIT';
 
       const rawIdempotencyKey =
         body.idempotencyKey ||
@@ -141,7 +143,7 @@ export class OrderController {
       }
       const idempotencyKey = String(rawIdempotencyKey).trim();
 
-      const placementResult = await this.orderService.placeLimitOrder({
+      const placementInput = {
         userId,
         eventId,
         ticketCategoryId,
@@ -149,7 +151,11 @@ export class OrderController {
         price,
         quantity,
         idempotencyKey,
-      });
+        orderType,
+      };
+      const placementResult = orderType === 'MARKET'
+        ? await this.orderService.placeMarketOrder(placementInput)
+        : await this.orderService.placeLimitOrder(placementInput);
 
       const statusCode = placementResult.isDuplicate ? 200 : 201;
       res.status(statusCode).json(successResponse(formatSafeOrder(placementResult)));

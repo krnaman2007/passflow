@@ -1,0 +1,4 @@
+CREATE TYPE "OrderType" AS ENUM ('LIMIT', 'MARKET');
+
+ALTER TABLE "Order"
+  ADD COLUMN "orderType" "OrderType" NOT NULL DEFAULT 'LIMIT';

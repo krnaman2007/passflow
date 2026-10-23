@@ -16,22 +16,29 @@ export const placeLimitOrderSchema = z
   .object({
     eventId: z.string().min(1, 'eventId is required'),
     ticketCategoryId: z.string().min(1, 'ticketCategoryId is required'),
-    side: z.enum(['BID', 'ASK'], {
-      errorMap: () => ({ message: 'side must be either "BID" or "ASK"' }),
+    side: z.enum(['BID', 'ASK', 'BUY', 'SELL'], {
+      errorMap: () => ({ message: 'side must be BUY, SELL, BID, or ASK' }),
     }),
+    type: z.enum(['LIMIT', 'MARKET']).default('LIMIT'),
     price: z
       .number({ invalid_type_error: 'price must be an integer (paise)' })
       .int('price must be an integer (paise)')
       .positive('price must be positive')
-      .max(Number.MAX_SAFE_INTEGER, 'price exceeds safe limit'),
+      .max(Number.MAX_SAFE_INTEGER, 'price exceeds safe limit')
+      .optional(),
     quantity: z
       .number({ invalid_type_error: 'quantity must be an integer' })
       .int('quantity must be an integer')
       .positive('quantity must be positive')
       .max(Number.MAX_SAFE_INTEGER, 'quantity exceeds safe limit'),
-    idempotencyKey: z.string().min(1, 'idempotencyKey cannot be empty').optional(),
+    idempotencyKey: z.string().min(1, 'idempotencyKey cannot be empty'),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.type === 'LIMIT' && value.price === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['price'], message: 'price is required for LIMIT orders' });
+    }
+  });
 
 /**
  * Zod schema for order cancellation route parameters.

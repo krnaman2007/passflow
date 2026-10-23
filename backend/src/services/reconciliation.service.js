@@ -15,39 +15,34 @@ export const reconciliationService = {
   async runReconciliation(targetDate = new Date()) {
     const runDate = targetDate ? new Date(targetDate) : new Date();
 
-    // Query active trades and executions
-    const [checkedTrades, executions, failedHolds] = await Promise.all([
-      prisma.execution.count(),
-      prisma.execution.findMany({
-        select: { price: true, quantity: true },
-        take: 2000,
-      }),
-      prisma.walletHold.count({
-        where: { status: 'SETTLED' },
-      }).catch(() => 0),
-    ]);
-
-    // Calculate trade ledger sum
+    const settlements = await prisma.tradeSettlement.findMany({
+      include: { execution: { include: { ledgerEntries: true } } },
+      take: 2000,
+    });
+    let discrepancies = 0;
     let totalVolumePaise = 0n;
-    for (const exec of executions) {
-      totalVolumePaise += BigInt(exec.price) * BigInt(exec.quantity);
+    for (const settlement of settlements) {
+      const expected = BigInt(settlement.executionCostPaise);
+      totalVolumePaise += expected;
+      const entries = settlement.execution.ledgerEntries;
+      const debit = entries.filter((entry) => entry.entryType === 'TRADE_SETTLEMENT_DEBIT')
+        .reduce((sum, entry) => sum + BigInt(entry.amount), 0n);
+      const credit = entries.filter((entry) => entry.entryType === 'TRADE_SETTLEMENT_CREDIT')
+        .reduce((sum, entry) => sum + BigInt(entry.amount), 0n);
+      if (debit !== expected || credit !== expected) discrepancies += 1;
     }
-
-    const discrepancies = 0; // Clean automated run with 0 mismatches
     const status = discrepancies === 0 ? 'MATCHED' : 'DISCREPANCY_FOUND';
     const formattedLedgerSum = `$${(Number(totalVolumePaise) / 100).toLocaleString('en-US', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     })}`;
 
-    const reportUrl = `https://storage.passflow.com/reports/recon-${Date.now()}.json`;
-
     // Persist to PostgreSQL database
     const record = await prisma.reconciliation.create({
       data: {
         date: runDate,
         status,
-        reportUrl,
+        reportUrl: null,
       },
     });
 
@@ -55,10 +50,10 @@ export const reconciliationService = {
       id: record.id,
       date: record.date,
       status: record.status,
-      reportUrl: record.reportUrl,
+      reportUrl: null,
       discrepancies,
-      checkedTrades: checkedTrades || 1450,
-      ledgerSum: formattedLedgerSum !== '$0.00' ? formattedLedgerSum : '$168,290.00',
+      checkedTrades: settlements.length,
+      ledgerSum: formattedLedgerSum,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
     };
@@ -100,9 +95,7 @@ export const reconciliationService = {
 
     const formattedReports = reports.map((r) => ({
       ...r,
-      discrepancies: r.status === 'DISCREPANCY_FOUND' ? 1 : 0,
-      checkedTrades: 1450,
-      ledgerSum: '$168,290.00',
+      summaryAvailable: false,
     }));
 
     return {

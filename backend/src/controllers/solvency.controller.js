@@ -7,7 +7,7 @@ import solvencyService from '../services/solvency.service.js';
  */
 export const verifySolvency = async (req, res, next) => {
   try {
-    const result = solvencyService.verify();
+    const result = await solvencyService.verify();
     res.status(200).json(successResponse(result));
   } catch (err) {
     next(err);

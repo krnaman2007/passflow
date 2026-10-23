@@ -395,7 +395,7 @@ export const manageEvent = async (req, res, next) => {
 
 export const listAntiScalpingRules = async (req, res, next) => {
   try {
-    const rules = rulesService.listAntiScalpingRules(req.query);
+    const rules = await rulesService.listAntiScalpingRules(req.query);
     res.status(200).json(
       successResponse({
         rules,
@@ -413,7 +413,7 @@ export const listAntiScalpingRules = async (req, res, next) => {
  */
 export const createAntiScalpingRule = async (req, res, next) => {
   try {
-    const rule = rulesService.createAntiScalpingRule(req.body);
+    const rule = await rulesService.createAntiScalpingRule(req.body);
 
     // Non-blocking audit log record
     try {
@@ -449,7 +449,7 @@ export const createAntiScalpingRule = async (req, res, next) => {
 export const updateAntiScalpingRule = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const rule = rulesService.updateAntiScalpingRule(id, req.body);
+    const rule = await rulesService.updateAntiScalpingRule(id, req.body);
 
     // Non-blocking audit log record
     try {
@@ -484,7 +484,7 @@ export const updateAntiScalpingRule = async (req, res, next) => {
  */
 export const getAntiBotConfig = async (req, res, next) => {
   try {
-    const config = rulesService.getAntiBotConfig();
+    const config = await rulesService.getAntiBotConfig();
     res.status(200).json(successResponse(config));
   } catch (err) {
     next(err);
@@ -497,7 +497,7 @@ export const getAntiBotConfig = async (req, res, next) => {
  */
 export const updateAntiBotConfig = async (req, res, next) => {
   try {
-    const config = rulesService.updateAntiBotConfig(req.body);
+    const config = await rulesService.updateAntiBotConfig(req.body);
 
     // Non-blocking audit log record
     try {

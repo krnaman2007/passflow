@@ -8,6 +8,8 @@ import { tradeSettlementService, settlementRecoveryWorker } from './src/services
 import { appLifecycleState } from './src/services/app-state.js';
 import { orderService } from './src/services/order/index.js';
 import { marketStreamService } from './src/services/market-stream/index.js';
+import notificationService from './src/services/notification.service.js';
+import monitoringService from './src/services/monitoring.service.js';
 
 const server = http.createServer(app);
 
@@ -41,6 +43,8 @@ const io = new Server(server, {
 // Attach MarketStreamService to Socket.IO and OrderService
 marketStreamService.setServer(io);
 orderService.setMarketStreamService(marketStreamService);
+notificationService.setIo(io);
+monitoringService.setRuntime({ io, orderService });
 
 io.on('connection', (socket) => {
   logger.info(`⚡ Socket client connected: ${socket.id}`);

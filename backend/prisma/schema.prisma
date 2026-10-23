@@ -76,6 +76,11 @@ enum OrderSide {
   ASK
 }
 
+enum OrderType {
+  LIMIT
+  MARKET
+}
+
 enum OrderStatus {
   OPEN
   PARTIALLY_FILLED
@@ -251,6 +256,7 @@ model Order {
   ticketCategoryId  String
   ticketCategory    TicketCategory @relation(fields: [ticketCategoryId], references: [id], onDelete: Cascade)
   side              OrderSide
+  orderType         OrderType       @default(LIMIT)
   status            OrderStatus    @default(OPEN)
   price             Int            // Integer minor currency units / ticks (e.g. cents)
   initialQuantity   Int            // Original requested size

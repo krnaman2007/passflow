@@ -1183,6 +1183,7 @@ export class PersistentMatchingService {
       initialQuantity,
       idempotencyKey,
       id,
+      orderType = 'LIMIT',
     } = input;
 
     if (typeof eventId !== 'string' || eventId.trim().length === 0) {
@@ -1199,6 +1200,9 @@ export class PersistentMatchingService {
     }
     if (side !== 'BID' && side !== 'ASK') {
       throw new OrderValidationError('side must be either "BID" or "ASK"', 'side');
+    }
+    if (orderType !== 'LIMIT' && orderType !== 'MARKET') {
+      throw new OrderValidationError('orderType must be LIMIT or MARKET', 'orderType');
     }
 
     if (typeof price !== 'number' || !Number.isInteger(price) || price <= 0 || !Number.isSafeInteger(price)) {
@@ -1225,6 +1229,7 @@ export class PersistentMatchingService {
       ticketCategoryId: ticketCategoryId.trim(),
       userId: userId.trim(),
       side,
+      orderType,
       price,
       initialQuantity: effectiveQty,
       remainingQuantity: effectiveQty,
@@ -1408,6 +1413,7 @@ export class PersistentMatchingService {
         eventId: validatedOrder.eventId,
         ticketCategoryId: validatedOrder.ticketCategoryId,
         side: validatedOrder.side,
+        orderType: validatedOrder.orderType,
         status: dbStatus,
         price: validatedOrder.price,
         initialQuantity: validatedOrder.initialQuantity,
