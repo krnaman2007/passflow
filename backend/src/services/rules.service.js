@@ -142,7 +142,91 @@ class RulesService {
 
     return { ...this.antiBotConfig };
   }
+
+  /**
+   * AntiScalpingRule: validatePrice()
+   * Rejects orders priced above the price cap.
+   *
+   * @param {object} order - { eventId, categoryId, price, side }
+   * @param {boolean} [throwOnError=true]
+   * @returns {boolean} true if valid
+   */
+  validatePrice(order, throwOnError = true) {
+    if (!order) return true;
+
+    // Only ask/sell orders or resale offers are capped by anti-scalping
+    const rules = this.listAntiScalpingRules({
+      eventId: order.eventId,
+      enabled: true,
+    });
+
+    for (const rule of rules) {
+      if (!rule.categoryId || rule.categoryId === order.categoryId) {
+        // Handle tick / paise vs currency unit: if order price is integer ticks (e.g. 15000 = $150 or $1500)
+        const cap = rule.maxResalePrice || rule.maxPrice;
+        if (cap !== undefined && cap !== null) {
+          const capPaise = cap > 1000 ? cap : cap * 100;
+          const orderPricePaise = order.price > 1000 ? order.price : order.price * 100;
+
+          if (orderPricePaise > capPaise) {
+            if (throwOnError) {
+              throw new AppError(
+                `Order price (${order.price}) exceeds anti-scalping price cap (${cap})`,
+                400,
+                'PRICE_CAP_EXCEEDED'
+              );
+            }
+            return false;
+          }
+        }
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * AntiBotRule: check()
+   * Throttles users exceeding the rate limit / bot detection threshold.
+   *
+   * @param {string} userId
+   * @param {string} [ruleType='ORDER_RATE_LIMIT']
+   * @param {boolean} [throwOnError=true]
+   * @returns {boolean} true if allowed
+   */
+  check(userId, ruleType = 'ORDER_RATE_LIMIT', throwOnError = true) {
+    if (!this.userRequestCounters) {
+      this.userRequestCounters = new Map();
+    }
+
+    if (!this.antiBotConfig.enabled) {
+      return true;
+    }
+
+    const now = Date.now();
+    const windowMs = 60000; // 1 minute window
+    const limit = this.antiBotConfig.ordersPerMinute || 20;
+
+    let timestamps = this.userRequestCounters.get(userId) || [];
+    timestamps = timestamps.filter((ts) => now - ts < windowMs);
+
+    if (timestamps.length >= limit) {
+      if (throwOnError) {
+        throw new AppError(
+          `Rate limit exceeded: user ${userId} throttled by AntiBotRule (${timestamps.length}/${limit} req/min)`,
+          429,
+          'RATE_LIMIT_EXCEEDED'
+        );
+      }
+      return false;
+    }
+
+    timestamps.push(now);
+    this.userRequestCounters.set(userId, timestamps);
+    return true;
+  }
 }
 
 export const rulesService = new RulesService();
 export default rulesService;
+

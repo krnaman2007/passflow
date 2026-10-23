@@ -54,6 +54,17 @@ This document tracks active API routes and planned route additions as the PassFl
 | `GET` | `/api/v1/categories/:id/inventory` | Inspect total, available, reserved, and sold ticket counts | Organizer (Owner) / Admin | None | `{"success": true, "data": {"categoryId": "...", "totalQuantity": 100, "availableQuantity": 80, "reservedQuantity": 5, "soldCount": 15}}` | Active |
 | `PUT` | `/api/v1/categories/:id/inventory` | Adjust total inventory (strictly blocked below sold count) | Organizer (Owner) / Admin | `{"totalQuantity": 150}` | `{"success": true, "data": {"categoryId": "...", "totalQuantity": 150, "availableQuantity": 130, "reservedQuantity": 5, "soldCount": 15}}` | Active |
 
+### Primary Ticket Purchase, Ownership & Transfers
+
+| Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `POST` | `/events/:id/purchase` *(also `/api/v1/events/:id/purchase`)* | Buy at original price. Body: categoryId, quantity. Reserve inventory -> debit wallet -> create Ticket + TicketOwnership in one DB transaction; release on failure. | User | `{"categoryId": "uuid", "quantity": 1}` | `{"success": true, "data": {"tickets": [...], "transactionId": "...", "amountDebited": "150.00", "newWalletBalance": "350.00"}}` | Active |
+| `GET` | `/tickets/me` *(also `/api/v1/tickets/me`)* | Tickets owned by logged-in user (filter by status) | User | None (Query: `status`, `page`, `limit`) | `{"success": true, "data": {"tickets": [...], "pagination": {...}}}` | Active |
+| `GET` | `/tickets/:id` *(also `/api/v1/tickets/:id`)* | Ticket details with event, category, and current owner info | User | None | `{"success": true, "data": {"id": "...", "status": "OWNED", "event": {...}, "category": {...}}}` | Active |
+| `GET` | `/tickets/:id/ownership` *(also `/api/v1/tickets/:id/ownership`)* | Complete ownership history / audit trail of the ticket | User | None | `{"success": true, "data": {"ticketId": "...", "currentOwnerId": "...", "totalTransfers": 1, "history": [...]}}` | Active |
+| `POST` | `/tickets/:id/transfer` *(also `/api/v1/tickets/:id/transfer`)* | Direct (non-market) peer-to-peer transfer to another user; creates TicketTransfer | User | `{"toUserId": "uuid"}` or `{"recipientEmail": "user@example.com"}` | `{"success": true, "data": {"message": "Ticket transferred successfully", "transferId": "...", "status": "COMPLETED"}}` | Active |
+| `GET` | `/transfers/:id` *(also `/api/v1/transfers/:id`)* | Transfer status, ticket details, sender and recipient | User (Sender / Recipient) / Admin | None | `{"success": true, "data": {"id": "...", "ticketId": "...", "status": "COMPLETED", "fromUser": {...}, "toUser": {...}}}` | Active |
+
 ### Platform Administration & Moderation
 
 | Method | Endpoint | Description | Auth Required | Request Body | Response Format | Status |
