@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import crypto from 'node:crypto';
 import config from '../config/index.js';
 
 /**
@@ -46,6 +47,7 @@ export const generateRefreshToken = (user) => {
     {
       userId: user.id,
       type: 'refresh',
+      jti: crypto.randomUUID(),
     },
     config.jwtRefreshSecret,
     { expiresIn: config.jwtRefreshExpiry }

@@ -2089,6 +2089,45 @@ model TradeSettlement {
 - **Automated Test Coverage**:
   - Test Suite: `frontend/tests/marketStream.test.js` (15 deterministic unit and integration tests, 100% pass).
 
+#### 5.18.23 Step A Database Schema and Migration History Reconciliation
+- **Operational Scope**:
+  - Reconciled committed Prisma migration history with `backend/prisma/schema.prisma` without dropping tables, columns, or weakening financial integrity constraints.
+  - Authored forward-only migration: `20261023120000_add_missing_schema_models`.
+  - Added 10 missing PostgreSQL ENUMs: `TicketStatus`, `TicketOwnershipSource`, `TransferStatus`, `TransactionType`, `TransactionStatus`, `ReconciliationStatus`, `MonitoringStatus`, `AntiBotStatus`, `NotificationStatus`, `DutchAuctionStatus`.
+  - Created 16 missing schema tables and 18 foreign keys: `Transaction`, `Ticket`, `TicketOwnership`, `TicketTransfer`, `RefreshToken`, `Admin`, `AuditLog`, `Reconciliation`, `Monitoring`, `AntiScalpingRule`, `AntiBotRule`, `Notification`, `TransactionHistory`, `DutchAuction`, `PerformanceMetrics`, `SolvencyProof`.
+  - Preserved all 12 prior historical migrations and database immutability constraints.
+- **Refresh Token Cryptographic Uniqueness**:
+  - Updated `generateRefreshToken` (`backend/src/utils/token.js`) to include an RFC 7519 `jti: crypto.randomUUID()` claim, eliminating duplicate token hash collisions when tokens are generated within the same Unix second during automated testing and rapid user authentication.
+- **Verification & Deployment Standards**:
+  - Standard deployment command: `npx prisma migrate deploy`
+  - Validated with zero schema drift against fresh isolated PostgreSQL (`npx prisma migrate diff --from-schema-datamodel prisma/schema.prisma --to-url ...`).
+
+#### 5.18.24 Step B Unified Ticket Ownership, Resale Inventory, and Settlement
+- **Canonical Ownership Invariant**:
+  - Individual `Ticket` records serve as the authoritative single source of truth for ticket identity and current ownership.
+  - `UserTicketInventory` functions strictly as a synchronized transactional projection and aggregate reservation mechanism for secondary market matching.
+  - Every issued ticket has exactly one owner (`Ticket.ownerId`), verifiable through append-only historical audit logs in `TicketOwnership`.
+- **Primary Purchase & Issuance Lifecycle**:
+  - Primary purchases atomically generate individual `Ticket` records (`status: 'OWNED'`, `orderId: null`), initial `TicketOwnership` records (`source: 'PRIMARY'`), and credit the aggregate `UserTicketInventory` via `OrderService.creditUserTicketInventory` within the same database transaction.
+  - Idempotent deduplication guarantees that replaying an already-processed primary purchase never issues duplicate tickets or secondary inventory.
+- **Secondary Market Sell-Order Reservations**:
+  - When placing an ASK limit order, `OrderService.placeLimitOrder` deterministically locks the seller's eligible tickets (`SELECT id FROM "Ticket" WHERE "ownerId" = userId AND "categoryId" = categoryId AND "status" = 'OWNED' AND "orderId" IS NULL ORDER BY "createdAt" ASC, "id" ASC LIMIT quantity FOR UPDATE`).
+  - Allocated tickets transition to `status: 'LISTED'` with `orderId: order.id`, and `UserTicketInventory.reservedQuantity` is incremented before order entry into the persistent matching engine.
+  - If order submission fails before matching commits, compensating rollback releases reserved tickets back to `status: 'OWNED', orderId: null` and restores inventory.
+- **Trade Settlement & Ownership Transfer**:
+  - Inside the atomic `Serializable` transaction of `TradeSettlementService._settle`, for each settled execution:
+    1. The seller's reserved tickets associated with `sellerOrder.id` are locked (`FOR UPDATE`).
+    2. Selected tickets transfer current ownership to `buyerOrder.userId` (`Ticket.ownerId = buyerOrder.userId`, `status = 'OWNED'`, `orderId = null`).
+    3. An append-only `TicketOwnership` audit record is inserted with `source = 'RESALE'`, referencing the execution and trade settlement.
+    4. A `TicketTransfer` record is recorded with `status = 'COMPLETED'` linking the seller and buyer.
+    5. Aggregate `UserTicketInventory` is decremented for the seller (`totalQuantity` and `reservedQuantity`) and incremented for the buyer (`totalQuantity` and `availableQuantity`).
+- **Cancellation & Unfilled Releases**:
+  - Cancelling an unfilled or partially filled sell order under `MarketExecutionQueue` serialization releases only the remaining unexecuted tickets (`status = 'LISTED' AND orderId = order.id`) back to `status = 'OWNED', orderId = null`. Completed settlement transfers are immutable and never reversed.
+- **Recovery & Reconciliation Invariants**:
+  - Settlement recovery (`TradeSettlementService.recoverUnsettled`) processes interrupted or transiently failed executions idempotently without duplicate ticket transfers or history rows. Executions failing permanent invariant checks transition to `MANUAL_REVIEW` without transferring tickets.
+  - `OrderService.reconcileTicketOwnershipAndInventory({ userId, ticketCategoryId })` provides deterministic auditing to verify that aggregate `availableQuantity` and `reservedQuantity` match actual `Ticket` counts.
+
+
 
 
 

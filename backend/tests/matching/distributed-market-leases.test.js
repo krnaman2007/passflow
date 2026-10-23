@@ -58,7 +58,7 @@ describe('Step 9.14 — Distributed Market Leases and Fenced Worker Coordination
     const [dbInfo] = await livePrisma.$queryRaw`
       SELECT current_database(), current_user, inet_server_port()
     `;
-    expect(dbInfo.current_database).toBe('passflow_isolated_validation');
+    expect(['passflow_isolated_validation', 'passflow_fresh_migration_test']).toContain(dbInfo.current_database);
     expect(dbInfo.inet_server_port).toBe(55432);
 
     liveRepo = new OrderRepository({ prismaClient: livePrisma });
@@ -705,6 +705,25 @@ describe('Step 9.14 — Distributed Market Leases and Fenced Worker Coordination
         totalQuantity: 1,
         reservedQuantity: 1,
         availableQuantity: 0,
+      },
+    });
+
+    const ticket = await livePrisma.ticket.create({
+      data: {
+        eventId: testEvent.id,
+        categoryId: testCategory1.id,
+        ownerId: testUserB.id,
+        status: 'LISTED',
+        orderId: ask.orderId,
+        faceValue: 100,
+        currentPrice: 15000,
+      },
+    });
+    await livePrisma.ticketOwnership.create({
+      data: {
+        ticketId: ticket.id,
+        ownerId: testUserB.id,
+        source: 'PRIMARY',
       },
     });
 

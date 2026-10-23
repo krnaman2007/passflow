@@ -649,6 +649,64 @@ export class TradeSettlementService {
       throw new SettlementInvariantError('Seller has insufficient reserved inventory', { executionId });
     }
 
+    // Select and lock the seller's reserved tickets associated with sellerOrder
+    const reservedTickets = await tx.$queryRaw`
+      SELECT id, "ownerId", "categoryId", "eventId", "status", "orderId"
+      FROM "Ticket"
+      WHERE "orderId" = ${sellerOrder.id}
+        AND "ownerId" = ${sellerOrder.userId}
+        AND "categoryId" = ${buyerOrder.ticketCategoryId}
+        AND "status" = 'LISTED'
+      ORDER BY "createdAt" ASC, "id" ASC
+      LIMIT ${execution.quantity}
+      FOR UPDATE
+    `;
+
+    if (!reservedTickets || reservedTickets.length !== execution.quantity) {
+      throw new SettlementInvariantError(
+        `Seller does not have enough reserved tickets for order ${sellerOrder.id}. Expected ${execution.quantity}, found ${reservedTickets?.length || 0}`,
+        { executionId, sellerOrderId: sellerOrder.id, expected: execution.quantity, found: reservedTickets?.length || 0 }
+      );
+    }
+
+    const ticketIds = reservedTickets.map((t) => t.id);
+    const now = new Date();
+
+    // Transfer ticket ownership to buyer and clear order reservation
+    await tx.ticket.updateMany({
+      where: { id: { in: ticketIds } },
+      data: {
+        ownerId: buyerOrder.userId,
+        status: 'OWNED',
+        orderId: null,
+      },
+    });
+
+    // Record append-only TicketOwnership history with source: RESALE
+    for (const ticketId of ticketIds) {
+      await tx.ticketOwnership.create({
+        data: {
+          ticketId,
+          ownerId: buyerOrder.userId,
+          acquiredAt: now,
+          source: 'RESALE',
+        },
+      });
+    }
+
+    // Record completed TicketTransfer records
+    for (const ticketId of ticketIds) {
+      await tx.ticketTransfer.create({
+        data: {
+          ticketId,
+          fromUserId: sellerOrder.userId,
+          toUserId: buyerOrder.userId,
+          status: 'COMPLETED',
+          createdAt: now,
+        },
+      });
+    }
+
     const buyerAvailable = BigInt(lockedBuyerWallet.availableBalance) + improvement;
     const buyerReserved = BigInt(lockedBuyerWallet.reservedBalance) - consumed;
     const sellerAvailable = BigInt(lockedSellerWallet.availableBalance) + cost;

@@ -1,6 +1,7 @@
 import prisma from '../db/prisma.js';
 import logger from '../errorlogging/logger.js';
 import { AppError } from '../middleware/errorHandler.js';
+import { orderService } from './order/index.js';
 
 /**
  * Service handling Primary Ticket Purchases, User Ticket Portfolio,
@@ -27,6 +28,44 @@ export const ticketService = {
     const qty = parseInt(quantity, 10);
     if (!qty || qty < 1) {
       throw new AppError('Quantity must be at least 1', 400, 'INVALID_QUANTITY');
+    }
+
+    const cleanIdempKey = idempotencyKey && typeof idempotencyKey === 'string' && idempotencyKey.trim()
+      ? idempotencyKey.trim()
+      : null;
+
+    if (cleanIdempKey) {
+      const existingCredit = await prisma.userInventoryCredit.findUnique({
+        where: { idempotencyKey: cleanIdempKey },
+      });
+      if (existingCredit) {
+        if (
+          existingCredit.userId !== userId ||
+          existingCredit.ticketCategoryId !== categoryId ||
+          existingCredit.quantity !== qty
+        ) {
+          throw new AppError(
+            `Idempotency key "${cleanIdempKey}" was already used with different parameters`,
+            409,
+            'IDEMPOTENCY_CONFLICT'
+          );
+        }
+        // Fetch existing tickets
+        const existingOwnerships = await prisma.ticketOwnership.findMany({
+          where: {
+            ownerId: userId,
+            transactionId: existingCredit.purchaseId,
+            source: 'PRIMARY',
+          },
+          include: { ticket: true },
+        });
+        const existingTickets = existingOwnerships.map((o) => o.ticket);
+        return {
+          tickets: existingTickets,
+          transactionId: existingCredit.purchaseId,
+          isDuplicate: true,
+        };
+      }
     }
 
     // 1. Fetch Event & Category details
@@ -186,6 +225,23 @@ export const ticketService = {
         });
 
         createdTickets.push(ticket);
+      }
+
+      // 2f. Credit UserTicketInventory within the same transaction if available on tx
+      if (tx.userTicketInventory && tx.userInventoryCredit) {
+        const creditKey = cleanIdempKey ? cleanIdempKey : `purchase:${transaction.id}`;
+        await orderService.creditUserTicketInventory(
+          {
+            userId,
+            ticketCategoryId: categoryId,
+            quantity: qty,
+            idempotencyKey: creditKey,
+            purchaseId: transaction.id,
+            requireTransaction: true,
+            skipTicketCreation: true,
+          },
+          tx
+        );
       }
 
       return {
@@ -479,6 +535,43 @@ export const ticketService = {
           source: 'TRANSFER',
         },
       });
+
+      // Update sender aggregate inventory if available on tx
+      if (tx.userTicketInventory?.updateMany) {
+        await tx.userTicketInventory.updateMany({
+          where: {
+            userId: fromUserId,
+            ticketCategoryId: ticket.categoryId,
+          },
+          data: {
+            totalQuantity: { decrement: 1 },
+            availableQuantity: { decrement: 1 },
+          },
+        });
+      }
+
+      // Update recipient aggregate inventory if available on tx
+      if (tx.userTicketInventory?.upsert) {
+        await tx.userTicketInventory.upsert({
+          where: {
+            userId_ticketCategoryId: {
+              userId: recipient.id,
+              ticketCategoryId: ticket.categoryId,
+            },
+          },
+          update: {
+            totalQuantity: { increment: 1 },
+            availableQuantity: { increment: 1 },
+          },
+          create: {
+            userId: recipient.id,
+            ticketCategoryId: ticket.categoryId,
+            totalQuantity: 1,
+            availableQuantity: 1,
+            reservedQuantity: 0,
+          },
+        });
+      }
 
       return {
         transfer,

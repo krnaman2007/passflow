@@ -513,6 +513,11 @@ describe('Step 9.8 — End-to-End Financial Lifecycle Integration Tests (Live Po
       data: { availableQuantity: 0, reservedQuantity: 3 },
     });
 
+    await livePrisma.ticket.updateMany({
+      where: { ownerId: seller.user.id, categoryId: testCategory.id },
+      data: { status: 'LISTED', orderId: sellOrder.id },
+    });
+
     const execution = await livePrisma.execution.create({
       data: {
         incomingOrderId: buyOrder.id,

@@ -37,7 +37,7 @@ describe('Step 9.15 — Distributed Market Coordination Safety Audit', () => {
     const [dbInfo] = await livePrisma.$queryRaw`
       SELECT current_database(), current_user, inet_server_port()
     `;
-    expect(dbInfo.current_database).toBe('passflow_isolated_validation');
+    expect(['passflow_isolated_validation', 'passflow_fresh_migration_test']).toContain(dbInfo.current_database);
     expect(dbInfo.inet_server_port).toBe(55432);
 
     liveRepo = new OrderRepository({ prismaClient: livePrisma });
@@ -774,7 +774,7 @@ describe('Step 9.15 — Distributed Market Coordination Safety Audit', () => {
     await serviceA.acquireMarketOwnership(marketKey10, { leaseDurationMs: 5000, reconstruct: true });
 
     // Submit ASK order under Instance A
-    await serviceA.submitLimitOrder({
+    const askOrder = await serviceA.submitLimitOrder({
       eventId: testEvent.id,
       ticketCategoryId: cat10.id,
       userId: testUserB.id,
@@ -847,6 +847,25 @@ describe('Step 9.15 — Distributed Market Coordination Safety Audit', () => {
       },
       update: { totalQuantity: 1, reservedQuantity: 1, availableQuantity: 0 },
       create: { userId: testUserB.id, ticketCategoryId: cat10.id, totalQuantity: 1, reservedQuantity: 1, availableQuantity: 0 },
+    });
+
+    const ticket = await livePrisma.ticket.create({
+      data: {
+        eventId: testEvent.id,
+        categoryId: cat10.id,
+        ownerId: testUserB.id,
+        status: 'LISTED',
+        orderId: askOrder.orderId,
+        faceValue: 100,
+        currentPrice: 20000,
+      },
+    });
+    await livePrisma.ticketOwnership.create({
+      data: {
+        ticketId: ticket.id,
+        ownerId: testUserB.id,
+        source: 'PRIMARY',
+      },
     });
 
     await livePrisma.walletHold.create({

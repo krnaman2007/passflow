@@ -41,7 +41,7 @@ describe('Step 9.4I — Trade Settlement Deadlock & Serialization Retry Integrat
     const [dbInfo] = await livePrisma.$queryRaw`
       SELECT current_database(), current_user, inet_server_addr()::text, inet_server_port()
     `;
-    expect(dbInfo.current_database).toBe('passflow_isolated_validation');
+    expect(['passflow_isolated_validation', 'passflow_fresh_migration_test']).toContain(dbInfo.current_database);
     expect(dbInfo.inet_server_port).toBe(55432);
 
     // Create base organizer and events
@@ -209,6 +209,27 @@ describe('Step 9.4I — Trade Settlement Deadlock & Serialization Retry Integrat
         availableQuantity: 0,
       },
     });
+
+    for (let i = 0; i < quantity; i++) {
+      const ticket = await livePrisma.ticket.create({
+        data: {
+          eventId: event.id,
+          categoryId: category.id,
+          ownerId: seller.user.id,
+          status: 'LISTED',
+          orderId: sellOrder.id,
+          faceValue: 100,
+          currentPrice: executionPrice,
+        },
+      });
+      await livePrisma.ticketOwnership.create({
+        data: {
+          ticketId: ticket.id,
+          ownerId: seller.user.id,
+          source: 'PRIMARY',
+        },
+      });
+    }
 
     // Create Execution record
     const execution = await livePrisma.execution.create({
@@ -524,6 +545,27 @@ describe('Step 9.4I — Trade Settlement Deadlock & Serialization Retry Integrat
       },
     });
 
+    for (let i = 0; i < 4; i++) {
+      const ticket = await livePrisma.ticket.create({
+        data: {
+          eventId: testEvent.id,
+          categoryId: testCategory.id,
+          ownerId: seller.user.id,
+          status: 'LISTED',
+          orderId: sellOrder.id,
+          faceValue: 100,
+          currentPrice: 90,
+        },
+      });
+      await livePrisma.ticketOwnership.create({
+        data: {
+          ticketId: ticket.id,
+          ownerId: seller.user.id,
+          source: 'PRIMARY',
+        },
+      });
+    }
+
     const execution = await livePrisma.execution.create({
       data: {
         incomingOrderId: buyOrder.id,
@@ -736,6 +778,27 @@ describe('Step 9.4I — Trade Settlement Deadlock & Serialization Retry Integrat
         availableQuantity: 0,
       },
     });
+
+    for (let i = 0; i < 4; i++) {
+      const ticket = await livePrisma.ticket.create({
+        data: {
+          eventId: testEvent.id,
+          categoryId: testCategory.id,
+          ownerId: seller.user.id,
+          status: 'LISTED',
+          orderId: sellOrder.id,
+          faceValue: 100,
+          currentPrice: 90,
+        },
+      });
+      await livePrisma.ticketOwnership.create({
+        data: {
+          ticketId: ticket.id,
+          ownerId: seller.user.id,
+          source: 'PRIMARY',
+        },
+      });
+    }
 
     // Four tickets execute at 90 paise each
     const execution = await livePrisma.execution.create({

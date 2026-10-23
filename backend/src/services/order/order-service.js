@@ -161,6 +161,7 @@ export class OrderService {
       idempotencyKey = null,
       purchaseId = null,
       requireTransaction = false,
+      skipTicketCreation = false,
     } = params;
 
     // 1. Validate inputs
@@ -269,7 +270,38 @@ export class OrderService {
       }
     }
 
-    // 3. Upsert user ticket inventory
+    // 3. Create individual tickets if not explicitly skipped (e.g. from primary purchase)
+    if (!skipTicketCreation) {
+      const category = await client.ticketCategory.findUnique({
+        where: { id: cleanCategoryId },
+      });
+      if (category) {
+        const now = new Date();
+        for (let i = 0; i < quantity; i++) {
+          const ticket = await client.ticket.create({
+            data: {
+              eventId: category.eventId,
+              categoryId: cleanCategoryId,
+              ownerId: cleanUserId,
+              faceValue: category.originalPrice,
+              currentPrice: category.originalPrice,
+              status: 'OWNED',
+              createdAt: now,
+            },
+          });
+          await client.ticketOwnership.create({
+            data: {
+              ticketId: ticket.id,
+              ownerId: cleanUserId,
+              acquiredAt: now,
+              source: 'PRIMARY',
+            },
+          });
+        }
+      }
+    }
+
+    // 4. Upsert user ticket inventory
     const updatedInventory = await client.userTicketInventory.upsert({
       where: {
         userId_ticketCategoryId: {
@@ -399,7 +431,7 @@ export class OrderService {
 
       holdRecord = reserveResult.hold;
     } else {
-      // Reserve Seller Inventory from UserTicketInventory under pessimistic lock
+      // Reserve Seller Inventory and individual Tickets under pessimistic lock
       await this.prisma.$transaction(async (tx) => {
         const rows = await tx.$queryRaw`
           SELECT * FROM "UserTicketInventory"
@@ -426,6 +458,41 @@ export class OrderService {
             }
           );
         }
+
+        // Select and lock eligible individual tickets owned by seller
+        const eligibleTickets = await tx.$queryRaw`
+          SELECT id FROM "Ticket"
+          WHERE "ownerId" = ${userId}
+            AND "categoryId" = ${ticketCategoryId}
+            AND "eventId" = ${eventId}
+            AND "status" = 'OWNED'
+            AND "orderId" IS NULL
+          ORDER BY "createdAt" ASC, "id" ASC
+          LIMIT ${quantity}
+          FOR UPDATE
+        `;
+
+        if (!eligibleTickets || eligibleTickets.length < quantity) {
+          throw new InsufficientInventoryError(
+            `Insufficient owned tickets available for resale: requested ${quantity}, found ${eligibleTickets?.length || 0}`,
+            {
+              userId,
+              ticketCategoryId,
+              requestedQuantity: quantity,
+              availableQuantity: eligibleTickets?.length || 0,
+            }
+          );
+        }
+
+        // Associate tickets with this order and mark as LISTED
+        const ticketIds = eligibleTickets.map((t) => t.id);
+        await tx.ticket.updateMany({
+          where: { id: { in: ticketIds } },
+          data: {
+            status: 'LISTED',
+            orderId,
+          },
+        });
 
         // Decrement available and increment reserved
         await tx.userTicketInventory.update({
@@ -556,17 +623,29 @@ export class OrderService {
         }
       } else if (side === 'ASK' && inventoryReserved) {
         try {
-          await this.prisma.userTicketInventory.update({
-            where: {
-              userId_ticketCategoryId: {
-                userId,
-                ticketCategoryId,
+          await this.prisma.$transaction(async (tx) => {
+            await tx.ticket.updateMany({
+              where: {
+                orderId,
+                status: 'LISTED',
               },
-            },
-            data: {
-              availableQuantity: { increment: quantity },
-              reservedQuantity: { decrement: quantity },
-            },
+              data: {
+                status: 'OWNED',
+                orderId: null,
+              },
+            });
+            await tx.userTicketInventory.update({
+              where: {
+                userId_ticketCategoryId: {
+                  userId,
+                  ticketCategoryId,
+                },
+              },
+              data: {
+                availableQuantity: { increment: quantity },
+                reservedQuantity: { decrement: quantity },
+              },
+            });
           });
         } catch (compensationErr) {
           console.error(
@@ -755,18 +834,41 @@ export class OrderService {
           releasedReservation = Number(releaseAmountPaise);
         }
       } else {
-        // Release remaining unexecuted inventory back to availableQuantity
-        await this.prisma.userTicketInventory.update({
-          where: {
-            userId_ticketCategoryId: {
-              userId,
-              ticketCategoryId: order.ticketCategoryId,
+        // Release remaining unexecuted inventory and tickets
+        await this.prisma.$transaction(async (tx) => {
+          const reservedTickets = await tx.$queryRaw`
+            SELECT id FROM "Ticket"
+            WHERE "orderId" = ${order.id}
+              AND "ownerId" = ${userId}
+              AND "status" = 'LISTED'
+            ORDER BY "createdAt" ASC, "id" ASC
+            LIMIT ${cancelledQuantity}
+            FOR UPDATE
+          `;
+
+          if (reservedTickets.length > 0) {
+            const ticketIds = reservedTickets.map((t) => t.id);
+            await tx.ticket.updateMany({
+              where: { id: { in: ticketIds } },
+              data: {
+                status: 'OWNED',
+                orderId: null,
+              },
+            });
+          }
+
+          await tx.userTicketInventory.update({
+            where: {
+              userId_ticketCategoryId: {
+                userId,
+                ticketCategoryId: order.ticketCategoryId,
+              },
             },
-          },
-          data: {
-            availableQuantity: { increment: cancelledQuantity },
-            reservedQuantity: { decrement: cancelledQuantity },
-          },
+            data: {
+              availableQuantity: { increment: cancelledQuantity },
+              reservedQuantity: { decrement: cancelledQuantity },
+            },
+          });
         });
         releasedReservation = cancelledQuantity;
       }
@@ -1172,6 +1274,77 @@ export class OrderService {
     } catch (err) {
       console.error('Failed to publish orderbook update:', err);
     }
+  }
+
+  /**
+   * Reconciles individual Ticket records against aggregate UserTicketInventory for an account and category.
+   *
+   * @param {Object} params
+   * @param {string} params.userId
+   * @param {string} params.ticketCategoryId
+   * @returns {Promise<Object>}
+   */
+  async reconcileTicketOwnershipAndInventory({ userId, ticketCategoryId }) {
+    if (!userId || !ticketCategoryId) {
+      throw new OrderValidationError('Both userId and ticketCategoryId must be provided');
+    }
+    const cleanUserId = userId.trim();
+    const cleanCategoryId = ticketCategoryId.trim();
+
+    const [tickets, inventory] = await Promise.all([
+      this.prisma.ticket.findMany({
+        where: {
+          ownerId: cleanUserId,
+          categoryId: cleanCategoryId,
+        },
+      }),
+      this.prisma.userTicketInventory.findUnique({
+        where: {
+          userId_ticketCategoryId: {
+            userId: cleanUserId,
+            ticketCategoryId: cleanCategoryId,
+          },
+        },
+      }),
+    ]);
+
+    const ownedTickets = tickets.filter((t) => t.status === 'OWNED' && !t.orderId);
+    const listedTickets = tickets.filter((t) => t.status === 'LISTED' && t.orderId);
+    const totalActiveTickets = ownedTickets.length + listedTickets.length;
+
+    const totalQuantity = inventory ? inventory.totalQuantity : 0;
+    const availableQuantity = inventory ? inventory.availableQuantity : 0;
+    const reservedQuantity = inventory ? inventory.reservedQuantity : 0;
+
+    const discrepancies = [];
+    if (totalQuantity !== totalActiveTickets) {
+      discrepancies.push(
+        `Total quantity mismatch: aggregate has ${totalQuantity}, but user owns ${totalActiveTickets} active tickets`
+      );
+    }
+    if (availableQuantity !== ownedTickets.length) {
+      discrepancies.push(
+        `Available quantity mismatch: aggregate has ${availableQuantity}, but user has ${ownedTickets.length} available tickets`
+      );
+    }
+    if (reservedQuantity !== listedTickets.length) {
+      discrepancies.push(
+        `Reserved quantity mismatch: aggregate has ${reservedQuantity}, but user has ${listedTickets.length} listed tickets`
+      );
+    }
+
+    return {
+      userId: cleanUserId,
+      ticketCategoryId: cleanCategoryId,
+      isConsistent: discrepancies.length === 0,
+      discrepancies,
+      aggregate: { totalQuantity, availableQuantity, reservedQuantity },
+      tickets: {
+        total: totalActiveTickets,
+        available: ownedTickets.length,
+        reserved: listedTickets.length,
+      },
+    };
   }
 }
 

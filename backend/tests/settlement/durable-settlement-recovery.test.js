@@ -47,7 +47,7 @@ describe('Step 9.13 — Durable Settlement Recovery and Retry Management', () =>
     const [dbInfo] = await livePrisma.$queryRaw`
       SELECT current_database(), current_user, inet_server_port()
     `;
-    expect(dbInfo.current_database).toBe('passflow_isolated_validation');
+    expect(['passflow_isolated_validation', 'passflow_fresh_migration_test']).toContain(dbInfo.current_database);
     expect(dbInfo.inet_server_port).toBe(55432);
 
     settlementService = new TradeSettlementService({
@@ -193,6 +193,27 @@ describe('Step 9.13 — Durable Settlement Recovery and Retry Management', () =>
         availableQuantity: 0,
       },
     });
+
+    for (let i = 0; i < quantity; i++) {
+      const ticket = await livePrisma.ticket.create({
+        data: {
+          eventId: event.id,
+          categoryId: category.id,
+          ownerId: seller.user.id,
+          status: 'LISTED',
+          orderId: sellOrder.id,
+          faceValue: 100,
+          currentPrice: executionPrice,
+        },
+      });
+      await livePrisma.ticketOwnership.create({
+        data: {
+          ticketId: ticket.id,
+          ownerId: seller.user.id,
+          source: 'PRIMARY',
+        },
+      });
+    }
 
     const execution = await livePrisma.execution.create({
       data: {

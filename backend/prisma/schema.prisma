@@ -269,6 +269,7 @@ model Order {
   sellSettlements    TradeSettlement[] @relation("SettlementSellOrder")
   ledgerEntries      WalletLedgerEntry[]
   holds              WalletHold[]
+  reservedTickets    Ticket[]          @relation("OrderReservedTickets")
 
   // Constraints & Indexes
   @@unique([userId, idempotencyKey])
@@ -426,6 +427,8 @@ model Ticket {
   faceValue    Decimal            @db.Decimal(12, 2)
   currentPrice Decimal            @db.Decimal(12, 2)
   status       TicketStatus       @default(OWNED)
+  orderId      String?
+  order        Order?             @relation("OrderReservedTickets", fields: [orderId], references: [id], onDelete: SetNull)
   createdAt    DateTime           @default(now())
 
   // Relationships
@@ -434,6 +437,7 @@ model Ticket {
 
   @@index([ownerId, status])
   @@index([eventId, categoryId])
+  @@index([orderId])
 }
 
 model TicketOwnership {
