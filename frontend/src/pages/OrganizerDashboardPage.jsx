@@ -63,6 +63,15 @@ export default function OrganizerDashboardPage() {
   const [editEventPrice, setEditEventPrice] = useState('');
   const [isSavingEventDetails, setIsSavingEventDetails] = useState(false);
 
+  // Category management inside Edit Modal
+  const [modalTiers, setModalTiers] = useState([]);
+  const [newModalTierName, setNewModalTierName] = useState('');
+  const [newModalTierPrice, setNewModalTierPrice] = useState('');
+  const [newModalTierQty, setNewModalTierQty] = useState('');
+  const [isAddingModalTier, setIsAddingModalTier] = useState(false);
+  const [savingModalTierId, setSavingModalTierId] = useState(null);
+  const [editingTierDrafts, setEditingTierDrafts] = useState({});
+
   // Add tier form state
   const [tierName, setTierName] = useState('');
   const [tierPrice, setTierPrice] = useState('');
@@ -233,8 +242,23 @@ export default function OrganizerDashboardPage() {
   // Open Edit Event Modal (PUT /events/:id)
   const handleOpenEditEvent = (ev, e) => {
     if (e) e.stopPropagation();
+    setSelectedEventId(ev.id);
     setEditingEvent(ev);
-    setEditEventName(ev.title || ev.name || '');
+    const tiers = ev.tiers || [];
+    setModalTiers(tiers);
+    const initialDrafts = {};
+    tiers.forEach((t) => {
+      initialDrafts[t.id] = {
+        name: t.name || '',
+        price: String(t.price || ''),
+        total: String(t.total || '')
+      };
+    });
+    setEditingTierDrafts(initialDrafts);
+    setNewModalTierName('');
+    setNewModalTierPrice('');
+    setNewModalTierQty('');
+
     let dateStr = '';
     if (ev.rawDate) {
       const d = new Date(ev.rawDate);
@@ -246,6 +270,97 @@ export default function OrganizerDashboardPage() {
     setEditEventLocation(ev.venue || ev.location || '');
     setEditEventDesc(ev.description || '');
     setEditEventPrice(ev.basePrice != null ? String(ev.basePrice) : '');
+  };
+
+  // Update existing category price & details from modal (PUT /categories/:id & PUT /categories/:id/inventory)
+  const handleSaveTierDraft = async (tierId) => {
+    const draft = editingTierDrafts[tierId];
+    if (!draft) return;
+    const p = parseFloat(draft.price);
+    const q = parseInt(draft.total, 10);
+    if (!draft.name.trim()) {
+      showToast('Category name is required', 'error');
+      return;
+    }
+    if (isNaN(p) || p <= 0) {
+      showToast('Price must be greater than 0', 'error');
+      return;
+    }
+    if (isNaN(q) || q <= 0) {
+      showToast('Quantity must be greater than 0', 'error');
+      return;
+    }
+
+    setSavingModalTierId(tierId);
+    try {
+      await updateCategoryDetails(tierId, { name: draft.name.trim(), originalPrice: p });
+      if (!isNaN(q) && q > 0) {
+        await updateCategoryInventory(tierId, q);
+      }
+      showToast(`Category "${draft.name}" price updated to ₹${p}!`, 'success');
+      await loadOrganizerData();
+      setModalTiers((prev) =>
+        prev.map((t) => (t.id === tierId ? { ...t, name: draft.name.trim(), price: p, total: q } : t))
+      );
+    } catch (err) {
+      // toast shown in AppContext
+    } finally {
+      setSavingModalTierId(null);
+    }
+  };
+
+  // Add a new category tier from modal (POST /events/:id/categories)
+  const handleAddCategoryFromModal = async (e) => {
+    e.preventDefault();
+    if (!editingEvent?.id) return;
+    if (!newModalTierName.trim() || !newModalTierPrice || !newModalTierQty) {
+      showToast('Please fill all category fields (Name, Price, Quantity)', 'error');
+      return;
+    }
+    const p = parseFloat(newModalTierPrice);
+    const q = parseInt(newModalTierQty, 10);
+    if (isNaN(p) || p <= 0) {
+      showToast('Price must be greater than 0', 'error');
+      return;
+    }
+    if (isNaN(q) || q <= 0) {
+      showToast('Quantity must be at least 1', 'error');
+      return;
+    }
+
+    setIsAddingModalTier(true);
+    try {
+      const added = await addCategoryToEvent(editingEvent.id, {
+        name: newModalTierName.trim(),
+        price: p,
+        quantity: q
+      });
+      showToast(`Category "${newModalTierName}" added with price ₹${p}!`, 'success');
+      const newTierObj = {
+        id: added?.id || `tier_${Date.now()}`,
+        name: newModalTierName.trim(),
+        price: p,
+        total: q,
+        left: q
+      };
+      setModalTiers((prev) => [...prev, newTierObj]);
+      setEditingTierDrafts((prev) => ({
+        ...prev,
+        [newTierObj.id]: {
+          name: newModalTierName.trim(),
+          price: String(p),
+          total: String(q)
+        }
+      }));
+      setNewModalTierName('');
+      setNewModalTierPrice('');
+      setNewModalTierQty('');
+      await loadOrganizerData();
+    } catch (err) {
+      // toast shown in AppContext
+    } finally {
+      setIsAddingModalTier(false);
+    }
   };
 
   // Save Event Details (PUT /events/:id)
@@ -669,6 +784,7 @@ export default function OrganizerDashboardPage() {
               <tr>
                 <th>Event Name</th>
                 <th>Status</th>
+                <th>Categories & Prices</th>
                 <th>Capacity / Sold</th>
                 <th>Box Office Revenue</th>
                 <th>Actions</th>
@@ -677,14 +793,14 @@ export default function OrganizerDashboardPage() {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={5} style={{ textAlign: 'center', padding: '32px', color: 'var(--text-dim)' }}>
+                  <td colSpan={6} style={{ textAlign: 'center', padding: '32px', color: 'var(--text-dim)' }}>
                     <RefreshCw size={18} className="spin" style={{ margin: '0 auto 8px' }} />
                     <div>Loading organizer productions from database...</div>
                   </td>
                 </tr>
               ) : organizerEvents.length === 0 ? (
                 <tr>
-                  <td colSpan={5} style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-sub)' }}>
+                  <td colSpan={6} style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-sub)' }}>
                     <p style={{ margin: '0 0 12px 0', fontSize: 14 }}>No events created yet under your organizer profile.</p>
                     <button
                       className="btn-primary"
@@ -715,7 +831,8 @@ export default function OrganizerDashboardPage() {
                       key={ev.id}
                       style={{
                         cursor: 'pointer',
-                        background: isSelected ? 'rgba(249, 115, 22, 0.07)' : undefined
+                        background: isSelected ? 'rgba(249, 115, 22, 0.12)' : undefined,
+                        borderLeft: isSelected ? '3px solid var(--accent-orange)' : '3px solid transparent'
                       }}
                       onClick={() => setSelectedEventId(ev.id)}
                     >
@@ -737,6 +854,47 @@ export default function OrganizerDashboardPage() {
                         }`}>
                           {ev.status}
                         </span>
+                      </td>
+                      <td style={{ minWidth: 170 }}>
+                        {(ev.tiers || []).length === 0 ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ fontSize: 11, color: 'var(--text-dim)', fontStyle: 'italic' }}>
+                              No categories
+                            </span>
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              style={{ padding: '2px 6px', fontSize: 10 }}
+                              onClick={(e) => handleOpenEditEvent(ev, e)}
+                            >
+                              + Add Price
+                            </button>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            {ev.tiers.map((t) => (
+                              <div
+                                key={t.id}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'space-between',
+                                  background: 'rgba(255, 255, 255, 0.04)',
+                                  border: '1px solid var(--border-subtle)',
+                                  borderRadius: 'var(--radius-sm)',
+                                  padding: '3px 8px',
+                                  fontSize: 11,
+                                  gap: 8
+                                }}
+                              >
+                                <span style={{ fontWeight: 500, color: 'var(--text-sub)' }}>{t.name}</span>
+                                <span className="font-mono" style={{ color: 'var(--accent-orange)', fontWeight: 700 }}>
+                                  ₹{Number(t.price).toLocaleString('en-IN')}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </td>
                       <td className="font-mono">
                         {ev.status === 'DRAFT' && totalSold === 0 ? (
@@ -1413,9 +1571,9 @@ export default function OrganizerDashboardPage() {
                 <Edit3 size={18} color="var(--accent-orange)" />
               </div>
               <div>
-                <h3 style={{ fontSize: 17, margin: 0 }}>Edit Event Details</h3>
+                <h3 style={{ fontSize: 17, margin: 0 }}>Edit Event & Category Prices</h3>
                 <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
-                  Update event details in the database (PUT /events/:id)
+                  Update event details and category tier pricing (PUT /events/:id & PUT /categories/:id)
                 </p>
               </div>
             </div>
@@ -1449,7 +1607,7 @@ export default function OrganizerDashboardPage() {
                 </div>
                 <div>
                   <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
-                    Base Original Price (₹)
+                    Base Reference Price (₹)
                   </label>
                   <input
                     type="number"
@@ -1476,17 +1634,191 @@ export default function OrganizerDashboardPage() {
                 />
               </div>
 
-              <div style={{ marginBottom: 18 }}>
+              <div style={{ marginBottom: 14 }}>
                 <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
                   Event Description
                 </label>
                 <textarea
-                  rows={3}
+                  rows={2}
                   value={editEventDesc}
                   onChange={(e) => setEditEventDesc(e.target.value)}
                   style={{ width: '100%', fontSize: 13, resize: 'vertical' }}
                   placeholder="Describe the artists, rules, schedule, etc."
                 />
+              </div>
+
+              {/* Category Tiers & Pricing Section */}
+              <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--border-subtle)', marginBottom: 18 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                  <div>
+                    <h4 style={{ fontSize: 14, fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <DollarSign size={16} color="var(--accent-orange)" />
+                      <span>Ticket Categories & Pricing (Har Category Ki Price)</span>
+                    </h4>
+                    <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
+                      Har category ka price (₹) yahan se directly edit aur save karein
+                    </p>
+                  </div>
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                    {modalTiers.length} {modalTiers.length === 1 ? 'Tier' : 'Tiers'}
+                  </span>
+                </div>
+
+                {/* Existing Tiers List with Price Inputs */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+                  {modalTiers.length === 0 ? (
+                    <div style={{ padding: 12, background: 'var(--bg-app)', borderRadius: 'var(--radius-sm)', textAlign: 'center', color: 'var(--text-dim)', fontSize: 12 }}>
+                      No categories yet. Mint your first category tier below!
+                    </div>
+                  ) : (
+                    modalTiers.map((tier) => {
+                      const draft = editingTierDrafts[tier.id] || {
+                        name: tier.name || '',
+                        price: String(tier.price || ''),
+                        total: String(tier.total || '')
+                      };
+
+                      return (
+                        <div
+                          key={tier.id}
+                          style={{
+                            background: 'var(--bg-app)',
+                            padding: '10px 12px',
+                            borderRadius: 'var(--radius-sm)',
+                            border: '1px solid var(--border-subtle)',
+                            display: 'grid',
+                            gridTemplateColumns: '1.4fr 1fr 1fr auto',
+                            gap: 10,
+                            alignItems: 'center'
+                          }}
+                        >
+                          <div>
+                            <label style={{ fontSize: 10, color: 'var(--text-dim)', display: 'block', marginBottom: 2 }}>
+                              Tier Name
+                            </label>
+                            <input
+                              type="text"
+                              value={draft.name}
+                              onChange={(e) =>
+                                setEditingTierDrafts((prev) => ({
+                                  ...prev,
+                                  [tier.id]: { ...draft, name: e.target.value }
+                                }))
+                              }
+                              style={{ width: '100%', fontSize: 12, padding: '5px 8px' }}
+                              placeholder="e.g. VIP"
+                            />
+                          </div>
+
+                          <div>
+                            <label style={{ fontSize: 10, color: 'var(--accent-orange)', display: 'block', marginBottom: 2, fontWeight: 700 }}>
+                              Price (₹) *
+                            </label>
+                            <input
+                              type="number"
+                              step="1"
+                              min="1"
+                              value={draft.price}
+                              onChange={(e) =>
+                                setEditingTierDrafts((prev) => ({
+                                  ...prev,
+                                  [tier.id]: { ...draft, price: e.target.value }
+                                }))
+                              }
+                              style={{
+                                width: '100%',
+                                fontSize: 13,
+                                padding: '5px 8px',
+                                borderColor: 'var(--accent-orange-border)',
+                                color: 'var(--accent-orange)',
+                                fontWeight: 700
+                              }}
+                              placeholder="Price"
+                            />
+                          </div>
+
+                          <div>
+                            <label style={{ fontSize: 10, color: 'var(--text-dim)', display: 'block', marginBottom: 2 }}>
+                              Total Quota
+                            </label>
+                            <input
+                              type="number"
+                              min="1"
+                              value={draft.total}
+                              onChange={(e) =>
+                                setEditingTierDrafts((prev) => ({
+                                  ...prev,
+                                  [tier.id]: { ...draft, total: e.target.value }
+                                }))
+                              }
+                              style={{ width: '100%', fontSize: 12, padding: '5px 8px' }}
+                              placeholder="Qty"
+                            />
+                          </div>
+
+                          <div style={{ paddingTop: 14 }}>
+                            <button
+                              type="button"
+                              className="btn-primary"
+                              disabled={savingModalTierId === tier.id}
+                              style={{ padding: '6px 12px', fontSize: 11, whiteSpace: 'nowrap' }}
+                              onClick={() => handleSaveTierDraft(tier.id)}
+                              title="Save this category price to database (PUT /categories/:id)"
+                            >
+                              {savingModalTierId === tier.id ? (
+                                <RefreshCw size={11} className="spin" />
+                              ) : (
+                                <span>Save Price</span>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                {/* Add Category Subform */}
+                <div style={{ background: 'rgba(255, 255, 255, 0.02)', padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px dashed var(--border-subtle)' }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-sub)', display: 'block', marginBottom: 6 }}>
+                    + Add New Category Tier & Price
+                  </span>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr 1fr auto', gap: 8, alignItems: 'center' }}>
+                    <input
+                      type="text"
+                      placeholder="Name (e.g. VIP Pass)"
+                      value={newModalTierName}
+                      onChange={(e) => setNewModalTierName(e.target.value)}
+                      style={{ fontSize: 12, padding: '5px 8px' }}
+                    />
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      placeholder="Price (₹)"
+                      value={newModalTierPrice}
+                      onChange={(e) => setNewModalTierPrice(e.target.value)}
+                      style={{ fontSize: 12, padding: '5px 8px' }}
+                    />
+                    <input
+                      type="number"
+                      min="1"
+                      placeholder="Quantity"
+                      value={newModalTierQty}
+                      onChange={(e) => setNewModalTierQty(e.target.value)}
+                      style={{ fontSize: 12, padding: '5px 8px' }}
+                    />
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      disabled={isAddingModalTier}
+                      style={{ padding: '6px 12px', fontSize: 11, whiteSpace: 'nowrap' }}
+                      onClick={handleAddCategoryFromModal}
+                    >
+                      {isAddingModalTier ? 'Adding...' : '+ Add Tier'}
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <div style={{ display: 'flex', gap: 10 }}>
@@ -1496,7 +1828,7 @@ export default function OrganizerDashboardPage() {
                   style={{ flex: 1 }}
                   onClick={() => setEditingEvent(null)}
                 >
-                  Cancel
+                  Done / Close
                 </button>
                 <button
                   type="submit"
