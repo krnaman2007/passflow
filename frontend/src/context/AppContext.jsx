@@ -9,6 +9,7 @@ import {
   INITIAL_ADMIN_DATA
 } from '../mockData';
 import { marketStream } from '../services/marketStream.js';
+import { useAppStore } from '../store/useStore.js';
 import { api, checkBackendHealth, BACKEND_URL } from '../services/api.js';
 import { formatBackendEvent } from '../utils/eventAdapter.js';
 
