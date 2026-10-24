@@ -291,6 +291,7 @@ export function AppProvider({ children }) {
           await syncLiveWallet();
           fetchLiveNotifications();
           fetchLiveOrders();
+          fetchLiveTickets();
         }
       } catch (err) {
         console.warn('Session restoration failed or expired:', err.message);
@@ -353,6 +354,7 @@ export function AppProvider({ children }) {
     syncLiveWallet();
     fetchLiveNotifications();
     fetchLiveOrders();
+    fetchLiveTickets();
 
     return { success: true, user, tokens };
   };
@@ -772,82 +774,152 @@ export function AppProvider({ children }) {
     }
   };
 
+  // Fetch real tickets from PostgreSQL backend
+  const fetchLiveTickets = async () => {
+    try {
+      const res = await api.tickets.getMyTickets();
+      const raw = res?.data?.tickets || res?.tickets || (Array.isArray(res?.data) ? res.data : []) || [];
+      if (Array.isArray(raw)) {
+        const formatted = raw.map((t) => {
+          const face = Number(t.faceValue || t.category?.originalPrice || 0);
+          const cap = face * 2;
+          return {
+            id: t.id,
+            eventId: t.eventId,
+            eventName: t.event?.name || 'Live Event',
+            eventDate: t.event?.dateTime
+              ? new Date(t.event.dateTime).toLocaleDateString('en-IN', { month: 'short', day: 'numeric', year: 'numeric' })
+              : 'Upcoming',
+            eventTime: t.event?.dateTime
+              ? new Date(t.event.dateTime).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+              : 'TBA',
+            venue: t.event?.location || 'Live Arena',
+            tier: t.category?.name || 'General Admission',
+            categoryId: t.categoryId,
+            faceValue: face,
+            currentPrice: Number(t.currentPrice || face),
+            resaleCap: cap,
+            status: t.status || 'OWNED', // OWNED | LISTED | USED | TRANSFERRED
+            qrCode: t.id,
+            orderId: t.orderId || null,
+            createdAt: t.createdAt,
+            ownershipChain: [
+              {
+                type: 'PRIMARY',
+                user: currentUser?.name || 'Original Buyer',
+                action: `Purchased at Face Value (₹${face.toLocaleString('en-IN')})`,
+                date: t.createdAt
+                  ? new Date(t.createdAt).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })
+                  : 'Verified'
+              }
+            ]
+          };
+        });
+        setUserTickets(formatted);
+        return formatted;
+      }
+    } catch (err) {
+      console.warn('Failed to fetch user tickets:', err.message);
+    }
+  };
+
   // Ticket Operations: Sell from My Tickets
-  const listTicketForSale = (ticketId, askPrice) => {
+  const listTicketForSale = async (ticketId, askPrice) => {
     const ticket = userTickets.find((t) => t.id === ticketId);
     if (!ticket) return false;
 
     if (askPrice > ticket.resaleCap) {
-      showToast(`Ask price ($${askPrice}) exceeds the $${ticket.resaleCap} resale cap.`, 'error');
+      showToast(`Ask price (₹${askPrice}) exceeds the ₹${ticket.resaleCap} resale cap.`, 'error');
       return false;
     }
 
-    setUserTickets((prev) =>
-      prev.map((t) => (t.id === ticketId ? { ...t, status: 'LISTED', listedPrice: askPrice } : t))
-    );
+    try {
+      const pricePaise = Math.round(Number(askPrice) * 100);
+      const res = await api.orders.placeOrder({
+        eventId: ticket.eventId,
+        ticketCategoryId: ticket.categoryId,
+        side: 'SELL',
+        type: 'LIMIT',
+        price: pricePaise,
+        quantity: 1,
+        idempotencyKey: `sell-${ticket.id}-${Date.now()}`
+      });
 
-    const newOrder = {
-      id: `ORD-${Math.floor(1000 + Math.random() * 9000)}`,
-      eventId: ticket.eventId,
-      eventName: ticket.eventName,
-      tier: ticket.tier,
-      side: 'SELL',
-      type: 'LIMIT',
-      qty: 1,
-      price: askPrice,
-      filled: 0,
-      status: 'OPEN',
-      ticketId: ticket.id,
-      date: 'Just now'
-    };
+      const orderData = res?.data || res;
+      setUserTickets((prev) =>
+        prev.map((t) => (t.id === ticketId ? { ...t, status: 'LISTED', listedPrice: askPrice, orderId: orderData?.order?.id } : t))
+      );
 
-    setUserOrders((prev) => [newOrder, ...prev]);
-    showToast(`Ticket #${ticket.id} listed at $${askPrice.toFixed(2)} on live order book!`, 'success');
-    setActiveModal(null);
-    return true;
+      showToast(`Ticket #${ticket.id.slice(0, 8)} listed at ₹${Number(askPrice).toLocaleString('en-IN')} on live orderbook!`, 'success');
+      setActiveModal(null);
+      fetchLiveTickets();
+      fetchLiveOrders();
+      return true;
+    } catch (err) {
+      console.error('Failed to list ticket:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to list ticket for sale';
+      showToast(msg, 'error');
+      return false;
+    }
   };
 
   // Cancel Listing
-  const cancelTicketListing = (ticketId) => {
+  const cancelTicketListing = async (ticketId) => {
     const ticket = userTickets.find((t) => t.id === ticketId);
     if (!ticket) return;
 
-    setUserTickets((prev) =>
-      prev.map((t) => (t.id === ticketId ? { ...t, status: 'OWNED', listedPrice: null } : t))
-    );
-
-    // Cancel related order
-    setUserOrders((prev) =>
-      prev.map((o) => (o.ticketId === ticketId ? { ...o, status: 'CANCELLED' } : o))
-    );
-
-    showToast(`Listing cancelled for #${ticketId}. Ticket returned to Owned.`, 'info');
+    try {
+      if (ticket.orderId) {
+        await api.orders.cancelOrder(ticket.orderId);
+      }
+      setUserTickets((prev) =>
+        prev.map((t) => (t.id === ticketId ? { ...t, status: 'OWNED', listedPrice: null, orderId: null } : t))
+      );
+      showToast(`Listing cancelled for ticket #${ticketId.slice(0, 8)}. Returned to Owned vault.`, 'info');
+      fetchLiveTickets();
+      fetchLiveOrders();
+    } catch (err) {
+      console.error('Failed to cancel ticket listing:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to cancel listing';
+      showToast(msg, 'error');
+    }
   };
 
   // Direct Transfer Ticket
-  const transferTicket = (ticketId, recipientEmail) => {
+  const transferTicket = async (ticketId, recipientEmail) => {
     const ticket = userTickets.find((t) => t.id === ticketId);
     if (!ticket) return false;
 
-    setUserTickets((prev) =>
-      prev.map((t) =>
-        t.id === ticketId
-          ? {
-              ...t,
-              status: 'TRANSFER_PENDING',
-              transferTo: recipientEmail,
-              ownershipChain: [
-                ...t.ownershipChain,
-                { type: 'TRANSFER', user: recipientEmail, action: 'Direct transfer initiated', date: 'Just now' }
-              ]
-            }
-          : t
-      )
-    );
+    try {
+      const res = await api.tickets.transferTicket(ticketId, { recipientEmail: recipientEmail.trim() });
+      const data = res?.data || res;
 
-    showToast(`Ticket #${ticketId} dispatched to ${recipientEmail} (Transfer Pending).`, 'success');
-    setActiveModal(null);
-    return true;
+      setUserTickets((prev) =>
+        prev.map((t) =>
+          t.id === ticketId
+            ? {
+                ...t,
+                status: 'TRANSFERRED',
+                transferTo: recipientEmail,
+                ownershipChain: [
+                  ...(t.ownershipChain || []),
+                  { type: 'TRANSFER', user: recipientEmail, action: 'Direct peer-to-peer transfer', date: 'Just now' }
+                ]
+              }
+            : t
+        )
+      );
+
+      showToast(data?.message || `Ticket dispatched to ${recipientEmail} successfully!`, 'success');
+      setActiveModal(null);
+      fetchLiveTickets();
+      return true;
+    } catch (err) {
+      console.error('Failed to transfer ticket:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to transfer ticket';
+      showToast(msg, 'error');
+      return false;
+    }
   };
 
   // Wallet Deposit & Withdraw
@@ -1557,6 +1629,7 @@ export function AppProvider({ children }) {
         refreshAdminData,
         fetchLiveNotifications,
         fetchLiveOrders,
+        fetchLiveTickets,
         // Real Backend Auth & Session
         authUser,
         authLoading,

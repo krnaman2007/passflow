@@ -81,36 +81,36 @@ export default function Modals() {
             <div style={{ background: 'var(--bg-card)', padding: 16, borderRadius: 'var(--radius-md)', marginBottom: 20 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 13 }}>
                 <span style={{ color: 'var(--text-muted)' }}>Original purchase price:</span>
-                <span className="font-mono">${data.pricePaid.toFixed(2)}</span>
+                <span className="font-mono">₹{Number(data.faceValue || data.pricePaid || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 13 }}>
                 <span style={{ color: 'var(--text-muted)' }}>Fair-price anti-scalping cap:</span>
                 <span className="font-mono" style={{ color: 'var(--accent-orange)', fontWeight: 600 }}>
-                  ${data.resaleCap.toFixed(2)}
+                  ₹{Number(data.resaleCap || (Number(data.faceValue || data.pricePaid || 0) * 2)).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                 </span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
                 <span style={{ color: 'var(--text-muted)' }}>Estimated payout (after 2% fee):</span>
                 <span className="font-mono" style={{ color: 'var(--accent-emerald)', fontWeight: 600 }}>
-                  ${(parseFloat(askPrice || 0) * 0.98).toFixed(2)}
+                  ₹{(parseFloat(askPrice || 0) * 0.98).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                 </span>
               </div>
             </div>
 
             <div style={{ marginBottom: 20 }}>
               <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 6, fontWeight: 500 }}>
-                Ask Price ($)
+                Ask Price (₹)
               </label>
               <input
                 type="number"
-                step="0.5"
-                max={data.resaleCap}
+                step="1"
+                max={data.resaleCap || ((data.faceValue || data.pricePaid || 0) * 2)}
                 value={askPrice}
                 onChange={(e) => setAskPrice(e.target.value)}
                 style={{ width: '100%', fontSize: 16, fontWeight: 600 }}
               />
               <p style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 6 }}>
-                Anti-scalping rule: Cannot exceed ${data.resaleCap}.00 for {data.tier}.
+                Anti-scalping rule: Cannot exceed ₹{data.resaleCap || ((data.faceValue || data.pricePaid || 0) * 2)} for {data.tier}.
               </p>
             </div>
 
