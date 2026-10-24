@@ -62,6 +62,7 @@ export class MarketStreamClient {
     this.status = CONNECTION_STATUS.DISCONNECTED;
     this.statusListeners = new Set();
     this.fillListeners = new Set();
+    this.walletListeners = new Set();
 
     // Active market subscriptions: key -> { eventId, ticketCategoryId, callbacks, currentSequence, seenTrades, resyncTimer, resyncCount }
     this.subscriptions = new Map();
@@ -180,6 +181,11 @@ export class MarketStreamClient {
     // 5. Market Error Notification
     socket.on('market:error', (error) => {
       this._handleMarketError(error);
+    });
+
+    // 6. Real-Time Wallet Update Notification (Balance / Hold changes)
+    socket.on('wallet:update', (wallet) => {
+      this._handleWalletUpdate(wallet);
     });
   }
 
@@ -598,6 +604,38 @@ export class MarketStreamClient {
   }
 
   /**
+   * Registers a callback for real-time wallet balance/hold updates.
+   * Event: 'wallet:update'
+   *
+   * @param {Function} callback
+   * @returns {Function} Unsubscribe listener
+   */
+  onWalletUpdate(callback) {
+    if (typeof callback === 'function') {
+      this.walletListeners.add(callback);
+      return () => this.walletListeners.delete(callback);
+    }
+    return () => {};
+  }
+
+  /**
+   * Handles incoming authenticated `wallet:update` notifications.
+   *
+   * @private
+   * @param {Object} wallet
+   */
+  _handleWalletUpdate(wallet) {
+    if (!wallet) return;
+    for (const listener of this.walletListeners) {
+      try {
+        listener(wallet);
+      } catch {
+        // Ignore listener exceptions
+      }
+    }
+  }
+
+  /**
    * Handles incoming `market:error` notifications.
    *
    * @private
@@ -641,6 +679,7 @@ export class MarketStreamClient {
     }
     this.subscriptions.clear();
     this.fillListeners.clear();
+    this.walletListeners.clear();
     this.statusListeners.clear();
     this.seenFills.clear();
 

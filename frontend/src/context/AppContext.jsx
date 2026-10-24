@@ -65,6 +65,37 @@ export function AppProvider({ children }) {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
+  // Listen for real-time WebSocket wallet updates (Spec: wallet:update)
+  useEffect(() => {
+    const unsubscribe = marketStream.onWalletUpdate((walletPayload) => {
+      if (walletPayload) {
+        setWallet((prev) => {
+          const available = walletPayload.availableBalance != null
+            ? Number(walletPayload.availableBalance) / 100
+            : (walletPayload.available != null ? Number(walletPayload.available) / 100 : prev.available);
+          const reserved = walletPayload.reservedBalance != null
+            ? Number(walletPayload.reservedBalance) / 100
+            : prev.held;
+          const balance = walletPayload.totalBalance != null
+            ? Number(walletPayload.totalBalance) / 100
+            : (walletPayload.balance != null ? Number(walletPayload.balance) / 100 : available + reserved);
+
+          return {
+            ...prev,
+            balance,
+            available,
+            held: reserved,
+            reservedBalance: reserved,
+          };
+        });
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
   // Role: 'PUBLIC' | 'USER' | 'ORGANIZER' | 'ADMIN'
   const [currentRole, setCurrentRole] = useState('USER');
   const [users, setUsers] = useState(INITIAL_USERS);

@@ -1,5 +1,6 @@
 import { walletService as defaultWalletService } from '../services/wallet/index.js';
 import { historyService as defaultHistoryService } from '../services/history.service.js';
+import { marketStreamService } from '../services/market-stream/index.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { successResponse } from '../utils/response.js';
 
@@ -178,6 +179,10 @@ export class WalletController {
         description: description || 'Simulated deposit via mock payment gateway',
       });
 
+      if (result?.wallet) {
+        marketStreamService.publishWalletUpdate({ userId, wallet: result.wallet });
+      }
+
       const statusCode = result.isIdempotentReplay ? 200 : 201;
       res.status(statusCode).json(successResponse(formatSafeMutationResult(result)));
     } catch (err) {
@@ -221,6 +226,10 @@ export class WalletController {
         referenceType: 'MOCK_WITHDRAWAL',
         description: description || 'Withdrawal of available funds',
       });
+
+      if (result?.wallet) {
+        marketStreamService.publishWalletUpdate({ userId, wallet: result.wallet });
+      }
 
       const statusCode = result.isIdempotentReplay ? 200 : 201;
       res.status(statusCode).json(successResponse(formatSafeMutationResult(result)));

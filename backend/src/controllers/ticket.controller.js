@@ -1,4 +1,5 @@
 import ticketService from '../services/ticket.service.js';
+import { marketStreamService } from '../services/market-stream/index.js';
 import { successResponse } from '../utils/response.js';
 
 /**
@@ -23,6 +24,10 @@ export const ticketController = {
         quantity,
         idempotencyKey,
       });
+
+      if (result && result.newWalletBalance != null) {
+        marketStreamService.syncAndPublishWallet(userId);
+      }
 
       res.status(201).json(successResponse(result));
     } catch (err) {

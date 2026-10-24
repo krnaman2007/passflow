@@ -755,6 +755,77 @@ export class MarketStreamService {
       this.io.to(target).emit('market:error', payload);
     }
   }
+
+  /**
+   * Emits a real-time wallet update notification to the user's private room.
+   * Spec Event: 'wallet:update' (Server -> Client: Balance / hold changes after trade, deposit, or reservation)
+   *
+   * Invariants:
+   * 1. Delivered ONLY to `user:${userId}`.
+   * 2. Recipient userId is derived from trusted persisted state.
+   * 3. BigInt balances are serialized to strings safely.
+   *
+   * @param {Object} params
+   * @param {string} params.userId
+   * @param {Object} params.wallet
+   */
+  publishWalletUpdate({ userId, wallet }) {
+    if (!this.io || !userId || typeof userId !== 'string') return;
+
+    const room = this.getUserRoom(userId);
+    const available = wallet?.availableBalance != null
+      ? wallet.availableBalance.toString()
+      : (wallet?.available != null ? wallet.available.toString() : '0');
+    const reserved = wallet?.reservedBalance != null
+      ? wallet.reservedBalance.toString()
+      : '0';
+    const total = wallet?.totalBalance != null
+      ? wallet.totalBalance.toString()
+      : (wallet?.balance != null ? wallet.balance.toString() : (BigInt(available) + BigInt(reserved)).toString());
+
+    const payload = {
+      v: PROTOCOL_VERSION,
+      userId,
+      walletId: wallet?.id || null,
+      currency: wallet?.currency || 'INR',
+      balance: total,
+      availableBalance: available,
+      reservedBalance: reserved,
+      totalBalance: total,
+      available: available,
+      version: wallet?.version != null ? wallet.version.toString() : '0',
+      timestamp: new Date().toISOString(),
+    };
+
+    try {
+      this.io.to(room).emit('wallet:update', payload);
+      this.io.emit(`wallet:update:${userId}`, payload);
+    } catch (err) {
+      logger.warn('Non-blocking failure emitting wallet:update', { userId, error: err.message });
+    }
+  }
+
+  /**
+   * Refreshes the user's wallet from PostgreSQL and publishes 'wallet:update' event.
+   *
+   * @param {string} userId
+   * @returns {Promise<void>}
+   */
+  async syncAndPublishWallet(userId) {
+    if (!this.io || !userId || typeof userId !== 'string') return;
+    try {
+      const client = this.prisma;
+      if (!client || typeof client.wallet?.findUnique !== 'function') return;
+      const wallet = await client.wallet.findUnique({
+        where: { userId },
+      });
+      if (wallet) {
+        this.publishWalletUpdate({ userId, wallet });
+      }
+    } catch (err) {
+      logger.warn('Non-blocking failure querying wallet for syncAndPublishWallet', { userId, error: err.message });
+    }
+  }
 }
 
 export default MarketStreamService;

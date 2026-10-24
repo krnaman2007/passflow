@@ -1,4 +1,5 @@
 import { orderService as defaultOrderService } from '../services/order/index.js';
+import { marketStreamService } from '../services/market-stream/index.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { successResponse } from '../utils/response.js';
 
@@ -158,6 +159,9 @@ export class OrderController {
         : await this.orderService.placeLimitOrder(placementInput);
 
       const statusCode = placementResult.isDuplicate ? 200 : 201;
+      if (side === 'BID') {
+        marketStreamService.syncAndPublishWallet(userId);
+      }
       res.status(statusCode).json(successResponse(formatSafeOrder(placementResult)));
     } catch (err) {
       next(mapOrderError(err));
@@ -188,6 +192,10 @@ export class OrderController {
         orderId,
         idempotencyKey: String(idempotencyKey).trim(),
       });
+
+      if (cancelResult?.releasedReservation) {
+        marketStreamService.syncAndPublishWallet(userId);
+      }
 
       res.status(200).json(successResponse(formatSafeCancelResult(cancelResult)));
     } catch (err) {

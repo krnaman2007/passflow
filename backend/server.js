@@ -40,9 +40,10 @@ const io = new Server(server, {
   },
 });
 
-// Attach MarketStreamService to Socket.IO and OrderService
+// Attach MarketStreamService to Socket.IO and Services
 marketStreamService.setServer(io);
 orderService.setMarketStreamService(marketStreamService);
+tradeSettlementService.setMarketStreamService(marketStreamService);
 notificationService.setIo(io);
 monitoringService.setRuntime({ io, orderService });
 

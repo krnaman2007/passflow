@@ -182,6 +182,11 @@ export class TradeSettlementService {
     this.maxBackoffMs = Math.max(this.baseBackoffMs, rawMaxBackoff);
     this.jitter = Boolean(jitter);
     this.logger = loggerInstance;
+    this.marketStreamService = null;
+  }
+
+  setMarketStreamService(service) {
+    this.marketStreamService = service;
   }
 
   async settleExecution({ executionId, maxAttempts = 5 } = {}) {
@@ -205,6 +210,18 @@ export class TradeSettlementService {
             executionId: cleanId,
             isIdempotentReplay: result.isIdempotentReplay,
           });
+        }
+        if (result && !result.isIdempotentReplay && this.marketStreamService) {
+          try {
+            if (result.buyerUserId && result.buyerWallet) {
+              this.marketStreamService.publishWalletUpdate({ userId: result.buyerUserId, wallet: result.buyerWallet });
+            }
+            if (result.sellerUserId && result.sellerWallet) {
+              this.marketStreamService.publishWalletUpdate({ userId: result.sellerUserId, wallet: result.sellerWallet });
+            }
+          } catch {
+            // Non-blocking WebSocket delivery
+          }
         }
         return result;
       } catch (error) {
@@ -735,7 +752,14 @@ export class TradeSettlementService {
       },
     });
 
-    return { settlement, isIdempotentReplay: false };
+    return {
+      settlement,
+      isIdempotentReplay: false,
+      buyerUserId: buyerOrder.userId,
+      sellerUserId: sellerOrder.userId,
+      buyerWallet: { ...buyerWallet, availableBalance: buyerAvailable, reservedBalance: buyerReserved },
+      sellerWallet: { ...sellerWallet, availableBalance: sellerAvailable, reservedBalance: BigInt(lockedSellerWallet.reservedBalance) },
+    };
   }
 
   async _assertExistingSettlement(tx, { existing, execution, buyerOrder, sellerOrder, amounts }) {
