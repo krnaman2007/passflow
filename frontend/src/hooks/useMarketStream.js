@@ -72,7 +72,15 @@ export function useMarketStream(eventId, ticketCategoryId) {
       if (activeMarketRef.current !== currentKey) return;
 
       const depthData = depthRes.status === 'fulfilled' ? depthRes.value?.data || depthRes.value : null;
-      const tradesData = tradesRes.status === 'fulfilled' ? tradesRes.value?.data?.trades || tradesRes.value?.trades || [] : [];
+      let tradesData = tradesRes.status === 'fulfilled' ? tradesRes.value?.data?.trades || tradesRes.value?.trades || [] : [];
+      if (!Array.isArray(tradesData) || tradesData.length === 0) {
+        try {
+          const eventTradesRes = await api.trades.getEventTrades(targetEventId, { categoryId: targetCategoryId, limit: 20 });
+          tradesData = eventTradesRes?.data?.trades || eventTradesRes?.trades || [];
+        } catch {
+          // Non-blocking
+        }
+      }
       const summaryData = marketRes.status === 'fulfilled' ? marketRes.value?.data || marketRes.value : null;
 
       if (depthData) {

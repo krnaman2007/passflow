@@ -12,8 +12,9 @@ import {
   CheckCircle2,
   Lock,
   Zap,
-  Inbox,
-  AlertCircle
+  AlertCircle,
+  X,
+  ShieldCheck,
 } from 'lucide-react';
 
 export default function OrdersHistoryPage() {
@@ -33,6 +34,47 @@ export default function OrdersHistoryPage() {
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(false);
   const [cancellingId, setCancellingId] = useState(null);
+
+  // Trade & Settlement details modal states (GET /trades/:id, GET /settlements/:id, GET /escrows/:id)
+  const [selectedTrade, setSelectedTrade] = useState(null);
+  const [tradeDetails, setTradeDetails] = useState(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
+
+  const handleOpenTradeDetails = async (trade) => {
+    setSelectedTrade(trade);
+    setLoadingDetails(true);
+    setTradeDetails(null);
+    try {
+      const [tradeRes, settlementRes] = await Promise.allSettled([
+        api.trades.getTradeById(trade.id),
+        api.trades.getSettlementById(trade.id),
+      ]);
+
+      const tData = tradeRes.status === 'fulfilled' ? tradeRes.value?.data || tradeRes.value : null;
+      const sData = settlementRes.status === 'fulfilled' ? settlementRes.value?.data || settlementRes.value : null;
+
+      let eData = null;
+      const lookupOrderId = tData?.orderId || trade.orderId;
+      if (lookupOrderId) {
+        try {
+          const escrowRes = await api.trades.getEscrowById(lookupOrderId);
+          eData = escrowRes?.data || escrowRes;
+        } catch {
+          // Escrow hold released upon execution settlement
+        }
+      }
+
+      setTradeDetails({
+        trade: tData || trade,
+        settlement: sData?.settlement || tData?.settlement || sData,
+        escrow: eData,
+      });
+    } catch (err) {
+      console.warn('Could not load complete trade details:', err);
+    } finally {
+      setLoadingDetails(false);
+    }
+  };
 
   const fetchHistoryData = async () => {
     setLoading(true);
@@ -345,12 +387,13 @@ export default function OrdersHistoryPage() {
                   <th>Total Amount</th>
                   <th>Settlement Status</th>
                   <th>Timestamp</th>
+                  <th>Receipt</th>
                 </tr>
               </thead>
               <tbody>
                 {trades.length === 0 ? (
                   <tr>
-                    <td colSpan={9} style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
+                    <td colSpan={10} style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
                       <TrendingUp size={32} color="var(--text-dim)" style={{ margin: '0 auto 8px auto', display: 'block' }} />
                       <strong style={{ color: 'var(--text-main)', fontSize: 14 }}>No executed trades yet</strong>
                       <div style={{ fontSize: 12, marginTop: 4 }}>
@@ -386,6 +429,17 @@ export default function OrdersHistoryPage() {
                         </span>
                       </td>
                       <td style={{ color: 'var(--text-dim)', fontSize: 12 }}>{tr.time}</td>
+                      <td>
+                        <button
+                          className="btn-secondary"
+                          style={{ padding: '3px 8px', fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                          onClick={() => handleOpenTradeDetails(tr)}
+                          title="View Trade, Settlement and Escrow Receipt"
+                        >
+                          <Receipt size={12} />
+                          <span>Receipt</span>
+                        </button>
+                      </td>
                     </tr>
                   ))
                 )}
@@ -448,6 +502,119 @@ export default function OrdersHistoryPage() {
           </div>
         )}
       </div>
+
+      {/* Trade & Settlement Receipt Modal (GET /trades/:id, GET /settlements/:id, GET /escrows/:id) */}
+      {selectedTrade && (
+        <div className="modal-overlay" onClick={() => setSelectedTrade(null)}>
+          <div
+            className="modal-card"
+            style={{ maxWidth: 540, width: '92%', maxHeight: '88vh', overflowY: 'auto' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Receipt size={20} color="var(--brand-primary, #6366f1)" />
+                <h3 style={{ fontSize: 18, margin: 0 }}>Trade & Settlement Receipt</h3>
+              </div>
+              <button
+                className="btn-icon"
+                onClick={() => setSelectedTrade(null)}
+                style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {loadingDetails ? (
+              <div style={{ textAlign: 'center', padding: '40px 0' }}>
+                <RefreshCw size={24} className="spin" style={{ margin: '0 auto 8px auto', display: 'block', color: 'var(--brand-primary, #6366f1)' }} />
+                <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>Retrieving cryptographic settlement & escrow receipt...</p>
+              </div>
+            ) : (
+              <div>
+                <div style={{ background: 'rgba(255, 255, 255, 0.03)', padding: 14, borderRadius: 'var(--radius-md, 8px)', marginBottom: 16 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Execution ID:</span>
+                    <span className="font-mono" style={{ fontSize: 12, color: 'var(--text-main)' }}>
+                      {tradeDetails?.trade?.id || selectedTrade.id}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Event & Category:</span>
+                    <strong style={{ fontSize: 13, color: 'var(--text-main)' }}>
+                      {selectedTrade.eventName} · {selectedTrade.tier}
+                    </strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Your Execution Role:</span>
+                    <span className="badge badge-blue font-mono" style={{ fontSize: 11 }}>
+                      {tradeDetails?.trade?.role || 'TAKER'} ({selectedTrade.side})
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Execution Price & Quantity:</span>
+                    <span className="font-mono" style={{ fontWeight: 600, color: 'var(--text-main)' }}>
+                      {selectedTrade.quantity}x @ ₹{Number(selectedTrade.price).toLocaleString('en-IN', { minimumFractionDigits: 2 })} = ₹{Number(selectedTrade.totalAmount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Settlement State Block (GET /settlements/:id) */}
+                <div style={{ marginBottom: 16 }}>
+                  <h4 style={{ fontSize: 13, textTransform: 'uppercase', color: 'var(--text-dim)', letterSpacing: '0.05em', marginBottom: 8 }}>
+                    Settlement Status
+                  </h4>
+                  <div style={{ padding: 12, borderRadius: 'var(--radius-sm, 6px)', background: 'rgba(16, 185, 129, 0.06)', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <ShieldCheck size={16} color="var(--accent-emerald)" />
+                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent-emerald)' }}>
+                          {tradeDetails?.settlement?.status || tradeDetails?.trade?.settlementStatus || 'SETTLED'}
+                        </span>
+                      </div>
+                      <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                        {tradeDetails?.settlement?.settledAt ? new Date(tradeDetails.settlement.settledAt).toLocaleTimeString() : selectedTrade.time}
+                      </span>
+                    </div>
+                    {tradeDetails?.settlement?.priceImprovementPaise && Number(tradeDetails.settlement.priceImprovementPaise) > 0 && (
+                      <div style={{ fontSize: 11, color: 'var(--accent-emerald)', marginTop: 6 }}>
+                        ⚡ Price Improvement: ₹{(Number(tradeDetails.settlement.priceImprovementPaise) / 100).toFixed(2)} saved!
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Escrow Status Block (GET /escrows/:id) */}
+                {tradeDetails?.escrow && (
+                  <div style={{ marginBottom: 16 }}>
+                    <h4 style={{ fontSize: 13, textTransform: 'uppercase', color: 'var(--text-dim)', letterSpacing: '0.05em', marginBottom: 8 }}>
+                      Escrow Hold Record
+                    </h4>
+                    <div style={{ padding: 12, borderRadius: 'var(--radius-sm, 6px)', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--border-subtle)', fontSize: 12 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                        <span style={{ color: 'var(--text-muted)' }}>Escrow Hold Status:</span>
+                        <span className="badge badge-neutral">{tradeDetails.escrow.status || 'RELEASED'}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>Hold Reason:</span>
+                        <span>{tradeDetails.escrow.reason || 'ORDER_ESCROW'}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  className="btn-primary"
+                  style={{ width: '100%', marginTop: 8 }}
+                  onClick={() => setSelectedTrade(null)}
+                >
+                  Close Receipt
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
