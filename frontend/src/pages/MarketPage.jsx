@@ -113,6 +113,30 @@ export default function MarketPage() {
   const activeEventId = currentEvent?.id || null;
   const tiers = Array.isArray(currentEvent?.tiers) ? currentEvent.tiers : [];
 
+  // Market Summary: Real-Time Top Events by Volume & Price Movement (GET /market/summary)
+  const [marketSummary, setMarketSummary] = useState([]);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadSummary() {
+      try {
+        const res = await api.market.getMarketSummary({ limit: 6, sortBy: 'volume' });
+        const list = res?.data?.summary || res?.summary || [];
+        if (isMounted && Array.isArray(list)) {
+          setMarketSummary(list);
+        }
+      } catch (err) {
+        console.warn('Market summary fetch deferred:', err.message);
+      }
+    }
+    loadSummary();
+    const interval = setInterval(loadSummary, 12000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
   // Determine active category
   const activeCategoryId = useMemo(() => {
     if (!tiers || tiers.length === 0) return null;
@@ -295,6 +319,66 @@ export default function MarketPage() {
 
   return (
     <div className="content-wrap">
+      {/* Real-Time Market Summary Ticker (GET /market/summary) */}
+      {marketSummary.length > 0 && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: '8px 14px',
+            borderRadius: 'var(--radius-md, 8px)',
+            background: 'rgba(15, 23, 42, 0.65)',
+            border: '1px solid var(--border-subtle)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            overflowX: 'auto',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+            <Activity size={14} color="var(--accent-orange)" />
+            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', letterSpacing: '0.05em' }}>
+              MARKET SUMMARY
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'nowrap' }}>
+            {marketSummary.map((item) => {
+              const isPositive = (item.priceChangePercent || 0) >= 0;
+              return (
+                <div
+                  key={item.eventId}
+                  onClick={() => handleSelectEvent(item.eventId)}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '3px 10px',
+                    borderRadius: 'var(--radius-sm, 6px)',
+                    background: item.eventId === activeEventId ? 'rgba(99, 102, 241, 0.18)' : 'rgba(255, 255, 255, 0.04)',
+                    border: item.eventId === activeEventId ? '1px solid var(--brand-primary, #6366f1)' : '1px solid rgba(255, 255, 255, 0.08)',
+                    fontSize: 12,
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                  }}
+                  title="Click to view market"
+                >
+                  <strong style={{ color: 'var(--text-main)', fontSize: 12 }}>{item.eventName}</strong>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Vol: {item.volume}</span>
+                  <span
+                    style={{
+                      color: isPositive ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                      fontSize: 11,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {isPositive ? '+' : ''}{item.priceChangePercent}%
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Top Header: Title, Event Switcher, Category Tabs & Live Status */}
       <div
         style={{

@@ -271,7 +271,14 @@ export const marketApi = {
     const query = new URLSearchParams(params).toString();
     return apiRequest(`/api/v1/market/${eventId}/${categoryId}/trades${query ? `?${query}` : ''}`);
   },
-  getMarketSummary: () => apiRequest('/api/v1/market/summary'),
+  getMarketSummary: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return apiRequest(`/api/v1/market/summary${query ? `?${query}` : ''}`);
+  },
+  getPriceHistory: (eventId, params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return apiRequest(`/api/v1/events/${eventId}/price-history${query ? `?${query}` : ''}`);
+  },
 };
 
 // ==========================================
