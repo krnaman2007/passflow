@@ -76,6 +76,35 @@ export default function OrdersHistoryPage() {
     }
   };
 
+  // Order details modal states (GET /orders/:id, GET /orders/:id/trades)
+  const [selectedOrder, setSelectedOrder] = useState(null);
+  const [orderDetails, setOrderDetails] = useState(null);
+  const [loadingOrderDetails, setLoadingOrderDetails] = useState(false);
+
+  const handleOpenOrderDetails = async (ord) => {
+    setSelectedOrder(ord);
+    setLoadingOrderDetails(true);
+    setOrderDetails(null);
+    try {
+      const [orderRes, tradesRes] = await Promise.allSettled([
+        api.orders.getOrderById(ord.id),
+        api.orders.getOrderTrades(ord.id),
+      ]);
+
+      const oData = orderRes.status === 'fulfilled' ? orderRes.value?.data || orderRes.value : null;
+      const tData = tradesRes.status === 'fulfilled' ? tradesRes.value?.data?.trades || tradesRes.value?.trades || [] : [];
+
+      setOrderDetails({
+        order: oData || ord,
+        trades: tData,
+      });
+    } catch (err) {
+      console.warn('Could not load order details:', err);
+    } finally {
+      setLoadingOrderDetails(false);
+    }
+  };
+
   const fetchHistoryData = async () => {
     setLoading(true);
     try {
@@ -353,16 +382,27 @@ export default function OrdersHistoryPage() {
                       </td>
                       <td style={{ color: 'var(--text-dim)', fontSize: 12 }}>{ord.date}</td>
                       <td>
-                        {(ord.status === 'OPEN' || ord.status === 'PARTIAL') && (
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                           <button
-                            className="btn-danger-outline"
-                            style={{ padding: '3px 8px', fontSize: 11 }}
-                            disabled={cancellingId === ord.id}
-                            onClick={() => handleCancelOrder(ord.id)}
+                            className="btn-secondary"
+                            style={{ padding: '3px 8px', fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 3 }}
+                            onClick={() => handleOpenOrderDetails(ord)}
+                            title="View Order Details & Associated Trades"
                           >
-                            {cancellingId === ord.id ? 'Cancelling...' : 'Cancel'}
+                            <FileText size={11} />
+                            <span>Details</span>
                           </button>
-                        )}
+                          {(ord.status === 'OPEN' || ord.status === 'PARTIAL') && (
+                            <button
+                              className="btn-danger-outline"
+                              style={{ padding: '3px 8px', fontSize: 11 }}
+                              disabled={cancellingId === ord.id}
+                              onClick={() => handleCancelOrder(ord.id)}
+                            >
+                              {cancellingId === ord.id ? 'Cancelling...' : 'Cancel'}
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -609,6 +649,131 @@ export default function OrdersHistoryPage() {
                   onClick={() => setSelectedTrade(null)}
                 >
                   Close Receipt
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Order Details & Associated Trades Modal (GET /orders/:id, GET /orders/:id/trades) */}
+      {selectedOrder && (
+        <div className="modal-overlay" onClick={() => setSelectedOrder(null)}>
+          <div
+            className="modal-card"
+            style={{ maxWidth: 560, width: '92%', maxHeight: '88vh', overflowY: 'auto' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <FileText size={20} color="var(--brand-primary, #6366f1)" />
+                <h3 style={{ fontSize: 18, margin: 0 }}>Order Details & Trades</h3>
+              </div>
+              <button
+                className="btn-icon"
+                onClick={() => setSelectedOrder(null)}
+                style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {loadingOrderDetails ? (
+              <div style={{ textAlign: 'center', padding: '40px 0' }}>
+                <RefreshCw size={24} className="spin" style={{ margin: '0 auto 8px auto', display: 'block', color: 'var(--brand-primary, #6366f1)' }} />
+                <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>Retrieving order details and fill executions...</p>
+              </div>
+            ) : (
+              <div>
+                <div style={{ background: 'rgba(255, 255, 255, 0.03)', padding: 14, borderRadius: 'var(--radius-md, 8px)', marginBottom: 16 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Order ID:</span>
+                    <span className="font-mono" style={{ fontSize: 12, color: 'var(--text-main)' }}>
+                      {orderDetails?.order?.id || selectedOrder.id}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Event & Tier:</span>
+                    <strong style={{ fontSize: 13, color: 'var(--text-main)' }}>
+                      {selectedOrder.eventName} · {selectedOrder.tier}
+                    </strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Side & Status:</span>
+                    <div>
+                      <span className={`badge ${selectedOrder.side === 'BUY' ? 'badge-green' : 'badge-red'}`} style={{ marginRight: 6 }}>
+                        {selectedOrder.side}
+                      </span>
+                      <span className="badge badge-neutral">{orderDetails?.order?.status || selectedOrder.status}</span>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Limit Price:</span>
+                    <span className="font-mono" style={{ fontWeight: 600 }}>
+                      ₹{Number(selectedOrder.price).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Quantity Filled / Total:</span>
+                    <span className="font-mono">
+                      {orderDetails?.order?.filledQuantity != null ? orderDetails.order.filledQuantity : selectedOrder.filled} / {orderDetails?.order?.initialQuantity != null ? orderDetails.order.initialQuantity : selectedOrder.qty}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Trades produced by this order (GET /orders/:id/trades) */}
+                <div style={{ marginBottom: 16 }}>
+                  <h4 style={{ fontSize: 13, textTransform: 'uppercase', color: 'var(--text-dim)', letterSpacing: '0.05em', marginBottom: 8 }}>
+                    Trades Produced by this Order ({orderDetails?.trades?.length || 0})
+                  </h4>
+                  {!orderDetails?.trades || orderDetails.trades.length === 0 ? (
+                    <div style={{ padding: 16, borderRadius: 'var(--radius-sm, 6px)', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--border-subtle)', textAlign: 'center', fontSize: 12, color: 'var(--text-muted)' }}>
+                      No matching executions have filled this order yet.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {orderDetails.trades.map((tr, idx) => (
+                        <div
+                          key={tr.id || idx}
+                          style={{
+                            padding: '10px 12px',
+                            borderRadius: 'var(--radius-sm, 6px)',
+                            background: 'rgba(255, 255, 255, 0.03)',
+                            border: '1px solid var(--border-subtle)',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            fontSize: 12,
+                          }}
+                        >
+                          <div>
+                            <div className="font-mono" style={{ fontWeight: 600, color: 'var(--text-main)' }}>
+                              Trade #{tr.sequenceNumber || (tr.id ? tr.id.slice(0, 8) : idx + 1)}
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+                              {tr.executedAt ? new Date(tr.executedAt).toLocaleTimeString() : 'Executed'}
+                            </div>
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <div className="font-mono" style={{ fontWeight: 600, color: 'var(--accent-emerald)' }}>
+                              {tr.quantity}x @ ₹{Number(tr.price).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </div>
+                            <span className="badge badge-green" style={{ fontSize: 10, marginTop: 2 }}>
+                              {tr.settlementStatus || 'SETTLED'}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  className="btn-primary"
+                  style={{ width: '100%', marginTop: 8 }}
+                  onClick={() => setSelectedOrder(null)}
+                >
+                  Close Details
                 </button>
               </div>
             )}

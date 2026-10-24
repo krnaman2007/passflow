@@ -71,7 +71,15 @@ export function useMarketStream(eventId, ticketCategoryId) {
       const currentKey = `${targetEventId}:${targetCategoryId}`;
       if (activeMarketRef.current !== currentKey) return;
 
-      const depthData = depthRes.status === 'fulfilled' ? depthRes.value?.data || depthRes.value : null;
+      let depthData = depthRes.status === 'fulfilled' ? depthRes.value?.data || depthRes.value : null;
+      if (!depthData || (!depthData.bids && !depthData.asks)) {
+        try {
+          const eventObRes = await api.orders.getEventOrderbook(targetEventId, targetCategoryId);
+          depthData = eventObRes?.data || eventObRes;
+        } catch {
+          // Non-blocking
+        }
+      }
       let tradesData = tradesRes.status === 'fulfilled' ? tradesRes.value?.data?.trades || tradesRes.value?.trades || [] : [];
       if (!Array.isArray(tradesData) || tradesData.length === 0) {
         try {
