@@ -275,6 +275,7 @@ export function AppProvider({ children }) {
           }
           await syncLiveWallet();
           fetchLiveNotifications();
+          fetchLiveOrders();
         }
       } catch (err) {
         console.warn('Session restoration failed or expired:', err.message);
@@ -333,9 +334,10 @@ export function AppProvider({ children }) {
       }));
     }
 
-    // Refresh live wallet & notifications in background
+    // Refresh live wallet, notifications, & orders in background
     syncLiveWallet();
     fetchLiveNotifications();
+    fetchLiveOrders();
 
     return { success: true, user, tokens };
   };
@@ -698,41 +700,59 @@ export function AppProvider({ children }) {
     }
   };
 
-  // Cancel Order
-  const cancelOrder = (orderId) => {
-    const order = userOrders.find((o) => o.id === orderId);
-    if (!order) return;
-
-    if (order.side === 'BUY' && order.heldAmount) {
-      // Release held funds
-      setWallet((prev) => ({
-        ...prev,
-        held: Math.max(0, prev.held - order.heldAmount),
-        available: prev.available + order.heldAmount,
-        transactions: [
-          {
-            id: `tx_${Date.now()}`,
-            type: 'RELEASE_HOLD',
-            amount: order.heldAmount,
-            status: 'Done',
-            date: 'Just now',
-            note: `Cancelled ${order.id} - Hold released`
-          },
-          ...prev.transactions
-        ]
-      }));
-    } else if (order.side === 'SELL' && order.ticketId) {
-      // Unlock ticket
-      setUserTickets((prev) =>
-        prev.map((t) => (t.id === order.ticketId ? { ...t, status: 'OWNED' } : t))
-      );
+  // Fetch Authoritative User Orders from Backend
+  const fetchLiveOrders = async () => {
+    try {
+      const token = getAuthToken();
+      if (!token) return;
+      const res = await api.orders.getOrders();
+      const rawList = res?.data?.orders || res?.orders;
+      if (Array.isArray(rawList)) {
+        const formatted = rawList.map((ord) => {
+          const dateObj = ord.createdAt ? new Date(ord.createdAt) : new Date();
+          const dateStr = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          const timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const priceVal = ord.price != null ? Number(ord.price) / (Number(ord.price) > 1000 ? 100 : 1) : 0;
+          return {
+            id: ord.id || ord.orderId,
+            orderId: ord.id || ord.orderId,
+            eventId: ord.eventId,
+            eventName: ord.eventName || ord.event?.name || 'Live Event',
+            tier: ord.categoryName || ord.ticketCategory?.name || 'General Admission',
+            side: ord.side === 'BID' || ord.side === 'BUY' ? 'BUY' : 'SELL',
+            price: priceVal,
+            qty: ord.originalQuantity || ord.initialQuantity || ord.quantity || 1,
+            filled: ord.filledQuantity || 0,
+            status: ord.status || 'OPEN',
+            date: `${dateStr}, ${timeStr}`,
+            createdAt: ord.createdAt,
+          };
+        });
+        setUserOrders(formatted);
+      }
+    } catch (err) {
+      console.warn('Backend orders sync deferred:', err.message);
     }
+  };
 
+  // Real Backend Cancel Order
+  const cancelOrder = async (orderId) => {
+    // Optimistic UI update
     setUserOrders((prev) =>
       prev.map((o) => (o.id === orderId ? { ...o, status: 'CANCELLED' } : o))
     );
 
-    showToast(`Order ${orderId} cancelled. Funds / tickets unlocked.`, 'info');
+    try {
+      await api.orders.cancelOrder(orderId);
+      showToast(`Order #${orderId.slice ? orderId.slice(0, 8) : orderId} cancelled. Funds unlocked in escrow.`, 'info');
+      // Sync fresh wallet and orders from backend
+      syncLiveWallet();
+      fetchLiveOrders();
+    } catch (err) {
+      showToast(err.message || 'Order cancellation processed', 'info');
+      syncLiveWallet();
+      fetchLiveOrders();
+    }
   };
 
   // Ticket Operations: Sell from My Tickets
@@ -1339,6 +1359,7 @@ export function AppProvider({ children }) {
         regenerateSolvencyProof,
         refreshAdminData,
         fetchLiveNotifications,
+        fetchLiveOrders,
         // Real Backend Auth & Session
         authUser,
         authLoading,
