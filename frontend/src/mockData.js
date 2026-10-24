@@ -189,22 +189,59 @@ export const INITIAL_NOTIFICATIONS = [
 ];
 
 export const INITIAL_ADMIN_DATA = {
+  metrics: {
+    ordersPerSecond: 18,
+    avgLatencyMs: 4.2,
+    openOrders: 12,
+    failedSettlements: 0,
+    totalVolume: 79280,
+    totalFees: 1982,
+  },
+  health: {
+    database: { status: 'OK', latency: '3ms' },
+    redis: { status: 'OK', latency: '1ms' },
+    websocket: { status: 'OK', connections: 1 },
+    matchingEngine: { status: 'OK', tick: '0.15ms' },
+  },
+  reconciliation: [
+    {
+      id: 'rec_init',
+      date: 'Today',
+      status: 'MATCHED',
+      discrepancies: 0,
+      checkedTrades: 1450,
+      ledgerSum: '₹1,68,290.00',
+    },
+  ],
+  auditLogs: [
+    {
+      id: 'log_seed',
+      admin: 'admin_01',
+      action: 'System initialized & database connection verified',
+      time: 'Just now',
+      date: 'Today',
+      status: 'SUCCESS',
+    },
+  ],
+  organizerApplications: [],
+  failedSettlements: [],
   rules: [
-    { id: 'rule_1', eventId: 'coldplay-mumbai', tier: 'Standing Floor (South Gate)', maxPrice: 7150, enabled: true },
-    { id: 'rule_2', eventId: 'diljit-delhi', tier: 'Fan Pit VIP (Front-Stage)', maxPrice: 17600, enabled: true },
-    { id: 'rule_3', eventId: 'arijit-delhi', tier: 'Gold Circle Standing', maxPrice: 4950, enabled: true },
-    { id: 'rule_4', eventId: 'india-aus-kolkata', tier: 'Lower Tier Pavilion', maxPrice: 5500, enabled: true },
+    { id: 'rule_1', eventId: 'coldplay-mumbai', name: 'Coldplay: Standing Floor', tier: 'Standing Floor (South Gate)', maxPrice: 7150, enabled: true },
+    { id: 'rule_2', eventId: 'diljit-delhi', name: 'Diljit: Fan Pit VIP', tier: 'Fan Pit VIP (Front-Stage)', maxPrice: 17600, enabled: true },
+    { id: 'rule_3', eventId: 'arijit-delhi', name: 'Arijit: Gold Circle', tier: 'Gold Circle Standing', maxPrice: 4950, enabled: true },
+    { id: 'rule_4', eventId: 'india-aus-kolkata', name: 'IND vs AUS: Pavilion', tier: 'Lower Tier Pavilion', maxPrice: 5500, enabled: true },
   ],
   botThreshold: 10,
-  disputes: [
-    { id: 'dsp_101', tradeId: 'T-9810', buyer: 'Ali Khan', seller: 'Rohit Verma', reason: 'Delayed settlement escrow check', status: 'PENDING' },
-  ],
-  solvencyProof: {
-    hash: '0x7e8b91c0f4492da3e819b5c219f8a3d4e6c1a89f2140',
-    verifiedAt: '2026-10-24 10:00 UTC',
-    ratio: 1.15,
-    status: 'SOLVENT',
-    liabilities: '₹2,45,000.00',
-    assets: '₹2,81,750.00',
+  solvency: {
+    verifiedDate: 'Today',
+    assets: 100000,
+    liabilities: 50000,
+    ratio: 2.0,
+    merkleRoot: '0x7e8b91c0f4492da3e819b5c219f8a3d4e6c1a89f2140',
   },
+  monitoringLogs: [
+    { time: '10:00:01', node: 'ENGINE-01', level: 'INFO', message: 'In-memory matching pipeline active with 0.15ms tick' },
+    { time: '10:00:02', node: 'POSTGRES', level: 'INFO', message: 'Connection pool verified (3ms latency, 0 errors)' },
+    { time: '10:00:03', node: 'WS-GATEWAY', level: 'INFO', message: 'Market stream broadcast channels healthy' },
+  ],
 };
