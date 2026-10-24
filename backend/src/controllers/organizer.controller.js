@@ -52,9 +52,8 @@ export const apply = async (req, res, next) => {
  */
 export const getProfile = async (req, res, next) => {
   try {
-    const userId = req.user.id;
-
-    const organizer = await prisma.organizer.findUnique({
+    let userId = req.user.id;
+    let organizer = await prisma.organizer.findUnique({
       where: { userId },
       include: {
         user: {
@@ -72,6 +71,17 @@ export const getProfile = async (req, res, next) => {
       },
     });
 
+    if (!organizer && req.user.role === 'ADMIN') {
+      organizer = await prisma.organizer.findFirst({
+        include: {
+          user: {
+            select: { id: true, name: true, email: true, phone: true, role: true },
+          },
+          _count: { select: { events: true }, },
+        },
+      });
+    }
+
     if (!organizer) {
       throw new AppError('Organizer profile not found', 404, 'ORGANIZER_NOT_FOUND');
     }
@@ -88,7 +98,12 @@ export const getProfile = async (req, res, next) => {
  */
 export const getOrganizerEvents = async (req, res, next) => {
   try {
-    const organizerId = req.user.organizer?.id;
+    let organizerId = req.user.organizer?.id;
+
+    if (!organizerId && req.user.role === 'ADMIN') {
+      const defaultOrg = await prisma.organizer.findFirst({ where: { verificationStatus: 'VERIFIED' } });
+      organizerId = defaultOrg?.id;
+    }
 
     if (!organizerId) {
       throw new AppError('Organizer profile required for this action', 403, 'FORBIDDEN');

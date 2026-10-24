@@ -384,6 +384,11 @@ export const api = {
   auctions: auctionsApi,
   solvency: solvencyApi,
   admin: adminApi,
+  organizer: {
+    getProfile: authApi.getOrganizerProfile,
+    getEvents: authApi.getOrganizerEvents,
+    apply: authApi.applyOrganizer,
+  },
 };
 
 export default api;
