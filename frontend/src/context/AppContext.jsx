@@ -11,6 +11,7 @@ import {
 } from '../mockData';
 import { marketStream } from '../services/marketStream.js';
 import { useAppStore } from '../store/useStore.js';
+import { api, checkBackendHealth, BACKEND_URL } from '../services/api.js';
 
 
 const AppContext = createContext(null);
@@ -93,6 +94,53 @@ export function AppProvider({ children }) {
 
     return () => {
       unsubscribe();
+    };
+  }, []);
+
+  // Backend connection status state
+  const [backendStatus, setBackendStatus] = useState({
+    connected: false,
+    checking: true,
+    latencyMs: null,
+    url: BACKEND_URL,
+  });
+
+  // Check Backend HTTP & WebSocket connection on mount and maintain heartbeat
+  useEffect(() => {
+    let isMounted = true;
+
+    async function pingBackend() {
+      try {
+        const health = await checkBackendHealth();
+        if (isMounted) {
+          setBackendStatus({
+            connected: health.connected,
+            checking: false,
+            latencyMs: health.latencyMs,
+            url: health.url,
+          });
+
+          if (health.connected) {
+            useAppStore.getState().setConnected(true);
+            marketStream.initSocket();
+          } else {
+            useAppStore.getState().setConnected(false);
+          }
+        }
+      } catch {
+        if (isMounted) {
+          setBackendStatus((prev) => ({ ...prev, connected: false, checking: false }));
+          useAppStore.getState().setConnected(false);
+        }
+      }
+    }
+
+    pingBackend();
+    const interval = setInterval(pingBackend, 15000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
     };
   }, []);
 
@@ -910,7 +958,11 @@ export function AppProvider({ children }) {
         toggleUserSuspension,
         approveUserKyc,
         regenerateSolvencyProof,
-        marketStream
+        marketStream,
+        // Backend Connectivity
+        backendStatus,
+        api,
+        checkBackendHealth
       }}
     >
       {children}
