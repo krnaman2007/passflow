@@ -37,14 +37,14 @@ export default function OrdersHistoryPage() {
   const fetchHistoryData = async () => {
     setLoading(true);
     try {
-      // 1. Fetch live orders
+      // 1. Fetch live orders (/history/orders)
       if (typeof fetchLiveOrders === 'function') {
         await fetchLiveOrders();
       }
 
-      // 2. Fetch live executed trades from PostgreSQL
+      // 2. Fetch live executed trades from PostgreSQL (/history/trades)
       try {
-        const tradesRes = await api.trades.getMyTrades();
+        const tradesRes = await (api.history?.getTrades ? api.history.getTrades() : api.trades.getMyTrades());
         const rawTrades = tradesRes?.data?.trades || tradesRes?.trades || [];
         if (Array.isArray(rawTrades)) {
           setTrades(
@@ -73,20 +73,29 @@ export default function OrdersHistoryPage() {
         console.warn('Trades fetch deferred:', err.message);
       }
 
-      // 3. Fetch live wallet ledger transactions
+      // 3. Fetch live financial transaction history from PostgreSQL (/history/transactions)
       try {
-        const txRes = await api.wallet.getTransactions();
+        const txRes = await (api.history?.getTransactions ? api.history.getTransactions() : api.wallet.getTransactions());
         const rawTx = txRes?.data?.transactions || txRes?.transactions || [];
         if (Array.isArray(rawTx) && rawTx.length > 0) {
           setTransactions(
-            rawTx.map((tx) => ({
-              id: tx.id,
-              type: tx.type || tx.entryType || 'TRANSACTION',
-              amount: tx.amount != null ? Number(tx.amount) / 100 : 0,
-              status: tx.status || 'Done',
-              date: tx.createdAt ? new Date(tx.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'Today',
-              note: tx.description || tx.note || 'Escrow ledger mutation',
-            }))
+            rawTx.map((tx) => {
+              // history.service normalizes ledger entries or TransactionHistory records
+              let finalAmount = 0;
+              if (tx.amount != null) {
+                const num = Number(tx.amount);
+                // If amount is greater than 100000 and amountPaise is present, it's paise
+                finalAmount = num > 10000 && tx.amountPaise ? num / 100 : num;
+              }
+              return {
+                id: tx.id,
+                type: tx.type || tx.entryType || 'TRANSACTION',
+                amount: finalAmount,
+                status: tx.status || 'COMPLETED',
+                date: tx.createdAt ? new Date(tx.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'Today',
+                note: tx.description || tx.note || 'Escrow ledger mutation',
+              };
+            })
           );
         } else if (wallet?.transactions && wallet.transactions.length > 0) {
           setTransactions(wallet.transactions);

@@ -705,7 +705,7 @@ export function AppProvider({ children }) {
     try {
       const token = getAuthToken();
       if (!token) return;
-      const res = await api.orders.getOrders();
+      const res = await (api.history?.getOrders ? api.history.getOrders() : api.orders.getOrders());
       const rawList = res?.data?.orders || res?.orders;
       if (Array.isArray(rawList)) {
         const formatted = rawList.map((ord) => {
