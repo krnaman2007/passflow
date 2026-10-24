@@ -51,6 +51,7 @@ export default function OrganizerCreateEventPage() {
     'A premier multi-genre electronic, indie, and alternative live festival featuring top international and domestic headliners.'
   );
   const [basePrice, setBasePrice] = useState('1499');
+  const [initialQuantity, setInitialQuantity] = useState('500');
 
   // Step 2 Tiers State
   const [categories, setCategories] = useState([]);
@@ -168,20 +169,21 @@ export default function OrganizerCreateEventPage() {
 
       setCreatedEvent(event);
 
-      // Auto-create initial default General Admission tier if none exists yet
+      // Auto-create initial default General Admission tier with chosen quantity
       const defaultTierPrice = parseFloat(basePrice) || 50;
+      const defaultTierQty = parseInt(initialQuantity, 10) || 500;
       try {
         const gaTier = await addCategoryToEvent(event.id, {
           name: 'General Admission',
           price: defaultTierPrice,
-          quantity: 250,
+          quantity: defaultTierQty,
         });
         setCategories([
           {
             id: gaTier?.id || 'ga',
             name: 'General Admission',
             price: defaultTierPrice,
-            qty: 250
+            qty: defaultTierQty,
           }
         ]);
       } catch (tierErr) {
@@ -385,27 +387,51 @@ export default function OrganizerCreateEventPage() {
               />
             </div>
 
-            <div style={{ marginBottom: 24 }}>
-              <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 6, fontWeight: 500 }}>
-                Base Face Price (₹) <span style={{ color: '#ef4444' }}>*</span>
-              </label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-sub)' }}>₹</span>
-                <input
-                  type="number"
-                  step="1"
-                  min="1"
-                  required
-                  placeholder="1499"
-                  value={basePrice}
-                  onChange={(e) => setBasePrice(e.target.value)}
-                  style={{ width: 220, fontSize: 16, fontWeight: 700, fontFamily: 'monospace' }}
-                  disabled={isSubmitting}
-                />
+            <div className="grid-2" style={{ marginBottom: 24 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 6, fontWeight: 500 }}>
+                  Base Face Price (₹) <span style={{ color: '#ef4444' }}>*</span>
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-sub)' }}>₹</span>
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    required
+                    placeholder="1499"
+                    value={basePrice}
+                    onChange={(e) => setBasePrice(e.target.value)}
+                    style={{ width: '100%', fontSize: 16, fontWeight: 700, fontFamily: 'monospace' }}
+                    disabled={isSubmitting}
+                  />
+                </div>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>
+                  Used as default benchmark for General Admission and primary market face value.
+                </span>
               </div>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>
-                Used as default benchmark for General Admission and primary market face value.
-              </span>
+
+              <div>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 6, fontWeight: 500 }}>
+                  Total Number of Tickets (Initial Quantity) <span style={{ color: '#ef4444' }}>*</span>
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    required
+                    placeholder="500"
+                    value={initialQuantity}
+                    onChange={(e) => setInitialQuantity(e.target.value)}
+                    style={{ width: '100%', fontSize: 16, fontWeight: 700, fontFamily: 'monospace' }}
+                    disabled={isSubmitting}
+                  />
+                </div>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>
+                  Total capacity to mint into primary inventory for General Admission.
+                </span>
+              </div>
             </div>
 
             <div style={{ display: 'flex', gap: 12 }}>
