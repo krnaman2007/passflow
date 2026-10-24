@@ -284,6 +284,7 @@ export const notificationsApi = {
     return apiRequest(`/api/v1/notifications${query ? `?${query}` : ''}`);
   },
   markAsRead: (id) => apiRequest(`/api/v1/notifications/${id}/read`, { method: 'PATCH' }),
+  markAllAsRead: () => apiRequest('/api/v1/notifications/read-all', { method: 'PATCH' }),
 };
 
 export const historyApi = {

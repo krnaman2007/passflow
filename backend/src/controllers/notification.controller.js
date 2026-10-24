@@ -34,7 +34,25 @@ export const markAsRead = async (req, res, next) => {
   }
 };
 
+/**
+ * PATCH /notifications/read-all
+ * Mark all notifications as read for authenticated user.
+ */
+export const markAllAsRead = async (req, res, next) => {
+  try {
+    const result = await notificationService.markAllAsRead(req.user.id);
+    res.status(200).json({
+      success: true,
+      message: 'All notifications marked as read',
+      data: result,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 export default {
   getNotifications,
   markAsRead,
+  markAllAsRead,
 };

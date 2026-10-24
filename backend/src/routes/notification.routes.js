@@ -15,6 +15,13 @@ router.use(authenticateUser);
 router.get('/', notificationController.getNotifications);
 
 /**
+ * @route   PATCH /notifications/read-all
+ * @desc    Mark all user's notifications as read
+ * @access  Private (User)
+ */
+router.patch('/read-all', notificationController.markAllAsRead);
+
+/**
  * @route   PATCH /notifications/:id/read
  * @desc    Mark notification as read
  * @access  Private (User)

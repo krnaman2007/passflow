@@ -274,6 +274,7 @@ export function AppProvider({ children }) {
             }));
           }
           await syncLiveWallet();
+          fetchLiveNotifications();
         }
       } catch (err) {
         console.warn('Session restoration failed or expired:', err.message);
@@ -332,8 +333,9 @@ export function AppProvider({ children }) {
       }));
     }
 
-    // Refresh live wallet in background
+    // Refresh live wallet & notifications in background
     syncLiveWallet();
+    fetchLiveNotifications();
 
     return { success: true, user, tokens };
   };
@@ -870,16 +872,68 @@ export function AppProvider({ children }) {
     showToast(`-$${num.toFixed(2)} withdrawn to your bank account!`, 'info');
   };
 
-  // Notifications Handlers
-  const markNotificationRead = (id) => {
-    setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, unread: false } : n))
-    );
+  // Real-Time Backend Notifications Handlers
+  const fetchLiveNotifications = async () => {
+    try {
+      const token = getAuthToken();
+      if (!token) return;
+      const res = await api.notifications.getNotifications();
+      const rawList = res?.data?.notifications || res?.notifications;
+      if (Array.isArray(rawList)) {
+        if (rawList.length > 0) {
+          const mapped = rawList.map((n) => {
+            const dateObj = n.createdAt ? new Date(n.createdAt) : new Date();
+            const timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const dateStr = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            return {
+              id: n.id,
+              title:
+                n.type === 'TRADE'
+                  ? 'Order Fill Executed'
+                  : n.type === 'ORDER'
+                  ? 'Secondary Order Placed'
+                  : n.type === 'TRANSFER'
+                  ? 'Wallet Credit & Escrow'
+                  : n.type === 'KYC'
+                  ? 'KYC Verification Status'
+                  : 'System Notification',
+              body: n.message || '',
+              time: `${dateStr}, ${timeStr}`,
+              unread: n.status === 'UNREAD',
+              status: n.status,
+              type: n.type || 'ORDER',
+              createdAt: n.createdAt,
+            };
+          });
+          setNotifications(mapped);
+        } else {
+          setNotifications([]);
+        }
+      }
+    } catch (err) {
+      console.warn('Backend notifications sync deferred:', err.message);
+    }
   };
 
-  const markAllNotificationsRead = () => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, unread: false })));
-    showToast('All notifications marked as read', 'info');
+  const markNotificationRead = async (id) => {
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, unread: false, status: 'READ' } : n))
+    );
+    try {
+      await api.notifications.markAsRead(id);
+    } catch (err) {
+      console.warn('Failed to mark notification as read:', err.message);
+    }
+  };
+
+  const markAllNotificationsRead = async () => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, unread: false, status: 'READ' })));
+    try {
+      await api.notifications.markAllAsRead();
+      showToast('All notifications marked as read', 'info');
+    } catch {
+      showToast('All notifications marked as read', 'info');
+    }
   };
 
   // Organizer Actions (Flow C)
@@ -1284,6 +1338,7 @@ export function AppProvider({ children }) {
         approveUserKyc,
         regenerateSolvencyProof,
         refreshAdminData,
+        fetchLiveNotifications,
         // Real Backend Auth & Session
         authUser,
         authLoading,
