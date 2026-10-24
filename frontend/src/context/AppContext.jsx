@@ -957,28 +957,65 @@ export function AppProvider({ children }) {
   };
 
   // Organizer Actions (Flow C)
-  const applyForOrganizer = ({ orgName, email, website, volume }) => {
-    const newApp = {
-      id: `org_app_${Date.now()}`,
-      name: orgName,
-      email: email || currentUser?.email || 'user@example.com',
-      status: 'PENDING',
-      volume: volume || '$20k/mo',
-      appliedAt: 'Today'
-    };
+  const applyForOrganizer = async ({ orgName, email, website, volume, description }) => {
+    try {
+      const cleanName = (orgName || '').trim();
+      if (!cleanName || cleanName.length < 2) {
+        throw new Error('Organization name must be at least 2 characters.');
+      }
 
-    setAdminData((prev) => ({
-      ...prev,
-      organizerApplications: [newApp, ...prev.organizerApplications]
-    }));
+      const res = await api.auth.applyOrganizer({
+        organizationName: cleanName,
+      });
 
-    // Update currentUser kyc/organizer status
-    setUsers((prev) =>
-      prev.map((u) => (u.id === currentUser?.id ? { ...u, organizerStatus: 'PENDING' } : u))
-    );
+      const data = res?.data || res;
+      const createdOrg = data?.organizer;
 
-    showToast('Organizer application submitted! Admin verification is pending.', 'success');
-    navigate('/profile');
+      // Refresh current user profile to obtain real updated database state
+      try {
+        const profileRes = await api.auth.getProfile();
+        const updatedUser = profileRes?.data || profileRes;
+        if (updatedUser) {
+          setAuthUser(updatedUser);
+          if (updatedUser.role) setCurrentRole(updatedUser.role);
+          useAppStore.getState().setUser(updatedUser);
+        }
+      } catch (profErr) {
+        // Fallback optimistic local update
+        setAuthUser((prev) => prev ? {
+          ...prev,
+          role: 'ORGANIZER',
+          organizer: createdOrg || {
+            organizationName: cleanName,
+            verificationStatus: 'PENDING',
+            createdAt: new Date().toISOString()
+          }
+        } : prev);
+      }
+
+      // Also register in local adminData list for instant admin console preview
+      const newApp = {
+        id: createdOrg?.id || `org_app_${Date.now()}`,
+        name: cleanName,
+        email: email || currentUser?.email || 'user@example.com',
+        status: 'PENDING',
+        volume: volume || '₹1,00,000 - ₹5,00,000/mo',
+        appliedAt: 'Just now'
+      };
+
+      setAdminData((prev) => ({
+        ...prev,
+        organizerApplications: [newApp, ...(prev.organizerApplications || []).filter((a) => a.id !== newApp.id)]
+      }));
+
+      showToast(data?.message || 'Organizer application submitted! Admin verification is pending.', 'success');
+      return { success: true, data };
+    } catch (err) {
+      console.error('Failed to submit organizer application:', err);
+      const errMsg = err?.data?.error?.message || err?.message || 'Failed to submit organizer application';
+      showToast(errMsg, 'error');
+      throw err;
+    }
   };
 
   const createEventDraft = ({ title, date, venue, description, originalPrice }) => {
