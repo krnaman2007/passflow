@@ -19,11 +19,12 @@ import settlementRoutes from './routes/settlement.routes.js';
 import escrowRoutes from './routes/escrow.routes.js';
 import orderbookRoutes from './routes/orderbook.routes.js';
 import errorHandler from './middleware/errorHandler.js';
+import corsOptions from './config/cors.js';
 
 const app = express();
 
 // Middlewares
-app.use(cors({ origin: config.frontendUrl, credentials: true }));
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

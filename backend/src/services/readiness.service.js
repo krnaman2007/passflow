@@ -12,7 +12,7 @@ import { prisma as defaultPrisma } from '../db/prisma.js';
 import { appLifecycleState as defaultAppState } from './app-state.js';
 import { orderService as defaultOrderService } from './order/index.js';
 
-export const DEFAULT_DB_TIMEOUT_MS = 3000;
+export const DEFAULT_DB_TIMEOUT_MS = Number(process.env.DB_READINESS_TIMEOUT_MS) || 5000;
 
 /**
  * Executes a lightweight bounded query against PostgreSQL.

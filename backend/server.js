@@ -10,6 +10,7 @@ import { orderService } from './src/services/order/index.js';
 import { marketStreamService } from './src/services/market-stream/index.js';
 import notificationService from './src/services/notification.service.js';
 import monitoringService from './src/services/monitoring.service.js';
+import corsOptions from './src/config/cors.js';
 
 const server = http.createServer(app);
 
@@ -33,11 +34,7 @@ export const recoverSettlements = async () => {
 
 // Socket.IO Setup
 const io = new Server(server, {
-  cors: {
-    origin: config.frontendUrl,
-    methods: ['GET', 'POST'],
-    credentials: true,
-  },
+  cors: corsOptions,
 });
 
 // Attach MarketStreamService to Socket.IO and Services
@@ -73,13 +70,20 @@ io.on('connection', (socket) => {
  * 6. Begin listening for HTTP traffic only after all prerequisites succeed.
  */
 export const startServer = async () => {
+  let startedRecoveryWorker = false;
   try {
     console.log('\n==================================================');
     logger.info(`Starting PassFlow backend (${config.nodeEnv})...`);
     console.log('--------------------------------------------------');
 
-    // 1. Establish database connectivity with active bounded query
-    await checkDatabaseConnections({ throwOnError: true, timeoutMs: 5000 });
+    // 1. Establish database connectivity with active bounded query (with cold-start resilience)
+    const dbTimeout = Number(process.env.DB_CONNECT_TIMEOUT_MS) || 15000;
+    await checkDatabaseConnections({
+      throwOnError: true,
+      timeoutMs: dbTimeout,
+      retries: process.env.NODE_ENV === 'test' ? 1 : 3,
+      retryDelayMs: 2000,
+    });
 
     // 2. Complete required startup settlement recovery before serving
     await recoverSettlements();
@@ -95,6 +99,7 @@ export const startServer = async () => {
     // 4. Start settlement recovery worker only after prerequisites succeed
     if (!settlementRecoveryWorker.isRunning) {
       settlementRecoveryWorker.start();
+      startedRecoveryWorker = true;
     }
 
     // 5. Mark application state initialized
@@ -102,19 +107,46 @@ export const startServer = async () => {
 
     // 6. Begin listening for HTTP traffic only after all prerequisites succeed
     await new Promise((resolve, reject) => {
-      server.listen(config.port, (err) => {
-        if (err) return reject(err);
+      const cleanupListeners = () => {
+        server.off('error', onError);
+        server.off('listening', onListening);
+      };
+      const onError = (err) => {
+        cleanupListeners();
+        reject(err);
+      };
+      const onListening = () => {
+        cleanupListeners();
         logger.info(`🚀 Server running on http://localhost:${config.port} (${config.nodeEnv})`);
         logger.info(`🌐 Allowed Frontend Origin: ${config.frontendUrl}`);
         logger.info(`🔌 Socket.IO Server: Initialized & Listening`);
         console.log('==================================================\n');
         resolve();
-      });
+      };
+
+      server.once('error', onError);
+      server.once('listening', onListening);
+      try {
+        server.listen(config.port);
+      } catch (err) {
+        onError(err);
+      }
     });
 
     return server;
   } catch (err) {
+    appLifecycleState.setInitialized(false);
     appLifecycleState.setStartupError(err);
+    if (startedRecoveryWorker && settlementRecoveryWorker.isRunning) {
+      try {
+        await settlementRecoveryWorker.stop({ timeoutMs: 5000 });
+      } catch (stopError) {
+        logger.error('Error stopping settlement recovery worker after startup failure', stopError);
+      }
+    }
+    if (err.code === 'EADDRINUSE') {
+      logger.error(`Port ${config.port} is already in use. Stop the process using it or set PORT to an available port.`);
+    }
     logger.error('❌ Critical startup failure: backend unable to start safely', err);
     if (process.env.NODE_ENV !== 'test') {
       process.exit(1);

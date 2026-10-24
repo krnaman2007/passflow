@@ -3,33 +3,46 @@ import redis from './redis.js';
 import logger from '../errorlogging/logger.js';
 
 export const checkDatabaseConnections = async ({
-  timeoutMs = 5000,
+  timeoutMs = Number(process.env.DB_CONNECT_TIMEOUT_MS) || 15000,
+  retries = 1,
+  retryDelayMs = 1500,
   throwOnError = false,
   prismaClient = prisma,
 } = {}) => {
-  let timer;
-  const timeoutPromise = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error('Database connectivity check timed out')), timeoutMs);
-    if (timer.unref) timer.unref();
-  });
+  let lastError = null;
 
-  // Test PostgreSQL / Prisma via active query
-  try {
-    await Promise.race([
-      prismaClient.$queryRaw`SELECT 1`,
-      timeoutPromise,
-    ]);
-    logger.info('🐘 [Database] PostgreSQL (Prisma): Connected successfully');
-    return true;
-  } catch (err) {
-    logger.warn('⚠️ [Database] PostgreSQL (Prisma): Disconnected (Check DATABASE_URL in .env)');
-    if (throwOnError) {
-      throw new Error(`Database connection check failed: ${err.message}`);
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    let timer;
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Database connectivity check timed out')), timeoutMs);
+      if (timer.unref) timer.unref();
+    });
+
+    try {
+      await Promise.race([
+        prismaClient.$queryRaw`SELECT 1`,
+        timeoutPromise,
+      ]);
+      logger.info('🐘 [Database] PostgreSQL (Prisma): Connected successfully');
+      return true;
+    } catch (err) {
+      lastError = err;
+      if (attempt < retries) {
+        logger.warn(
+          `⚠️ [Database] Connection attempt ${attempt}/${retries} failed (${err.message}). Retrying in ${retryDelayMs}ms...`
+        );
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
     }
-    return false;
-  } finally {
-    if (timer) clearTimeout(timer);
   }
+
+  logger.warn('⚠️ [Database] PostgreSQL (Prisma): Disconnected (Check DATABASE_URL in .env)');
+  if (throwOnError) {
+    throw new Error(`Database connection check failed: ${lastError?.message || 'Unknown error'}`);
+  }
+  return false;
 };
 
 export { prisma, default as prismaClient } from './prisma.js';
