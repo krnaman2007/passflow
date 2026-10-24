@@ -19,7 +19,13 @@ import {
   ExternalLink,
   Edit3,
   Gavel,
-  X
+  X,
+  Calendar,
+  MapPin,
+  Sliders,
+  BarChart3,
+  Ban,
+  Check
 } from 'lucide-react';
 import { api } from '../services/api';
 import { formatBackendEvent } from '../utils/eventAdapter';
@@ -29,6 +35,11 @@ export default function OrganizerDashboardPage() {
     navigate,
     addCategoryToEvent,
     publishEvent,
+    updateEventDetails,
+    updateEventStatus,
+    updateCategoryDetails,
+    getCategoryInventory,
+    updateCategoryInventory,
     currentUser,
     currentRole,
     login,
@@ -41,6 +52,16 @@ export default function OrganizerDashboardPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isPublishingId, setIsPublishingId] = useState(null);
+  const [isUpdatingStatusId, setIsUpdatingStatusId] = useState(null);
+
+  // Edit Event Details modal state (PUT /events/:id)
+  const [editingEvent, setEditingEvent] = useState(null);
+  const [editEventName, setEditEventName] = useState('');
+  const [editEventDate, setEditEventDate] = useState('');
+  const [editEventLocation, setEditEventLocation] = useState('');
+  const [editEventDesc, setEditEventDesc] = useState('');
+  const [editEventPrice, setEditEventPrice] = useState('');
+  const [isSavingEventDetails, setIsSavingEventDetails] = useState(false);
 
   // Add tier form state
   const [tierName, setTierName] = useState('');
@@ -48,11 +69,19 @@ export default function OrganizerDashboardPage() {
   const [tierQty, setTierQty] = useState('');
   const [isAddingTier, setIsAddingTier] = useState(false);
 
-  // Edit tier & inventory state
+  // Edit tier & inventory state (PUT /categories/:id & PUT /categories/:id/inventory)
   const [editingTierId, setEditingTierId] = useState(null);
+  const [editTierName, setEditTierName] = useState('');
   const [editPrice, setEditPrice] = useState('');
   const [editTotalQty, setEditTotalQty] = useState('');
   const [isSavingTierEdit, setIsSavingTierEdit] = useState(false);
+
+  // Live Inventory Breakdown Modal state (GET /categories/:id/inventory & PUT /categories/:id/inventory)
+  const [inspectingTier, setInspectingTier] = useState(null);
+  const [inventoryStats, setInventoryStats] = useState(null);
+  const [isLoadingInventory, setIsLoadingInventory] = useState(false);
+  const [newQuotaValue, setNewQuotaValue] = useState('');
+  const [isSavingQuota, setIsSavingQuota] = useState(false);
 
   // Dutch auction state
   const [auctionTier, setAuctionTier] = useState(null);
@@ -176,22 +205,87 @@ export default function OrganizerDashboardPage() {
     }
   };
 
-  // Handle Publish Event
-  const handlePublish = async (eventId, e) => {
+  // Handle Status Update (PATCH /events/:id/status: PUBLISHED, CANCELLED, COMPLETED)
+  const handleUpdateStatus = async (eventId, newStatus, e) => {
     if (e) e.stopPropagation();
-    setIsPublishingId(eventId);
+    if (newStatus === 'CANCELLED') {
+      const confirmed = window.confirm(
+        'Are you sure you want to cancel this event? Ticket sales will stop and the event will be marked as CANCELLED.'
+      );
+      if (!confirmed) return;
+    }
+
+    setIsUpdatingStatusId(eventId);
     try {
-      await publishEvent(eventId);
+      await updateEventStatus(eventId, newStatus);
       await loadOrganizerData();
     } catch (err) {
       // toast shown in AppContext
     } finally {
-      setIsPublishingId(null);
+      setIsUpdatingStatusId(null);
     }
   };
 
+  const handlePublish = async (eventId, e) => {
+    return handleUpdateStatus(eventId, 'PUBLISHED', e);
+  };
+
+  // Open Edit Event Modal (PUT /events/:id)
+  const handleOpenEditEvent = (ev, e) => {
+    if (e) e.stopPropagation();
+    setEditingEvent(ev);
+    setEditEventName(ev.title || ev.name || '');
+    let dateStr = '';
+    if (ev.rawDate) {
+      const d = new Date(ev.rawDate);
+      if (!isNaN(d.getTime())) {
+        dateStr = d.toISOString().slice(0, 16);
+      }
+    }
+    setEditEventDate(dateStr);
+    setEditEventLocation(ev.venue || ev.location || '');
+    setEditEventDesc(ev.description || '');
+    setEditEventPrice(ev.basePrice != null ? String(ev.basePrice) : '');
+  };
+
+  // Save Event Details (PUT /events/:id)
+  const handleSaveEventDetails = async (e) => {
+    e.preventDefault();
+    if (!editingEvent?.id) return;
+
+    if (!editEventName.trim()) {
+      showToast('Event title is required', 'error');
+      return;
+    }
+
+    setIsSavingEventDetails(true);
+    try {
+      const payload = {
+        name: editEventName.trim(),
+        location: editEventLocation.trim(),
+        description: editEventDesc.trim(),
+      };
+      if (editEventDate) {
+        payload.dateTime = new Date(editEventDate).toISOString();
+      }
+      if (editEventPrice && !isNaN(parseFloat(editEventPrice))) {
+        payload.originalPrice = parseFloat(editEventPrice);
+      }
+
+      await updateEventDetails(editingEvent.id, payload);
+      setEditingEvent(null);
+      await loadOrganizerData();
+    } catch (err) {
+      // toast shown in AppContext
+    } finally {
+      setIsSavingEventDetails(false);
+    }
+  };
+
+  // Category Tier Inline Edit (PUT /categories/:id & PUT /categories/:id/inventory)
   const handleStartEditTier = (tier) => {
     setEditingTierId(tier.id);
+    setEditTierName(tier.name || '');
     setEditPrice(String(tier.price || ''));
     setEditTotalQty(String(tier.total || ''));
   };
@@ -203,27 +297,79 @@ export default function OrganizerDashboardPage() {
       const q = parseInt(editTotalQty, 10);
       let updatedSomething = false;
 
-      if (!isNaN(p) && p > 0 && p !== tier.price) {
-        await api.events.updateCategory(tier.id, { originalPrice: p });
+      const trimmedName = editTierName.trim();
+      const nameChanged = trimmedName && trimmedName !== tier.name;
+      const priceChanged = !isNaN(p) && p > 0 && p !== tier.price;
+
+      if (nameChanged || priceChanged) {
+        const catPayload = {};
+        if (nameChanged) catPayload.name = trimmedName;
+        if (priceChanged) catPayload.originalPrice = p;
+        await updateCategoryDetails(tier.id, catPayload);
         updatedSomething = true;
       }
 
       if (!isNaN(q) && q >= 0 && q !== tier.total) {
-        await api.events.updateCategoryInventory(tier.id, { totalQuantity: q });
+        await updateCategoryInventory(tier.id, q);
         updatedSomething = true;
       }
 
       if (updatedSomething) {
-        showToast(`Category tier "${tier.name}" updated successfully in database!`, 'success');
         await loadOrganizerData();
       }
       setEditingTierId(null);
     } catch (err) {
-      console.error('Failed to update category tier:', err);
-      const msg = err?.data?.error?.message || err?.message || 'Failed to update category';
-      showToast(msg, 'error');
+      // error handled in AppContext
     } finally {
       setIsSavingTierEdit(false);
+    }
+  };
+
+  // Category Live Inventory Inspection (GET /categories/:id/inventory)
+  const handleInspectInventory = async (tier) => {
+    setInspectingTier(tier);
+    setIsLoadingInventory(true);
+    setInventoryStats(null);
+    setNewQuotaValue(String(tier.total || ''));
+
+    try {
+      const data = await getCategoryInventory(tier.id);
+      setInventoryStats(data);
+      if (data?.totalQuantity != null) {
+        setNewQuotaValue(String(data.totalQuantity));
+      }
+    } catch (err) {
+      // error handled in AppContext
+    } finally {
+      setIsLoadingInventory(false);
+    }
+  };
+
+  // Category Inventory Quota Update directly in Modal (PUT /categories/:id/inventory)
+  const handleSaveQuotaFromModal = async (e) => {
+    e.preventDefault();
+    if (!inspectingTier?.id) return;
+    const q = parseInt(newQuotaValue, 10);
+    if (isNaN(q) || q < 0) {
+      showToast('Please enter a valid stock quota quantity', 'error');
+      return;
+    }
+
+    if (inventoryStats && q < inventoryStats.soldCount) {
+      showToast(`Cannot set total stock below tickets already sold (${inventoryStats.soldCount})`, 'error');
+      return;
+    }
+
+    setIsSavingQuota(true);
+    try {
+      await updateCategoryInventory(inspectingTier.id, q);
+      const refreshed = await getCategoryInventory(inspectingTier.id);
+      setInventoryStats(refreshed);
+      await loadOrganizerData();
+    } catch (err) {
+      // error handled in AppContext
+    } finally {
+      setIsSavingQuota(false);
     }
   };
 
@@ -580,7 +726,15 @@ export default function OrganizerDashboardPage() {
                         </div>
                       </td>
                       <td>
-                        <span className={`badge ${ev.status === 'PUBLISHED' ? 'badge-green' : 'badge-orange'}`}>
+                        <span className={`badge ${
+                          ev.status === 'PUBLISHED'
+                            ? 'badge-green'
+                            : ev.status === 'COMPLETED'
+                            ? 'badge-blue'
+                            : ev.status === 'CANCELLED'
+                            ? 'badge-red'
+                            : 'badge-orange'
+                        }`}>
                           {ev.status}
                         </span>
                       </td>
@@ -597,7 +751,7 @@ export default function OrganizerDashboardPage() {
                         ₹{revenue.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td>
-                        <div style={{ display: 'flex', gap: 8 }}>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                           <button
                             className="btn-secondary"
                             style={{ padding: '4px 8px', fontSize: 11 }}
@@ -605,23 +759,70 @@ export default function OrganizerDashboardPage() {
                               e.stopPropagation();
                               navigate(`/events/${ev.id}`);
                             }}
+                            title="View public event page"
                           >
                             <Eye size={12} />
                             <span>View</span>
                           </button>
 
+                          <button
+                            className="btn-secondary"
+                            style={{ padding: '4px 8px', fontSize: 11 }}
+                            onClick={(e) => handleOpenEditEvent(ev, e)}
+                            title="Edit Event Details (PUT /events/:id)"
+                          >
+                            <Edit3 size={12} />
+                            <span>Edit</span>
+                          </button>
+
                           {ev.status === 'DRAFT' && (
                             <button
                               className="btn-primary"
-                              disabled={isPublishingThis}
+                              disabled={isUpdatingStatusId === ev.id}
                               style={{ padding: '4px 10px', fontSize: 11 }}
-                              onClick={(e) => handlePublish(ev.id, e)}
+                              onClick={(e) => handleUpdateStatus(ev.id, 'PUBLISHED', e)}
+                              title="Publish Event Live (PATCH /events/:id/status)"
                             >
-                              {isPublishingThis ? (
+                              {isUpdatingStatusId === ev.id ? (
                                 <RefreshCw size={11} className="spin" />
                               ) : (
                                 <span>Publish</span>
                               )}
+                            </button>
+                          )}
+
+                          {ev.status === 'PUBLISHED' && (
+                            <>
+                              <button
+                                className="btn-secondary"
+                                disabled={isUpdatingStatusId === ev.id}
+                                style={{ padding: '4px 8px', fontSize: 11, color: '#38bdf8', borderColor: 'rgba(56, 189, 248, 0.3)' }}
+                                onClick={(e) => handleUpdateStatus(ev.id, 'COMPLETED', e)}
+                                title="Mark Complete (PATCH /events/:id/status)"
+                              >
+                                Complete
+                              </button>
+                              <button
+                                className="btn-secondary"
+                                disabled={isUpdatingStatusId === ev.id}
+                                style={{ padding: '4px 8px', fontSize: 11, color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.3)' }}
+                                onClick={(e) => handleUpdateStatus(ev.id, 'CANCELLED', e)}
+                                title="Cancel Event (PATCH /events/:id/status)"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          )}
+
+                          {(ev.status === 'CANCELLED' || ev.status === 'COMPLETED') && (
+                            <button
+                              className="btn-secondary"
+                              disabled={isUpdatingStatusId === ev.id}
+                              style={{ padding: '4px 8px', fontSize: 11 }}
+                              onClick={(e) => handleUpdateStatus(ev.id, 'PUBLISHED', e)}
+                              title="Re-activate event"
+                            >
+                              Reopen
                             </button>
                           )}
                         </div>
@@ -640,16 +841,78 @@ export default function OrganizerDashboardPage() {
         <div className="grid-2">
           {/* Left: Inventory Breakdown & Add Category */}
           <div className="card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
               <div>
-                <h3 style={{ fontSize: 17, fontWeight: 600, margin: 0 }}>Inventory: {selectedEvent.title}</h3>
-                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                  Live quota allocations, available face stock, and open escrow
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <h3 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>{selectedEvent.title}</h3>
+                  <span className={`badge ${
+                    selectedEvent.status === 'PUBLISHED'
+                      ? 'badge-green'
+                      : selectedEvent.status === 'COMPLETED'
+                      ? 'badge-blue'
+                      : selectedEvent.status === 'CANCELLED'
+                      ? 'badge-red'
+                      : 'badge-orange'
+                  }`}>
+                    {selectedEvent.status}
+                  </span>
+                </div>
+                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                  {selectedEvent.fullDate} · {selectedEvent.venue} · Base: ₹{selectedEvent.basePrice || 'N/A'}
                 </p>
               </div>
-              <span className={`badge ${selectedEvent.status === 'PUBLISHED' ? 'badge-green' : 'badge-orange'}`}>
-                {selectedEvent.status}
-              </span>
+
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ padding: '6px 12px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}
+                  onClick={(e) => handleOpenEditEvent(selectedEvent, e)}
+                  title="Edit Event Title, Date, Venue, Description (PUT /events/:id)"
+                >
+                  <Edit3 size={13} />
+                  <span>Edit Details</span>
+                </button>
+
+                {selectedEvent.status === 'DRAFT' && (
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={isUpdatingStatusId === selectedEvent.id || (selectedEvent.tiers || []).length === 0}
+                    style={{ padding: '6px 14px', fontSize: 12 }}
+                    onClick={(e) => handleUpdateStatus(selectedEvent.id, 'PUBLISHED', e)}
+                  >
+                    {isUpdatingStatusId === selectedEvent.id ? 'Publishing...' : 'Publish Live'}
+                  </button>
+                )}
+
+                {selectedEvent.status === 'PUBLISHED' && (
+                  <>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      disabled={isUpdatingStatusId === selectedEvent.id}
+                      style={{ padding: '6px 12px', fontSize: 12, borderColor: 'rgba(56, 189, 248, 0.4)', color: '#38bdf8' }}
+                      onClick={(e) => handleUpdateStatus(selectedEvent.id, 'COMPLETED', e)}
+                      title="Mark event completed (PATCH /events/:id/status)"
+                    >
+                      <Check size={13} />
+                      <span>Complete Event</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      disabled={isUpdatingStatusId === selectedEvent.id}
+                      style={{ padding: '6px 12px', fontSize: 12, borderColor: 'rgba(239, 68, 68, 0.4)', color: '#ef4444' }}
+                      onClick={(e) => handleUpdateStatus(selectedEvent.id, 'CANCELLED', e)}
+                      title="Cancel event (PATCH /events/:id/status)"
+                    >
+                      <Ban size={13} />
+                      <span>Cancel Event</span>
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
             {/* Inventory Tiers List */}
@@ -719,8 +982,18 @@ export default function OrganizerDashboardPage() {
                               type="button"
                               className="btn-secondary"
                               style={{ padding: '5px 8px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}
+                              onClick={() => handleInspectInventory(tier)}
+                              title="Inspect Live Database Stock & Ledger Breakdown (GET /categories/:id/inventory)"
+                            >
+                              <Layers size={12} color="var(--accent-emerald)" />
+                              <span>Stock</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              style={{ padding: '5px 8px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}
                               onClick={() => (isEditingThis ? setEditingTierId(null) : handleStartEditTier(tier))}
-                              title="Update base price or inventory quota"
+                              title="Update category name, price, or inventory quota (PUT /categories/:id)"
                             >
                               <Edit3 size={12} />
                               <span>{isEditingThis ? 'Cancel' : 'Edit'}</span>
@@ -739,7 +1012,7 @@ export default function OrganizerDashboardPage() {
                         </div>
                       </div>
 
-                      {/* Inline Tier & Inventory Editor */}
+                      {/* Inline Tier & Inventory Editor (PUT /categories/:id & PUT /categories/:id/inventory) */}
                       {isEditingThis && (
                         <div
                           style={{
@@ -752,6 +1025,17 @@ export default function OrganizerDashboardPage() {
                           }}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Name:</label>
+                            <input
+                              type="text"
+                              value={editTierName}
+                              onChange={(e) => setEditTierName(e.target.value)}
+                              placeholder="Tier Name"
+                              style={{ width: 110, fontSize: 12, padding: '4px 8px' }}
+                            />
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                             <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Price (₹):</label>
                             <input
                               type="number"
@@ -759,7 +1043,7 @@ export default function OrganizerDashboardPage() {
                               min="1"
                               value={editPrice}
                               onChange={(e) => setEditPrice(e.target.value)}
-                              style={{ width: 100, fontSize: 12, padding: '4px 8px' }}
+                              style={{ width: 90, fontSize: 12, padding: '4px 8px' }}
                             />
                           </div>
 
@@ -770,7 +1054,7 @@ export default function OrganizerDashboardPage() {
                               min={sold}
                               value={editTotalQty}
                               onChange={(e) => setEditTotalQty(e.target.value)}
-                              style={{ width: 100, fontSize: 12, padding: '4px 8px' }}
+                              style={{ width: 90, fontSize: 12, padding: '4px 8px' }}
                             />
                           </div>
 
@@ -893,10 +1177,10 @@ export default function OrganizerDashboardPage() {
                 <button
                   className="btn-primary"
                   style={{ width: '100%', padding: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
-                  disabled={isPublishingId === selectedEvent.id || (selectedEvent.tiers || []).length === 0}
-                  onClick={() => handlePublish(selectedEvent.id)}
+                  disabled={isUpdatingStatusId === selectedEvent.id || (selectedEvent.tiers || []).length === 0}
+                  onClick={() => handleUpdateStatus(selectedEvent.id, 'PUBLISHED')}
                 >
-                  {isPublishingId === selectedEvent.id ? (
+                  {isUpdatingStatusId === selectedEvent.id ? (
                     <>
                       <RefreshCw size={15} className="spin" />
                       <span>Publishing Event Live...</span>
@@ -905,25 +1189,102 @@ export default function OrganizerDashboardPage() {
                     <span>Publish Event Live to Marketplace</span>
                   )}
                 </button>
+              ) : selectedEvent.status === 'PUBLISHED' ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div
+                    style={{
+                      background: 'rgba(16, 185, 129, 0.08)',
+                      border: '1px solid var(--accent-emerald-border)',
+                      padding: 12,
+                      borderRadius: 'var(--radius-sm)',
+                      textAlign: 'center',
+                      color: 'var(--accent-emerald)',
+                      fontSize: 13,
+                      fontWeight: 600,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8
+                    }}
+                  >
+                    <CheckCircle2 size={16} />
+                    <span>Event is Live & Discoverable on Public Exchange</span>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{ fontSize: 12, padding: '8px', color: '#38bdf8', borderColor: 'rgba(56, 189, 248, 0.3)' }}
+                      onClick={() => handleUpdateStatus(selectedEvent.id, 'COMPLETED')}
+                      disabled={isUpdatingStatusId === selectedEvent.id}
+                      title="Mark Event Completed (PATCH /events/:id/status)"
+                    >
+                      Complete Event
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{ fontSize: 12, padding: '8px', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.3)' }}
+                      onClick={() => handleUpdateStatus(selectedEvent.id, 'CANCELLED')}
+                      disabled={isUpdatingStatusId === selectedEvent.id}
+                      title="Cancel Event (PATCH /events/:id/status)"
+                    >
+                      Cancel Event
+                    </button>
+                  </div>
+                </div>
+              ) : selectedEvent.status === 'COMPLETED' ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div
+                    style={{
+                      background: 'rgba(56, 189, 248, 0.08)',
+                      border: '1px solid rgba(56, 189, 248, 0.3)',
+                      padding: 12,
+                      borderRadius: 'var(--radius-sm)',
+                      textAlign: 'center',
+                      color: '#38bdf8',
+                      fontSize: 13,
+                      fontWeight: 600
+                    }}
+                  >
+                    Event is Completed (Archived)
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ fontSize: 12, padding: '8px' }}
+                    onClick={() => handleUpdateStatus(selectedEvent.id, 'PUBLISHED')}
+                    disabled={isUpdatingStatusId === selectedEvent.id}
+                  >
+                    Reopen Event as Published
+                  </button>
+                </div>
               ) : (
-                <div
-                  style={{
-                    background: 'rgba(16, 185, 129, 0.08)',
-                    border: '1px solid var(--accent-emerald-border)',
-                    padding: 14,
-                    borderRadius: 'var(--radius-sm)',
-                    textAlign: 'center',
-                    color: 'var(--accent-emerald)',
-                    fontSize: 13,
-                    fontWeight: 600,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 8
-                  }}
-                >
-                  <CheckCircle2 size={16} />
-                  <span>Event is Live & Discoverable on Public Exchange</span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div
+                    style={{
+                      background: 'rgba(239, 68, 68, 0.08)',
+                      border: '1px solid rgba(239, 68, 68, 0.3)',
+                      padding: 12,
+                      borderRadius: 'var(--radius-sm)',
+                      textAlign: 'center',
+                      color: '#ef4444',
+                      fontSize: 13,
+                      fontWeight: 600
+                    }}
+                  >
+                    Event is Cancelled
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ fontSize: 12, padding: '8px' }}
+                    onClick={() => handleUpdateStatus(selectedEvent.id, 'PUBLISHED')}
+                    disabled={isUpdatingStatusId === selectedEvent.id}
+                  >
+                    Re-activate Event
+                  </button>
                 </div>
               )}
             </div>
@@ -1032,6 +1393,257 @@ export default function OrganizerDashboardPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Event Details Modal (PUT /events/:id) */}
+      {editingEvent && (
+        <div className="modal-overlay" onClick={() => setEditingEvent(null)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 540 }}>
+            <button
+              onClick={() => setEditingEvent(null)}
+              style={{ position: 'absolute', top: 16, right: 16, color: 'var(--text-dim)', background: 'transparent', border: 'none', cursor: 'pointer' }}
+            >
+              <X size={18} />
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 'var(--radius-sm)', background: 'var(--accent-orange-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Edit3 size={18} color="var(--accent-orange)" />
+              </div>
+              <div>
+                <h3 style={{ fontSize: 17, margin: 0 }}>Edit Event Details</h3>
+                <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
+                  Update event details in the database (PUT /events/:id)
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveEventDetails}>
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
+                  Event Name / Title *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editEventName}
+                  onChange={(e) => setEditEventName(e.target.value)}
+                  style={{ width: '100%', fontSize: 14 }}
+                  placeholder="e.g. Neon Horizon Music Festival"
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
+                    Date & Time
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={editEventDate}
+                    onChange={(e) => setEditEventDate(e.target.value)}
+                    style={{ width: '100%', fontSize: 13 }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
+                    Base Original Price (₹)
+                  </label>
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    value={editEventPrice}
+                    onChange={(e) => setEditEventPrice(e.target.value)}
+                    style={{ width: '100%', fontSize: 13 }}
+                    placeholder="e.g. 1499"
+                  />
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
+                  Venue / Location
+                </label>
+                <input
+                  type="text"
+                  value={editEventLocation}
+                  onChange={(e) => setEditEventLocation(e.target.value)}
+                  style={{ width: '100%', fontSize: 14 }}
+                  placeholder="e.g. Jawaharlal Nehru Stadium, New Delhi"
+                />
+              </div>
+
+              <div style={{ marginBottom: 18 }}>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
+                  Event Description
+                </label>
+                <textarea
+                  rows={3}
+                  value={editEventDesc}
+                  onChange={(e) => setEditEventDesc(e.target.value)}
+                  style={{ width: '100%', fontSize: 13, resize: 'vertical' }}
+                  placeholder="Describe the artists, rules, schedule, etc."
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ flex: 1 }}
+                  onClick={() => setEditingEvent(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  style={{ flex: 2 }}
+                  disabled={isSavingEventDetails}
+                >
+                  {isSavingEventDetails ? 'Saving to Database...' : 'Save Event Details'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Live Category Inventory Breakdown Modal (GET /categories/:id/inventory & PUT /categories/:id/inventory) */}
+      {inspectingTier && (
+        <div className="modal-overlay" onClick={() => setInspectingTier(null)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 500 }}>
+            <button
+              onClick={() => setInspectingTier(null)}
+              style={{ position: 'absolute', top: 16, right: 16, color: 'var(--text-dim)', background: 'transparent', border: 'none', cursor: 'pointer' }}
+            >
+              <X size={18} />
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 'var(--radius-sm)', background: 'rgba(16, 185, 129, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Layers size={18} color="#10b981" />
+              </div>
+              <div>
+                <h3 style={{ fontSize: 17, margin: 0 }}>Category Stock & Inventory</h3>
+                <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
+                  {selectedEvent?.title} · Tier: <strong>{inspectingTier.name}</strong>
+                </p>
+              </div>
+            </div>
+
+            {isLoadingInventory ? (
+              <div style={{ textAlign: 'center', padding: '30px', color: 'var(--text-dim)' }}>
+                <RefreshCw size={20} className="spin" style={{ margin: '0 auto 10px' }} />
+                <div>Fetching live inventory ledger from database...</div>
+              </div>
+            ) : inventoryStats ? (
+              <div>
+                {/* 4 Metric Cards */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginBottom: 16 }}>
+                  <div style={{ background: 'var(--bg-app)', padding: 12, borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>TOTAL CAPACITY</div>
+                    <div className="font-mono" style={{ fontSize: 20, fontWeight: 700, marginTop: 4, color: 'var(--text-main)' }}>
+                      {inventoryStats.totalQuantity}
+                    </div>
+                  </div>
+
+                  <div style={{ background: 'rgba(16, 185, 129, 0.05)', padding: 12, borderRadius: 'var(--radius-sm)', border: '1px solid var(--accent-emerald-border)' }}>
+                    <div style={{ fontSize: 11, color: 'var(--accent-emerald)' }}>AVAILABLE STOCK</div>
+                    <div className="font-mono" style={{ fontSize: 20, fontWeight: 700, marginTop: 4, color: 'var(--accent-emerald)' }}>
+                      {inventoryStats.availableQuantity}
+                    </div>
+                  </div>
+
+                  <div style={{ background: 'rgba(249, 115, 22, 0.05)', padding: 12, borderRadius: 'var(--radius-sm)', border: '1px solid var(--accent-orange-border)' }}>
+                    <div style={{ fontSize: 11, color: 'var(--accent-orange)' }}>RESERVED (IN CARTS)</div>
+                    <div className="font-mono" style={{ fontSize: 20, fontWeight: 700, marginTop: 4, color: 'var(--accent-orange)' }}>
+                      {inventoryStats.reservedQuantity}
+                    </div>
+                  </div>
+
+                  <div style={{ background: 'rgba(56, 189, 248, 0.05)', padding: 12, borderRadius: 'var(--radius-sm)', border: '1px solid rgba(56, 189, 248, 0.3)' }}>
+                    <div style={{ fontSize: 11, color: '#38bdf8' }}>SOLD TICKETS</div>
+                    <div className="font-mono" style={{ fontSize: 20, fontWeight: 700, marginTop: 4, color: '#38bdf8' }}>
+                      {inventoryStats.soldCount}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Progress Bar */}
+                {inventoryStats.totalQuantity > 0 && (
+                  <div style={{ marginBottom: 20 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-dim)', marginBottom: 6 }}>
+                      <span>Allocation Breakdown</span>
+                      <span>{Math.round(((inventoryStats.soldCount + inventoryStats.reservedQuantity) / inventoryStats.totalQuantity) * 100)}% Claimed</span>
+                    </div>
+                    <div style={{ height: 10, borderRadius: 5, background: 'var(--border-subtle)', overflow: 'hidden', display: 'flex' }}>
+                      <div
+                        style={{
+                          width: `${(inventoryStats.soldCount / inventoryStats.totalQuantity) * 100}%`,
+                          background: '#38bdf8'
+                        }}
+                        title={`Sold: ${inventoryStats.soldCount}`}
+                      />
+                      <div
+                        style={{
+                          width: `${(inventoryStats.reservedQuantity / inventoryStats.totalQuantity) * 100}%`,
+                          background: 'var(--accent-orange)'
+                        }}
+                        title={`Reserved: ${inventoryStats.reservedQuantity}`}
+                      />
+                      <div
+                        style={{
+                          width: `${(inventoryStats.availableQuantity / inventoryStats.totalQuantity) * 100}%`,
+                          background: '#10b981'
+                        }}
+                        title={`Available: ${inventoryStats.availableQuantity}`}
+                      />
+                    </div>
+                    <div style={{ display: 'flex', gap: 14, fontSize: 10, color: 'var(--text-dim)', marginTop: 6 }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: '#38bdf8' }}></span> Sold</span>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent-orange)' }}></span> In Escrow/Cart</span>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981' }}></span> Available</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Quota Adjustment Form (PUT /categories/:id/inventory) */}
+                <form onSubmit={handleSaveQuotaFromModal} style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 14 }}>
+                  <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-main)', marginBottom: 4 }}>
+                    Adjust Total Inventory Quota (PUT /categories/:id/inventory)
+                  </label>
+                  <p style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10 }}>
+                    Strict database constraint: Cannot decrease below tickets already sold (≥ {inventoryStats.soldCount}).
+                  </p>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <input
+                      type="number"
+                      min={inventoryStats.soldCount}
+                      required
+                      value={newQuotaValue}
+                      onChange={(e) => setNewQuotaValue(e.target.value)}
+                      style={{ flex: 1, fontSize: 14, padding: '8px 12px' }}
+                    />
+                    <button
+                      type="submit"
+                      disabled={isSavingQuota}
+                      className="btn-primary"
+                      style={{ padding: '8px 16px', fontSize: 12 }}
+                    >
+                      {isSavingQuota ? 'Updating...' : 'Update Quota'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            ) : (
+              <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-dim)' }}>
+                Could not load inventory details for this category.
+              </div>
+            )}
           </div>
         </div>
       )}

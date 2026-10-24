@@ -1259,22 +1259,82 @@ export function AppProvider({ children }) {
     }
   };
 
-  const publishEvent = async (eventId) => {
+  const updateEventDetails = async (eventId, payload) => {
     try {
-      const res = await api.events.updateEventStatus(eventId, 'PUBLISHED');
+      const res = await api.events.updateEvent(eventId, payload);
       const updated = res?.data || res;
-
       setEvents((prev) =>
-        prev.map((ev) => (ev.id === eventId ? { ...ev, status: 'PUBLISHED' } : ev))
+        prev.map((ev) => (ev.id === eventId ? { ...ev, ...updated, title: updated.name || ev.title, name: updated.name || ev.name } : ev))
       );
-      showToast('Event published! It is now live on the public /events directory.', 'success');
+      showToast('Event details updated successfully in database!', 'success');
       return updated;
     } catch (err) {
-      console.error('Failed to publish event:', err);
-      const msg = err?.data?.error?.message || err?.message || 'Failed to publish event';
+      console.error('Failed to update event details:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to update event details';
       showToast(msg, 'error');
       throw err;
     }
+  };
+
+  const updateEventStatus = async (eventId, status) => {
+    try {
+      const res = await api.events.updateEventStatus(eventId, status);
+      const updated = res?.data || res;
+      setEvents((prev) =>
+        prev.map((ev) => (ev.id === eventId ? { ...ev, status: updated.status || status } : ev))
+      );
+      showToast(`Event status updated to ${status}!`, 'success');
+      return updated;
+    } catch (err) {
+      console.error('Failed to update event status:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to update event status';
+      showToast(msg, 'error');
+      throw err;
+    }
+  };
+
+  const updateCategoryDetails = async (categoryId, payload) => {
+    try {
+      const res = await api.events.updateCategory(categoryId, payload);
+      const updated = res?.data || res;
+      showToast(`Category "${updated.name || 'Tier'}" updated successfully!`, 'success');
+      return updated;
+    } catch (err) {
+      console.error('Failed to update category:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to update category';
+      showToast(msg, 'error');
+      throw err;
+    }
+  };
+
+  const getCategoryInventory = async (categoryId) => {
+    try {
+      const res = await api.events.getCategoryInventory(categoryId);
+      return res?.data || res;
+    } catch (err) {
+      console.error('Failed to fetch category inventory:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to get inventory';
+      showToast(msg, 'error');
+      throw err;
+    }
+  };
+
+  const updateCategoryInventory = async (categoryId, totalQuantity) => {
+    try {
+      const res = await api.events.updateCategoryInventory(categoryId, { totalQuantity });
+      const updated = res?.data || res;
+      showToast('Inventory quota updated successfully!', 'success');
+      return updated;
+    } catch (err) {
+      console.error('Failed to adjust inventory quota:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to adjust inventory';
+      showToast(msg, 'error');
+      throw err;
+    }
+  };
+
+  const publishEvent = async (eventId) => {
+    return updateEventStatus(eventId, 'PUBLISHED');
   };
 
   // Sync real-time Admin Telemetry & Database Records
@@ -1581,6 +1641,11 @@ export function AppProvider({ children }) {
         createEventDraft,
         addCategoryToEvent,
         publishEvent,
+        updateEventDetails,
+        updateEventStatus,
+        updateCategoryDetails,
+        getCategoryInventory,
+        updateCategoryInventory,
         runReconciliation,
         retrySettlement,
         toggleCapRule,
