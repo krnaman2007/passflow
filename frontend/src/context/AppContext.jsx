@@ -416,6 +416,9 @@ export function AppProvider({ children }) {
       return false;
     }
 
+    const targetEvent = events.find((e) => e.id === eventId);
+    const eventName = targetEvent?.title || 'Live Exchange Event';
+
     if (side === 'BUY') {
       if (wallet.available < total) {
         showToast(`Insufficient funds: Need $${total.toFixed(2)}, Available: $${wallet.available.toFixed(2)}`, 'error');
@@ -443,7 +446,7 @@ export function AppProvider({ children }) {
       const newOrder = {
         id: `ORD-${Math.floor(1000 + Math.random() * 9000)}`,
         eventId,
-        eventName: 'Nightfall Festival',
+        eventName,
         tier,
         side: 'BUY',
         type,
@@ -475,9 +478,10 @@ export function AppProvider({ children }) {
       const newOrder = {
         id: `ORD-${Math.floor(1000 + Math.random() * 9000)}`,
         eventId,
-        eventName: 'Nightfall Festival',
+        eventName,
         tier,
         side: 'SELL',
+
         type,
         qty: 1,
         price: numPrice,

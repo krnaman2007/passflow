@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { marketStream, CONNECTION_STATUS } from '../services/marketStream.js';
+import { api } from '../services/api.js';
 import { formatTradeTime } from '../utils/formatters.js';
 
 /**
@@ -39,22 +40,72 @@ export function transformDepthLevels(levels = [], isAsk = false) {
 }
 
 /**
- * Custom React hook for subscribing to a secondary market's real-time feed.
+ * Custom React hook for subscribing to a secondary market's real-time feed with authoritative REST initialization.
  *
- * @param {string} eventId
- * @param {string} ticketCategoryId
- * @param {Object} [fallbackData]
+ * @param {string} eventId - UUID of the target event
+ * @param {string} ticketCategoryId - UUID of the target ticket category
  * @returns {Object} Live market state, depth book, trades, and connection status
  */
-export function useMarketStream(eventId, ticketCategoryId, fallbackData = null) {
+export function useMarketStream(eventId, ticketCategoryId) {
   const [connectionStatus, setConnectionStatus] = useState(marketStream.status);
   const [liveSnapshot, setLiveSnapshot] = useState(null);
   const [liveTrades, setLiveTrades] = useState([]);
   const [isResyncing, setIsResyncing] = useState(false);
   const [streamError, setStreamError] = useState(null);
+  const [loadingInitial, setLoadingInitial] = useState(true);
 
   // Track active market to reject any stale cross-market callbacks
   const activeMarketRef = useRef(`${eventId}:${ticketCategoryId}`);
+
+  // Authoritative fetch from backend REST endpoints
+  const fetchAuthoritativeMarketData = useCallback(async (targetEventId, targetCategoryId) => {
+    if (!targetEventId || !targetCategoryId || targetEventId === 'nightfall') return;
+
+    try {
+      const [depthRes, tradesRes, marketRes] = await Promise.allSettled([
+        api.market.getMarketDepth(targetEventId, targetCategoryId),
+        api.market.getRecentTrades(targetEventId, targetCategoryId),
+        api.market.getMarketData(targetEventId, targetCategoryId),
+      ]);
+
+      const currentKey = `${targetEventId}:${targetCategoryId}`;
+      if (activeMarketRef.current !== currentKey) return;
+
+      const depthData = depthRes.status === 'fulfilled' ? depthRes.value?.data || depthRes.value : null;
+      const tradesData = tradesRes.status === 'fulfilled' ? tradesRes.value?.data?.trades || tradesRes.value?.trades || [] : [];
+      const summaryData = marketRes.status === 'fulfilled' ? marketRes.value?.data || marketRes.value : null;
+
+      if (depthData) {
+        setLiveSnapshot((prev) => ({
+          ...depthData,
+          bids: depthData.bids || [],
+          asks: depthData.asks || [],
+          bestBid: summaryData?.bestBid != null ? summaryData.bestBid : depthData.bestBid,
+          bestAsk: summaryData?.bestAsk != null ? summaryData.bestAsk : depthData.bestAsk,
+          lastPrice: summaryData?.lastPrice != null ? summaryData.lastPrice : depthData.lastPrice,
+          spread: summaryData?.spread != null ? summaryData.spread : depthData.spread,
+          volume: summaryData?.volume || 0,
+          ...prev, // WebSocket live updates take precedence over initial snapshot
+        }));
+      }
+
+      if (Array.isArray(tradesData) && tradesData.length > 0) {
+        const formatted = tradesData.map((t) => ({
+          id: t.id || t.tradeId,
+          price: (Number(t.price) >= 100 ? Number(t.price) / 100 : Number(t.price)).toFixed(2),
+          qty: t.quantity,
+          time: formatTradeTime(t.executedAt),
+          side: t.side?.toLowerCase() === 'ask' ? 'sell' : 'buy',
+          sequenceNumber: t.sequenceNumber || '0',
+        }));
+        setLiveTrades((prev) => (prev.length > 0 ? prev : formatted));
+      }
+    } catch (err) {
+      console.warn('Initial REST market depth fetch failed:', err);
+    } finally {
+      setLoadingInitial(false);
+    }
+  }, []);
 
   useEffect(() => {
     activeMarketRef.current = `${eventId}:${ticketCategoryId}`;
@@ -69,12 +120,16 @@ export function useMarketStream(eventId, ticketCategoryId, fallbackData = null) 
     setLiveTrades([]);
     setIsResyncing(false);
     setStreamError(null);
+    setLoadingInitial(true);
 
     const targetEventId = eventId;
     const targetCategoryId = ticketCategoryId;
     const currentKey = `${targetEventId}:${targetCategoryId}`;
 
-    // 2. Subscribe to market
+    // Fetch REST authoritative state first
+    fetchAuthoritativeMarketData(targetEventId, targetCategoryId);
+
+    // 2. Subscribe to WebSocket real-time updates
     const unsubscribe = marketStream.subscribeMarket({
       eventId: targetEventId,
       ticketCategoryId: targetCategoryId,
@@ -82,7 +137,12 @@ export function useMarketStream(eventId, ticketCategoryId, fallbackData = null) 
         if (activeMarketRef.current !== currentKey) return;
         setStreamError(null);
         setIsResyncing(false);
-        setLiveSnapshot(snapshot);
+        setLiveSnapshot((prev) => ({
+          ...prev,
+          ...snapshot,
+          bids: snapshot.bids || [],
+          asks: snapshot.asks || [],
+        }));
       },
       onOrderBook: (update) => {
         if (activeMarketRef.current !== currentKey) return;
@@ -91,8 +151,8 @@ export function useMarketStream(eventId, ticketCategoryId, fallbackData = null) 
           return {
             ...prev,
             sequenceNumber: update.sequenceNumber || prev.sequenceNumber,
-            bids: update.bids || prev.bids,
-            asks: update.asks || prev.asks,
+            bids: update.bids || prev.bids || [],
+            asks: update.asks || prev.asks || [],
             timestamp: update.timestamp || new Date().toISOString(),
           };
         });
@@ -101,9 +161,7 @@ export function useMarketStream(eventId, ticketCategoryId, fallbackData = null) 
         if (activeMarketRef.current !== currentKey) return;
         const majorPrice =
           trade.price != null
-            ? (Number(trade.price) >= 100 ? Number(trade.price) / 100 : Number(trade.price)).toFixed(
-                2
-              )
+            ? (Number(trade.price) >= 100 ? Number(trade.price) / 100 : Number(trade.price)).toFixed(2)
             : '0.00';
 
         const formattedTrade = {
@@ -111,7 +169,7 @@ export function useMarketStream(eventId, ticketCategoryId, fallbackData = null) 
           price: majorPrice,
           qty: trade.quantity,
           time: formatTradeTime(trade.executedAt),
-          side: 'buy', // Public feed trade
+          side: trade.side?.toLowerCase() === 'ask' ? 'sell' : 'buy',
           sequenceNumber: trade.sequenceNumber,
         };
 
@@ -141,54 +199,50 @@ export function useMarketStream(eventId, ticketCategoryId, fallbackData = null) 
       unsubscribe();
       unsubStatus();
     };
-  }, [eventId, ticketCategoryId]);
+  }, [eventId, ticketCategoryId, fetchAuthoritativeMarketData]);
 
-  // Compute aggregated order book: use live snapshot if available, otherwise fallback
-  const hasLive = Boolean(liveSnapshot);
-
-  const bids = hasLive
-    ? transformDepthLevels(liveSnapshot.bids || [], false)
-    : fallbackData?.bids || [];
-
-  const rawAsks = hasLive
-    ? transformDepthLevels(liveSnapshot.asks || [], true)
-    : fallbackData?.asks || [];
+  // Compute aggregated order book from authoritative snapshot
+  const bids = transformDepthLevels(liveSnapshot?.bids || [], false);
+  const rawAsks = transformDepthLevels(liveSnapshot?.asks || [], true);
 
   // For order-book visual display: highest ask at top down to lowest ask near spread
-  const asksDisplay = hasLive ? [...rawAsks].reverse() : rawAsks;
+  const asksDisplay = [...rawAsks].reverse();
 
-  const bestBid = hasLive
-    ? bids[0]?.price ||
-      (liveSnapshot.bestBid != null
-        ? (Number(liveSnapshot.bestBid) / 100).toFixed(2)
-        : null)
-    : fallbackData?.bids?.[0]?.price || null;
+  const bestBid =
+    bids[0]?.price ||
+    (liveSnapshot?.bestBid != null
+      ? (Number(liveSnapshot.bestBid) >= 100
+          ? Number(liveSnapshot.bestBid) / 100
+          : Number(liveSnapshot.bestBid)
+        ).toFixed(2)
+      : null);
 
-  const bestAsk = hasLive
-    ? rawAsks[0]?.price ||
-      (liveSnapshot.bestAsk != null
-        ? (Number(liveSnapshot.bestAsk) / 100).toFixed(2)
-        : null)
-    : fallbackData?.asks?.[fallbackData.asks.length - 1]?.price || null;
+  const bestAsk =
+    rawAsks[0]?.price ||
+    (liveSnapshot?.bestAsk != null
+      ? (Number(liveSnapshot.bestAsk) >= 100
+          ? Number(liveSnapshot.bestAsk) / 100
+          : Number(liveSnapshot.bestAsk)
+        ).toFixed(2)
+      : null);
 
-  const spread = hasLive
-    ? liveSnapshot.spread != null
-      ? (Number(liveSnapshot.spread) / 100).toFixed(2)
+  const spread =
+    liveSnapshot?.spread != null
+      ? (Number(liveSnapshot.spread) >= 100
+          ? Number(liveSnapshot.spread) / 100
+          : Number(liveSnapshot.spread)
+        ).toFixed(2)
       : bestBid && bestAsk
       ? Math.max(0, Number(bestAsk) - Number(bestBid)).toFixed(2)
-      : '0.00'
-    : fallbackData?.spread || '0.00';
+      : null;
 
-  const lastPrice = hasLive
-    ? liveSnapshot.lastPrice != null
+  const lastPrice =
+    liveSnapshot?.lastPrice != null
       ? (Number(liveSnapshot.lastPrice) >= 100
           ? Number(liveSnapshot.lastPrice) / 100
           : Number(liveSnapshot.lastPrice)
         ).toFixed(2)
-      : fallbackData?.trades?.[0]?.price || '0.00'
-    : fallbackData?.trades?.[0]?.price || '0.00';
-
-  const trades = liveTrades.length > 0 ? liveTrades : fallbackData?.trades || [];
+      : liveTrades[0]?.price || null;
 
   return {
     connectionStatus,
@@ -197,17 +251,20 @@ export function useMarketStream(eventId, ticketCategoryId, fallbackData = null) 
     isDisconnected: connectionStatus === CONNECTION_STATUS.DISCONNECTED,
     isResyncing,
     streamError,
-    hasLiveSnapshot: hasLive,
+    loadingInitial,
+    hasLiveSnapshot: Boolean(liveSnapshot),
     sequenceNumber: liveSnapshot?.sequenceNumber || '0',
+    volume: liveSnapshot?.volume || 0,
     book: {
       bids,
       asks: asksDisplay,
-      spread,
+      spread: spread || '--',
       bestBid,
       bestAsk,
       lastPrice,
-      trades,
+      trades: liveTrades,
     },
+    refetch: () => fetchAuthoritativeMarketData(eventId, ticketCategoryId),
   };
 }
 
