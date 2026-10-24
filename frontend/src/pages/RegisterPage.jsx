@@ -1,27 +1,76 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { User, ShieldCheck, Building, Zap, ArrowRight } from 'lucide-react';
+import { User, ShieldCheck, Building, Zap, ArrowRight, AlertCircle, Loader2, CheckCircle2 } from 'lucide-react';
 
 export default function RegisterPage() {
-  const { switchRole, navigate, showToast } = useApp();
+  const { register, login, navigate, showToast } = useApp();
 
-  const [name, setName] = useState('Ali K.');
-  const [phone, setPhone] = useState('+91 98765 43210');
-  const [email, setEmail] = useState('ali@example.com');
-  const [password, setPassword] = useState('••••••••');
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [selectedRole, setSelectedRole] = useState('USER'); // 'USER' | 'ORGANIZER' | 'ADMIN'
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
-  const handleRegister = (e) => {
+  const handleQuickLogin = async (quickEmail, quickPassword, targetPath) => {
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await login(quickEmail, quickPassword);
+      showToast(`Quick login as ${res.user.name || quickEmail} (${res.user.role})`, 'success');
+      navigate(targetPath);
+    } catch (err) {
+      const msg = err.data?.message || err.message || 'Quick login failed';
+      setError(msg);
+      showToast(msg, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegister = async (e) => {
     e.preventDefault();
-    switchRole(selectedRole);
-    showToast(`Account & Escrow Wallet created for ${name} (${selectedRole})!`, 'success');
+    setError(null);
 
-    if (selectedRole === 'ADMIN') {
-      navigate('/admin');
-    } else if (selectedRole === 'ORGANIZER') {
-      navigate('/organizer');
-    } else {
-      navigate('/events');
+    if (!name.trim()) {
+      setError('Please provide your full name');
+      return;
+    }
+    if (!email.trim()) {
+      setError('Please provide a valid email address');
+      return;
+    }
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters long');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await register({
+        name: name.trim(),
+        email: email.trim(),
+        password,
+        phone: phone.trim() || undefined,
+        role: selectedRole,
+      });
+
+      showToast(`Account & Escrow Wallet created for ${res.user.name || name}!`, 'success');
+
+      if (res.user.role === 'ADMIN') {
+        navigate('/admin');
+      } else if (res.user.role === 'ORGANIZER') {
+        navigate('/organizer');
+      } else {
+        navigate('/events');
+      }
+    } catch (err) {
+      const msg = err.data?.message || err.message || 'Registration failed. Please check your details.';
+      setError(msg);
+      showToast(msg, 'error');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -38,7 +87,7 @@ export default function RegisterPage() {
         </p>
       </div>
 
-      {/* Instant Role Previewer (1-Click Login) */}
+      {/* Instant Role Previewer (1-Click Real Backend Login) */}
       <div
         className="card"
         style={{
@@ -48,44 +97,41 @@ export default function RegisterPage() {
           padding: 16
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-          <Zap size={16} color="var(--accent-orange)" />
-          <strong style={{ fontSize: 13 }}>Instant Role Previewer (1-Click Login)</strong>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Zap size={16} color="var(--accent-orange)" />
+            <strong style={{ fontSize: 13 }}>Instant Role Previewer (1-Click Login)</strong>
+          </div>
+          <span className="badge badge-orange" style={{ fontSize: 10 }}>REAL BACKEND</span>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <button
             type="button"
             className="btn-primary"
+            disabled={loading}
             style={{ fontSize: 12, padding: '8px 14px', justifyContent: 'flex-start' }}
-            onClick={() => {
-              switchRole('USER');
-              navigate('/events');
-            }}
+            onClick={() => handleQuickLogin('ali@passflow.com', 'Password123!', '/events')}
           >
-            <span>Buyer / Seller: Ali K. → /events</span>
+            <span>Buyer / Seller: Ali Khan (ali@passflow.com) → /events</span>
           </button>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             <button
               type="button"
               className="btn-secondary"
+              disabled={loading}
               style={{ fontSize: 12, padding: '7px 12px', borderColor: 'var(--accent-orange-border)' }}
-              onClick={() => {
-                switchRole('ORGANIZER');
-                navigate('/organizer');
-              }}
+              onClick={() => handleQuickLogin('organizer@livenation.com', 'Password123!', '/organizer')}
             >
-              <span>Organizer: Lumen Events</span>
+              <span>Organizer: Live Nation</span>
             </button>
             <button
               type="button"
               className="btn-secondary"
+              disabled={loading}
               style={{ fontSize: 12, padding: '7px 12px', borderColor: 'var(--accent-emerald-border)' }}
-              onClick={() => {
-                switchRole('ADMIN');
-                navigate('/admin');
-              }}
+              onClick={() => handleQuickLogin('admin@passflow.com', 'Password123!', '/admin')}
             >
-              <span>Admin: admin_01</span>
+              <span>Admin: Platform Admin</span>
             </button>
           </div>
         </div>
@@ -96,9 +142,29 @@ export default function RegisterPage() {
         <div style={{ marginBottom: 20 }}>
           <h2 style={{ fontSize: 20, marginBottom: 4 }}>Create Account</h2>
           <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-            Your custodial escrow wallet is created automatically
+            Your custodial escrow wallet and ledger will be created automatically in PostgreSQL
           </p>
         </div>
+
+        {error && (
+          <div
+            style={{
+              padding: '10px 14px',
+              borderRadius: 'var(--radius-md)',
+              background: 'rgba(239, 68, 68, 0.1)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              color: '#f87171',
+              fontSize: 13,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              marginBottom: 16
+            }}
+          >
+            <AlertCircle size={16} />
+            <span>{error}</span>
+          </div>
+        )}
 
         <form onSubmit={handleRegister}>
           <div className="grid-2" style={{ marginBottom: 14 }}>
@@ -109,10 +175,11 @@ export default function RegisterPage() {
               <input
                 type="text"
                 required
+                disabled={loading}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 style={{ width: '100%', fontSize: 14 }}
-                placeholder="Ali K."
+                placeholder="Rohan Sharma"
               />
             </div>
 
@@ -121,8 +188,8 @@ export default function RegisterPage() {
                 Phone Number
               </label>
               <input
-                type="text"
-                required
+                type="tel"
+                disabled={loading}
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
                 style={{ width: '100%', fontSize: 14 }}
@@ -138,10 +205,11 @@ export default function RegisterPage() {
             <input
               type="email"
               required
+              disabled={loading}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               style={{ width: '100%', fontSize: 14 }}
-              placeholder="ali@example.com"
+              placeholder="rohan@example.com"
             />
           </div>
 
@@ -152,10 +220,11 @@ export default function RegisterPage() {
             <input
               type="password"
               required
+              disabled={loading}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               style={{ width: '100%', fontSize: 14 }}
-              placeholder="••••••••"
+              placeholder="Minimum 6 characters"
             />
           </div>
 
@@ -309,16 +378,31 @@ export default function RegisterPage() {
           <button
             type="submit"
             className="btn-primary"
+            disabled={loading}
             style={{
               width: '100%',
               padding: '12px',
               fontSize: 14,
               background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)',
               color: '#06281e',
-              fontWeight: 700
+              fontWeight: 700,
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              gap: 8
             }}
           >
-            Create Account as {selectedRole}
+            {loading ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                <span>Creating Account in Backend...</span>
+              </>
+            ) : (
+              <>
+                <span>Create Account as {selectedRole}</span>
+                <ArrowRight size={16} />
+              </>
+            )}
           </button>
         </form>
 

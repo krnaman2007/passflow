@@ -10,7 +10,7 @@ import {
 } from '../mockData';
 import { marketStream } from '../services/marketStream.js';
 import { useAppStore } from '../store/useStore.js';
-import { api, checkBackendHealth, BACKEND_URL } from '../services/api.js';
+import { api, checkBackendHealth, BACKEND_URL, getAuthToken, setAuthToken } from '../services/api.js';
 import { formatBackendEvent } from '../utils/eventAdapter.js';
 
 
@@ -215,15 +215,214 @@ export function AppProvider({ children }) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Current active user object
+  // Live Authenticated User state from Backend
+  const [authUser, setAuthUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  // Sync latest authoritative wallet balance from Backend
+  const syncLiveWallet = async () => {
+    try {
+      const res = await api.wallet.getWallet();
+      const w = res?.data || res;
+      if (w) {
+        const avail = Number(w.availableBalance != null ? w.availableBalance : (w.available || 0)) / 100;
+        const resBal = Number(w.reservedBalance != null ? w.reservedBalance : (w.held || 0)) / 100;
+        const tot = Number(w.totalBalance != null ? w.totalBalance : (w.balance || avail + resBal)) / 100;
+        setWallet((prev) => ({
+          ...prev,
+          balance: tot,
+          available: avail,
+          held: resBal,
+          reservedBalance: resBal,
+          currency: w.currency || 'INR',
+        }));
+      }
+    } catch {
+      // Ignore wallet fetch errors if unauthenticated or offline
+    }
+  };
+
+  // Restore authenticated session on mount if JWT token exists in localStorage
+  useEffect(() => {
+    let isMounted = true;
+    async function restoreSession() {
+      const token = getAuthToken();
+      if (!token) {
+        if (isMounted) setAuthLoading(false);
+        return;
+      }
+
+      try {
+        marketStream.setAuthToken(token);
+        const res = await api.auth.getProfile();
+        const user = res?.data || res;
+        if (user && isMounted) {
+          setAuthUser(user);
+          setCurrentRole(user.role || 'USER');
+          useAppStore.getState().setUser(user, token);
+
+          if (user.wallet) {
+            const avail = Number(user.wallet.availableBalance || 0) / 100;
+            const resBal = Number(user.wallet.reservedBalance || 0) / 100;
+            setWallet((prev) => ({
+              ...prev,
+              balance: avail + resBal,
+              available: avail,
+              held: resBal,
+              reservedBalance: resBal,
+              currency: user.wallet.currency || 'INR',
+            }));
+          }
+          await syncLiveWallet();
+        }
+      } catch (err) {
+        console.warn('Session restoration failed or expired:', err.message);
+        if (isMounted) {
+          setAuthToken(null);
+          setAuthUser(null);
+          useAppStore.getState().logout();
+          marketStream.clearAuthToken();
+        }
+      } finally {
+        if (isMounted) setAuthLoading(false);
+      }
+    }
+
+    restoreSession();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Real Backend Login
+  const login = async (email, password) => {
+    const res = await api.auth.login({ email, password });
+    const payload = res?.data || res;
+    const user = payload?.user;
+    const tokens = payload?.tokens;
+
+    if (!user || !tokens?.accessToken) {
+      throw new Error(payload?.message || 'Login failed: Invalid server response');
+    }
+
+    setAuthToken(tokens.accessToken);
+    if (tokens.refreshToken) {
+      try {
+        localStorage.setItem('passflow_refresh_token', tokens.refreshToken);
+      } catch {
+        // Ignore localStorage quota errors
+      }
+    }
+
+    setAuthUser(user);
+    setCurrentRole(user.role || 'USER');
+    useAppStore.getState().setUser(user, tokens.accessToken);
+    marketStream.setAuthToken(tokens.accessToken);
+
+    if (user.wallet) {
+      const avail = Number(user.wallet.availableBalance || 0) / 100;
+      const resBal = Number(user.wallet.reservedBalance || 0) / 100;
+      setWallet((prev) => ({
+        ...prev,
+        balance: avail + resBal,
+        available: avail,
+        held: resBal,
+        reservedBalance: resBal,
+        currency: user.wallet.currency || 'INR',
+      }));
+    }
+
+    // Refresh live wallet in background
+    syncLiveWallet();
+
+    return { success: true, user, tokens };
+  };
+
+  // Real Backend Registration
+  const register = async ({ name, email, password, phone, role }) => {
+    const res = await api.auth.register({ name, email, password, phone, role });
+    const payload = res?.data || res;
+    const user = payload?.user;
+    const tokens = payload?.tokens;
+
+    if (!user || !tokens?.accessToken) {
+      throw new Error(payload?.message || 'Registration failed: Invalid server response');
+    }
+
+    setAuthToken(tokens.accessToken);
+    if (tokens.refreshToken) {
+      try {
+        localStorage.setItem('passflow_refresh_token', tokens.refreshToken);
+      } catch {
+        // Ignore localStorage quota errors
+      }
+    }
+
+    setAuthUser(user);
+    setCurrentRole(user.role || 'USER');
+    useAppStore.getState().setUser(user, tokens.accessToken);
+    marketStream.setAuthToken(tokens.accessToken);
+
+    if (user.wallet) {
+      const avail = Number(user.wallet.availableBalance || 0) / 100;
+      const resBal = Number(user.wallet.reservedBalance || 0) / 100;
+      setWallet((prev) => ({
+        ...prev,
+        balance: avail + resBal,
+        available: avail,
+        held: resBal,
+        reservedBalance: resBal,
+        currency: user.wallet.currency || 'INR',
+      }));
+    }
+
+    syncLiveWallet();
+
+    return { success: true, user, tokens };
+  };
+
+  // Real Backend Logout
+  const logout = async () => {
+    try {
+      await api.auth.logout();
+    } catch {
+      // Ignore network errors during logout
+    }
+
+    setAuthToken(null);
+    try {
+      localStorage.removeItem('passflow_refresh_token');
+    } catch {
+      // Ignore localStorage errors
+    }
+
+    setAuthUser(null);
+    setCurrentRole('PUBLIC');
+    useAppStore.getState().logout();
+    marketStream.clearAuthToken();
+    showToast('Logged out successfully', 'info');
+
+    if (['/tickets', '/wallet', '/orders', '/organizer', '/admin'].includes(currentPath)) {
+      navigate('/events');
+    }
+  };
+
+  // Current active user object (prefers real authenticated user from backend)
   const currentUser = React.useMemo(() => {
+    if (authUser) {
+      return {
+        ...authUser,
+        avatar: authUser.name ? authUser.name.charAt(0).toUpperCase() : (authUser.email ? authUser.email.charAt(0).toUpperCase() : 'U'),
+        buyerSeller: authUser.buyerSeller || { kycStatus: 'VERIFIED', escrowTrustScore: 98 },
+      };
+    }
     if (currentRole === 'PUBLIC') return null;
     if (currentRole === 'ORGANIZER') return users.find((u) => u.role === 'ORGANIZER') || users[1];
     if (currentRole === 'ADMIN') return users.find((u) => u.role === 'ADMIN') || users[2];
     return users.find((u) => u.id === 'usr_ali') || users[0];
-  }, [currentRole, users]);
+  }, [authUser, currentRole, users]);
 
-  // Fast Role Switcher
+  // Fast Role Switcher (for development preview)
   const switchRole = (newRole) => {
     setCurrentRole(newRole);
     if (newRole === 'PUBLIC') {
@@ -988,6 +1187,13 @@ export function AppProvider({ children }) {
         toggleUserSuspension,
         approveUserKyc,
         regenerateSolvencyProof,
+        // Real Backend Auth & Session
+        authUser,
+        authLoading,
+        login,
+        register,
+        logout,
+        syncLiveWallet,
         marketStream,
         // Backend Connectivity
         backendStatus,
