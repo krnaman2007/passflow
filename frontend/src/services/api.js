@@ -310,11 +310,14 @@ export const auctionsApi = {
   createAuction: (payload) => apiRequest('/api/v1/auctions', { method: 'POST', body: payload }),
   getAuction: (id) => apiRequest(`/api/v1/auctions/${id}`),
   getCurrentPrice: (id) => apiRequest(`/api/v1/auctions/${id}/price`),
-  purchaseAuction: (id, idempotencyKey) =>
-    apiRequest(`/api/v1/auctions/${id}/purchase`, {
+  purchaseAuction: (id, payload = {}, idempotencyKey) => {
+    const body = typeof payload === 'number' ? { quantity: payload } : payload;
+    return apiRequest(`/api/v1/auctions/${id}/purchase`, {
       method: 'POST',
-      idempotencyKey: idempotencyKey || `auc-${Date.now()}`,
-    }),
+      body,
+      idempotencyKey: idempotencyKey || body?.idempotencyKey || `auc-${Date.now()}`,
+    });
+  },
 };
 
 // ==========================================

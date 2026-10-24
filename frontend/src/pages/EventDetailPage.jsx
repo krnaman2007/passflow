@@ -9,12 +9,14 @@ import {
   ShieldAlert,
   ArrowLeft,
   TrendingUp,
+  TrendingDown,
   CheckCircle2,
   Lock,
   Zap,
   ShoppingBag,
   RefreshCw,
   AlertCircle,
+  Gavel,
 } from 'lucide-react';
 
 export default function EventDetailPage() {
@@ -26,6 +28,8 @@ export default function EventDetailPage() {
     wallet,
     purchasePrimaryTickets,
     showToast,
+    syncLiveWallet,
+    fetchLiveOrders,
   } = useApp();
 
   const [liveEvent, setLiveEvent] = useState(null);
@@ -36,6 +40,8 @@ export default function EventDetailPage() {
   const [quantities, setQuantities] = useState({});
   const [isProcessing, setIsProcessing] = useState(false);
   const [purchaseSuccess, setPurchaseSuccess] = useState(null);
+  const [auctionPrices, setAuctionPrices] = useState({});
+  const [purchasingAuctionId, setPurchasingAuctionId] = useState(null);
 
   const eventId = routeParams?.id;
 
@@ -172,6 +178,75 @@ export default function EventDetailPage() {
       showToast(err.message || 'Purchase could not be completed.', 'error');
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  // Poll live Dutch auction prices for any tier with an active auction
+  useEffect(() => {
+    const activeAuctions = tiers.map((t) => t.activeAuction).filter(Boolean);
+    if (activeAuctions.length === 0) return;
+
+    let isPolling = true;
+
+    const fetchAuctionPrices = async () => {
+      for (const auc of activeAuctions) {
+        try {
+          const res = await api.auctions.getCurrentPrice(auc.id);
+          const priceData = res?.data || res;
+          if (isPolling && priceData?.currentPrice != null) {
+            setAuctionPrices((prev) => ({
+              ...prev,
+              [auc.id]: Number(priceData.currentPrice),
+            }));
+          }
+        } catch (e) {
+          console.warn('Auction price poll skipped:', e.message);
+        }
+      }
+    };
+
+    fetchAuctionPrices();
+    const interval = setInterval(fetchAuctionPrices, 4000);
+    return () => {
+      isPolling = false;
+      clearInterval(interval);
+    };
+  }, [tiers]);
+
+  const handleBuyAuction = async (auction, tier) => {
+    if (currentRole === 'PUBLIC') {
+      showToast('Please log in to participate in the Dutch Auction', 'info');
+      navigate('/login');
+      return;
+    }
+
+    const currentPrice = auctionPrices[auction.id] ?? auction.currentPrice ?? auction.startPrice;
+    if (walletBalance < currentPrice) {
+      showToast(`Insufficient wallet balance (₹${walletBalance}) to purchase Dutch auction ticket (₹${currentPrice}). Please add funds.`, 'error');
+      navigate('/wallet');
+      return;
+    }
+
+    setPurchasingAuctionId(auction.id);
+    try {
+      await api.auctions.purchaseAuction(auction.id, 1);
+      if (typeof syncLiveWallet === 'function') await syncLiveWallet();
+      if (typeof fetchLiveOrders === 'function') await fetchLiveOrders();
+
+      showToast(`Successfully purchased 1x ${tier.name} via Dutch Auction for ₹${currentPrice}!`, 'success');
+      setPurchaseSuccess({
+        totalTickets: 1,
+        totalCost: currentPrice,
+        balanceBefore: walletBalance,
+        balanceAfter: walletBalance - currentPrice,
+        summary: [{ id: tier.id, name: `${tier.name} (Dutch Auction)`, qty: 1, cost: currentPrice }],
+      });
+    } catch (err) {
+      console.error('Dutch auction purchase failed:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to complete Dutch auction purchase';
+      showToast(msg, 'error');
+    } finally {
+      setPurchasingAuctionId(null);
     }
   };
 
@@ -392,61 +467,142 @@ export default function EventDetailPage() {
                 const isTierSoldOut = tier.left === 0 || tier.soldOut;
 
                 return (
-                  <div key={tier.id} className="tier-row">
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <strong style={{ fontSize: 15 }}>{tier.name}</strong>
-                        <span className="badge badge-neutral font-mono">₹{tier.price}</span>
+                  <div key={tier.id} style={{ borderBottom: '1px solid var(--border-subtle)', paddingBottom: 14, marginBottom: 14 }}>
+                    <div className="tier-row" style={{ borderBottom: 'none', paddingBottom: 0, marginBottom: 0 }}>
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <strong style={{ fontSize: 15 }}>{tier.name}</strong>
+                          <span className="badge badge-neutral font-mono">₹{tier.price}</span>
+                          {tier.activeAuction && (
+                            <span
+                              className="badge font-mono"
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4,
+                                background: 'rgba(236, 72, 153, 0.15)',
+                                color: '#ec4899',
+                                border: '1px solid rgba(236, 72, 153, 0.3)',
+                                fontSize: 11,
+                              }}
+                            >
+                              <Gavel size={11} /> Dutch Auction
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4 }}>
+                          {isTierSoldOut ? (
+                            <span style={{ color: 'var(--accent-rose)' }}>
+                              Sold out from organizer
+                            </span>
+                          ) : (
+                            <span>
+                              {tier.left} remaining of {tier.total}
+                            </span>
+                          )}
+                          {tier.description && <span> • {tier.description}</span>}
+                        </div>
                       </div>
-                      <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4 }}>
+
+                      <div>
                         {isTierSoldOut ? (
-                          <span style={{ color: 'var(--accent-rose)' }}>
-                            Sold out from organizer
-                          </span>
+                          <button
+                            className="btn-secondary"
+                            style={{ fontSize: 12, color: 'var(--accent-orange)' }}
+                            onClick={() =>
+                              navigate(`/market/${event.id}/${tier.id}`, {
+                                id: event.id,
+                                categoryId: tier.id,
+                              })
+                            }
+                          >
+                            <span>See resale book</span>
+                            <Zap size={13} />
+                          </button>
                         ) : (
-                          <span>
-                            {tier.left} remaining of {tier.total}
-                          </span>
+                          <div className="qty-stepper">
+                            <button
+                              className="qty-btn"
+                              disabled={qty <= 0}
+                              onClick={() => updateQty(tier.id, -1, tier.left)}
+                            >
+                              −
+                            </button>
+                            <span className="qty-val font-mono">{qty}</span>
+                            <button
+                              className="qty-btn"
+                              disabled={qty >= tier.left}
+                              onClick={() => updateQty(tier.id, 1, tier.left)}
+                            >
+                              +
+                            </button>
+                          </div>
                         )}
-                        {tier.description && <span> • {tier.description}</span>}
                       </div>
                     </div>
 
-                    <div>
-                      {isTierSoldOut ? (
-                        <button
-                          className="btn-secondary"
-                          style={{ fontSize: 12, color: 'var(--accent-orange)' }}
-                          onClick={() =>
-                            navigate(`/market/${event.id}/${tier.id}`, {
-                              id: event.id,
-                              categoryId: tier.id,
-                            })
-                          }
-                        >
-                          <span>See resale book</span>
-                          <Zap size={13} />
-                        </button>
-                      ) : (
-                        <div className="qty-stepper">
-                          <button
-                            className="qty-btn"
-                            disabled={qty <= 0}
-                            onClick={() => updateQty(tier.id, -1, tier.left)}
-                          >
-                            −
-                          </button>
-                          <span className="qty-val font-mono">{qty}</span>
-                          <button
-                            className="qty-btn"
-                            disabled={qty >= tier.left}
-                            onClick={() => updateQty(tier.id, 1, tier.left)}
-                          >
-                            +
-                          </button>
+                    {/* Live Dutch Auction Buy Card */}
+                    {tier.activeAuction && (
+                      <div
+                        style={{
+                          marginTop: 10,
+                          padding: '10px 14px',
+                          borderRadius: 'var(--radius-md, 8px)',
+                          background: 'linear-gradient(135deg, rgba(236, 72, 153, 0.08), rgba(24, 28, 42, 0.8))',
+                          border: '1px solid rgba(236, 72, 153, 0.25)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          flexWrap: 'wrap',
+                          gap: 10,
+                        }}
+                      >
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', display: 'inline-block', boxShadow: '0 0 8px #10b981' }} />
+                            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-main)', letterSpacing: '0.04em' }}>
+                              LIVE DUTCH AUCTION
+                            </span>
+                            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                              (Drops from ₹{tier.activeAuction.startPrice} → reserve ₹{tier.activeAuction.minPrice})
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginTop: 4 }}>
+                            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Current decaying price:</span>
+                            <strong style={{ fontSize: 16, color: 'var(--accent-emerald)', fontFamily: 'monospace' }}>
+                              ₹{auctionPrices[tier.activeAuction.id] ?? tier.activeAuction.currentPrice ?? tier.activeAuction.startPrice}
+                            </strong>
+                          </div>
                         </div>
-                      )}
-                    </div>
+
+                        <button
+                          className="btn-primary"
+                          style={{
+                            background: 'linear-gradient(135deg, #ec4899, #db2777)',
+                            borderColor: '#db2777',
+                            fontSize: 12,
+                            padding: '7px 14px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                          }}
+                          disabled={purchasingAuctionId === tier.activeAuction.id}
+                          onClick={() => handleBuyAuction(tier.activeAuction, tier)}
+                        >
+                          {purchasingAuctionId === tier.activeAuction.id ? (
+                            <>
+                              <RefreshCw size={13} className="spin" />
+                              <span>Locking price...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Zap size={13} />
+                              <span>Buy at ₹{auctionPrices[tier.activeAuction.id] ?? tier.activeAuction.currentPrice ?? tier.activeAuction.startPrice}</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })

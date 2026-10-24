@@ -33,6 +33,11 @@ export function formatBackendEvent(ev, index = 0) {
     const price = Number(c.originalPrice) || 0;
     const priceCap = c.resalePriceCap != null ? Number(c.resalePriceCap) : price * 1.1;
 
+    const activeAuction =
+      Array.isArray(c.dutchAuctions) && c.dutchAuctions.length > 0
+        ? c.dutchAuctions[0]
+        : null;
+
     return {
       id: c.id,
       name: c.name || 'General Admission',
@@ -44,6 +49,17 @@ export function formatBackendEvent(ev, index = 0) {
       total,
       soldOut: left <= 0,
       cap: priceCap,
+      activeAuction: activeAuction
+        ? {
+            id: activeAuction.id,
+            startPrice: Number(activeAuction.startPrice),
+            minPrice: Number(activeAuction.minPrice),
+            currentPrice: Number(activeAuction.currentPrice || activeAuction.startPrice),
+            startTime: activeAuction.startTime,
+            endTime: activeAuction.endTime,
+            status: activeAuction.status,
+          }
+        : null,
     };
   });
 
