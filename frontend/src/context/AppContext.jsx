@@ -1018,71 +1018,130 @@ export function AppProvider({ children }) {
     }
   };
 
-  const createEventDraft = ({ title, date, venue, description, originalPrice }) => {
-    const newId = title.toLowerCase().replace(/[^a-z0-9]/g, '-');
-    const newEvent = {
-      id: newId,
-      title,
-      tagline: description || 'Special Event',
-      date: date || 'Upcoming',
-      fullDate: date || 'Dec 20, 8:00 pm',
-      doors: 'Doors 1 hour before',
-      ageLimit: 'All Ages',
-      venue: venue || 'Main Arena',
-      city: 'Metropolis',
-      category: 'Concert',
-      gradient: 'from-amber-600/20 via-orange-700/30 to-purple-900/40',
-      accentColor: '#f97316',
-      primaryFrom: parseFloat(originalPrice) || 50,
-      resaleFrom: 0,
-      bestBid: 0,
-      bestAsk: 0,
-      lastTrade: 0,
-      volume24h: 0,
-      tiers: [
-        { id: 'general', name: 'General Admission', price: parseFloat(originalPrice) || 50, left: 500, total: 500, held: 0, cap: (parseFloat(originalPrice) || 50) * 2 }
-      ],
-      status: 'DRAFT',
-      organizer: currentUser?.name || 'Lumen Events'
-    };
+  const createEventDraft = async ({ title, date, venue, description, originalPrice }) => {
+    try {
+      let isoDate;
+      try {
+        const parsed = new Date(date);
+        isoDate = !isNaN(parsed.getTime())
+          ? parsed.toISOString()
+          : new Date(Date.now() + 14 * 24 * 3600 * 1000).toISOString();
+      } catch (e) {
+        isoDate = new Date(Date.now() + 14 * 24 * 3600 * 1000).toISOString();
+      }
 
-    setEvents((prev) => [newEvent, ...prev]);
-    showToast(`Draft event "${title}" created. Now add categories or publish!`, 'success');
-    return newEvent;
+      const payload = {
+        name: (title || '').trim(),
+        description: (description || '').trim() || undefined,
+        dateTime: isoDate,
+        location: (venue || '').trim() || 'Main Arena',
+        originalPrice: parseFloat(originalPrice) > 0 ? parseFloat(originalPrice) : 50,
+      };
+
+      const res = await api.events.createEvent(payload);
+      const backendEvent = res?.data || res;
+
+      const formattedEvent = {
+        id: backendEvent.id,
+        title: backendEvent.name,
+        name: backendEvent.name,
+        tagline: backendEvent.description || 'Special Event',
+        description: backendEvent.description || '',
+        date: new Date(backendEvent.dateTime).toLocaleDateString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+        fullDate: new Date(backendEvent.dateTime).toLocaleString(),
+        doors: 'Doors 1 hour before',
+        ageLimit: 'All Ages',
+        venue: backendEvent.location,
+        location: backendEvent.location,
+        city: backendEvent.location.includes(',') ? backendEvent.location.split(',')[1].trim() : 'Metropolis',
+        category: 'Concert',
+        gradient: 'from-amber-600/20 via-orange-700/30 to-purple-900/40',
+        accentColor: '#f97316',
+        primaryFrom: parseFloat(backendEvent.originalPrice) || parseFloat(originalPrice) || 50,
+        resaleFrom: 0,
+        bestBid: 0,
+        bestAsk: 0,
+        lastTrade: 0,
+        volume24h: 0,
+        tiers: [],
+        categories: [],
+        status: backendEvent.status || 'DRAFT',
+        organizer: backendEvent.organizer?.organizationName || currentUser?.organizer?.organizationName || currentUser?.name || 'Organizer'
+      };
+
+      setEvents((prev) => [formattedEvent, ...prev.filter((e) => e.id !== formattedEvent.id)]);
+      showToast(`Draft event "${title}" created successfully!`, 'success');
+      return formattedEvent;
+    } catch (err) {
+      console.error('Failed to create event draft:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to create event draft';
+      showToast(msg, 'error');
+      throw err;
+    }
   };
 
-  const addCategoryToEvent = (eventId, { name, price, quantity }) => {
-    const p = parseFloat(price);
-    const q = parseInt(quantity, 10);
-    const tierId = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
+  const addCategoryToEvent = async (eventId, { name, price, quantity }) => {
+    try {
+      const p = parseFloat(price);
+      const q = parseInt(quantity, 10);
 
-    setEvents((prev) =>
-      prev.map((ev) => {
-        if (ev.id !== eventId) return ev;
-        const newTier = {
-          id: tierId,
-          name,
-          price: p,
-          left: q,
-          total: q,
-          held: 0,
-          cap: Math.round(p * 2)
-        };
-        return {
-          ...ev,
-          tiers: [...ev.tiers, newTier]
-        };
-      })
-    );
+      const res = await api.events.addCategory(eventId, {
+        name: name.trim(),
+        originalPrice: p,
+        totalQuantity: q,
+      });
 
-    showToast(`Category "${name}" (${q} tickets @ $${p}) added!`, 'success');
+      const backendCat = res?.data || res;
+      const tierId = backendCat.id || name.toLowerCase().replace(/[^a-z0-9]/g, '-');
+
+      const newTier = {
+        id: tierId,
+        name: backendCat.name || name,
+        price: p,
+        left: q,
+        total: q,
+        held: 0,
+        cap: Math.round(p * 2)
+      };
+
+      setEvents((prev) =>
+        prev.map((ev) => {
+          if (ev.id !== eventId) return ev;
+          const currentTiers = ev.tiers || [];
+          return {
+            ...ev,
+            tiers: [...currentTiers.filter((t) => t.id !== newTier.id), newTier],
+            categories: [...(ev.categories || []), backendCat]
+          };
+        })
+      );
+
+      showToast(`Category "${name}" (${q} tickets @ ₹${p}) added!`, 'success');
+      return backendCat;
+    } catch (err) {
+      console.error('Failed to add category tier:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to add ticket category';
+      showToast(msg, 'error');
+      throw err;
+    }
   };
 
-  const publishEvent = (eventId) => {
-    setEvents((prev) =>
-      prev.map((ev) => (ev.id === eventId ? { ...ev, status: 'PUBLISHED' } : ev))
-    );
-    showToast(`Event published! It is now live on the public /events directory.`, 'success');
+  const publishEvent = async (eventId) => {
+    try {
+      const res = await api.events.updateEventStatus(eventId, 'PUBLISHED');
+      const updated = res?.data || res;
+
+      setEvents((prev) =>
+        prev.map((ev) => (ev.id === eventId ? { ...ev, status: 'PUBLISHED' } : ev))
+      );
+      showToast('Event published! It is now live on the public /events directory.', 'success');
+      return updated;
+    } catch (err) {
+      console.error('Failed to publish event:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to publish event';
+      showToast(msg, 'error');
+      throw err;
+    }
   };
 
   // Sync real-time Admin Telemetry & Database Records
