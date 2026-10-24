@@ -117,35 +117,95 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {/* Become an Organizer Banner */}
-        <div
-          className="card"
-          style={{
-            background: 'linear-gradient(135deg, rgba(249, 115, 22, 0.08), rgba(23, 27, 38, 0.95))',
-            borderColor: 'var(--accent-orange-border)'
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                <Building size={18} color="var(--accent-orange)" />
-                <h3 style={{ fontSize: 17 }}>Become an Organizer</h3>
-                <span className="badge badge-orange">SELLER ACCESS</span>
+        {/* Organizer Status Card */}
+        {currentUser?.organizer?.verificationStatus === 'VERIFIED' ? (
+          <div
+            className="card"
+            style={{
+              background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(23, 27, 38, 0.95))',
+              borderColor: 'rgba(16, 185, 129, 0.3)'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <Building size={18} color="#10b981" />
+                  <h3 style={{ fontSize: 17 }}>Organizer Console Active</h3>
+                  <span className="badge badge-green">VERIFIED</span>
+                </div>
+                <p style={{ fontSize: 13, color: 'var(--text-sub)', maxWidth: 520 }}>
+                  Organization: <strong style={{ color: 'var(--text-main)' }}>{currentUser.organizer.organizationName}</strong>. You have full publisher rights to mint tickets and manage primary box office drops.
+                </p>
               </div>
-              <p style={{ fontSize: 13, color: 'var(--text-sub)', maxWidth: 520 }}>
-                Looking to sell tickets for your own live events? Submit an application for admin approval to access the Organizer Console, publish events, and collect box office payouts.
-              </p>
-            </div>
 
-            <button
-              className="btn-primary"
-              onClick={() => navigate('/organizer/apply')}
-            >
-              <span>Apply for Organizer</span>
-              <ArrowRight size={14} />
-            </button>
+              <button
+                className="btn-primary"
+                onClick={() => navigate('/organizer')}
+              >
+                <span>Open Organizer Console</span>
+                <ArrowRight size={14} />
+              </button>
+            </div>
           </div>
-        </div>
+        ) : currentUser?.organizer?.verificationStatus === 'PENDING' ? (
+          <div
+            className="card"
+            style={{
+              background: 'linear-gradient(135deg, rgba(249, 115, 22, 0.08), rgba(23, 27, 38, 0.95))',
+              borderColor: 'var(--accent-orange-border)'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <Building size={18} color="var(--accent-orange)" />
+                  <h3 style={{ fontSize: 17 }}>Organizer Application Under Review</h3>
+                  <span className="badge badge-orange">PENDING APPROVAL</span>
+                </div>
+                <p style={{ fontSize: 13, color: 'var(--text-sub)', maxWidth: 520 }}>
+                  Organization: <strong style={{ color: 'var(--text-main)' }}>{currentUser.organizer.organizationName}</strong>. Your credential application is currently being evaluated by PassFlow compliance admins.
+                </p>
+              </div>
+
+              <button
+                className="btn-primary"
+                onClick={() => navigate('/organizer/apply')}
+              >
+                <span>Check Status</span>
+                <ArrowRight size={14} />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div
+            className="card"
+            style={{
+              background: 'linear-gradient(135deg, rgba(249, 115, 22, 0.08), rgba(23, 27, 38, 0.95))',
+              borderColor: 'var(--accent-orange-border)'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <Building size={18} color="var(--accent-orange)" />
+                  <h3 style={{ fontSize: 17 }}>Become an Organizer</h3>
+                  <span className="badge badge-orange">SELLER ACCESS</span>
+                </div>
+                <p style={{ fontSize: 13, color: 'var(--text-sub)', maxWidth: 520 }}>
+                  Looking to sell tickets for your own live events? Submit an application for admin approval to access the Organizer Console, publish events, and collect box office payouts.
+                </p>
+              </div>
+
+              <button
+                className="btn-primary"
+                onClick={() => navigate('/organizer/apply')}
+              >
+                <span>Apply for Organizer</span>
+                <ArrowRight size={14} />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

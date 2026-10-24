@@ -1,6 +1,8 @@
 import eventService from '../services/event.service.js';
 import marketService from '../services/market.service.js';
 import { successResponse } from '../utils/response.js';
+import prisma from '../db/prisma.js';
+import { AppError } from '../middleware/errorHandler.js';
 
 /**
  * Controller handling HTTP requests for Events, Categories, and Inventory.
@@ -11,7 +13,18 @@ export const eventController = {
    */
   async createEvent(req, res, next) {
     try {
-      const organizerId = req.user.organizer?.id;
+      let organizerId = req.user.organizer?.id;
+      if (!organizerId && req.user.role === 'ADMIN') {
+        const defaultOrg = await prisma.organizer.findFirst({
+          where: { verificationStatus: 'VERIFIED' }
+        });
+        organizerId = defaultOrg?.id;
+      }
+
+      if (!organizerId) {
+        throw new AppError('Verified organizer profile required to create events', 403, 'FORBIDDEN');
+      }
+
       const event = await eventService.createEvent(organizerId, req.body);
       res.status(201).json(successResponse(event));
     } catch (err) {

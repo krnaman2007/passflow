@@ -284,6 +284,7 @@ export const notificationsApi = {
     return apiRequest(`/api/v1/notifications${query ? `?${query}` : ''}`);
   },
   markAsRead: (id) => apiRequest(`/api/v1/notifications/${id}/read`, { method: 'PATCH' }),
+  markAllAsRead: () => apiRequest('/api/v1/notifications/read-all', { method: 'PATCH' }),
 };
 
 export const historyApi = {
@@ -317,12 +318,54 @@ export const auctionsApi = {
 };
 
 // ==========================================
+// ==========================================
 // Solvency Endpoints
 // ==========================================
 
 export const solvencyApi = {
   verify: () => apiRequest('/api/v1/solvency/verify'),
   generateProof: (payload) => apiRequest('/api/v1/admin/solvency/generate', { method: 'POST', body: payload }),
+};
+
+// ==========================================
+// Admin Console Endpoints
+// ==========================================
+
+export const adminApi = {
+  getMetrics: () => apiRequest('/api/v1/admin/metrics'),
+  getMonitoringHealth: () => apiRequest('/api/v1/admin/monitoring/health'),
+  getMonitoringLogs: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return apiRequest(`/api/v1/admin/monitoring/logs${q ? `?${q}` : ''}`);
+  },
+  getReports: () => apiRequest('/api/v1/admin/reports'),
+  getAuditLogs: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return apiRequest(`/api/v1/admin/audit-logs${q ? `?${q}` : ''}`);
+  },
+  getUsers: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return apiRequest(`/api/v1/admin/users${q ? `?${q}` : ''}`);
+  },
+  manageUser: (id, payload) => apiRequest(`/api/v1/admin/users/${id}`, { method: 'PATCH', body: payload }),
+  verifyOrganizer: (id, payload) => apiRequest(`/api/v1/admin/organizers/${id}/verify`, { method: 'PATCH', body: payload }),
+  getEvents: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return apiRequest(`/api/v1/admin/events${q ? `?${q}` : ''}`);
+  },
+  manageEvent: (id, payload) => apiRequest(`/api/v1/admin/events/${id}`, { method: 'PATCH', body: payload }),
+  getReconciliation: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return apiRequest(`/api/v1/admin/reconciliation${q ? `?${q}` : ''}`);
+  },
+  runReconciliation: (payload = {}) => apiRequest('/api/v1/admin/reconciliation/run', { method: 'POST', body: payload }),
+  generateSolvencyProof: (payload = {}) => apiRequest('/api/v1/admin/solvency/generate', { method: 'POST', body: payload }),
+  getAntiScalpingRules: () => apiRequest('/api/v1/admin/rules/anti-scalping'),
+  createAntiScalpingRule: (payload) => apiRequest('/api/v1/admin/rules/anti-scalping', { method: 'POST', body: payload }),
+  updateAntiScalpingRule: (id, payload) => apiRequest(`/api/v1/admin/rules/anti-scalping/${id}`, { method: 'PUT', body: payload }),
+  getAntiBotConfig: () => apiRequest('/api/v1/admin/rules/anti-bot'),
+  updateAntiBotConfig: (payload) => apiRequest('/api/v1/admin/rules/anti-bot', { method: 'PUT', body: payload }),
+  retrySettlement: (id) => apiRequest(`/api/v1/settlements/${id}/retry`, { method: 'POST' }),
 };
 
 // Export consolidated API
@@ -340,6 +383,12 @@ export const api = {
   history: historyApi,
   auctions: auctionsApi,
   solvency: solvencyApi,
+  admin: adminApi,
+  organizer: {
+    getProfile: authApi.getOrganizerProfile,
+    getEvents: authApi.getOrganizerEvents,
+    apply: authApi.applyOrganizer,
+  },
 };
 
 export default api;

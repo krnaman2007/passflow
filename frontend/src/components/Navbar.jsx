@@ -25,7 +25,8 @@ export default function Navbar() {
     currentUser,
     wallet,
     notifications,
-    backendStatus
+    backendStatus,
+    logout
   } = useApp();
 
   const [walletMenuOpen, setWalletMenuOpen] = useState(false);
@@ -342,7 +343,7 @@ export default function Navbar() {
                     className="menu-item danger"
                     onClick={() => {
                       setAvatarMenuOpen(false);
-                      switchRole('PUBLIC');
+                      logout();
                     }}
                   >
                     <LogOut size={14} />
