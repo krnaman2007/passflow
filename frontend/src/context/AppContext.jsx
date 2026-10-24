@@ -429,10 +429,12 @@ export function AppProvider({ children }) {
   // Current active user object (prefers real authenticated user from backend)
   const currentUser = React.useMemo(() => {
     if (authUser) {
+      const kycStatus = authUser.buyerSeller?.kycStatus || 'UNVERIFIED';
       return {
         ...authUser,
         avatar: authUser.name ? authUser.name.charAt(0).toUpperCase() : (authUser.email ? authUser.email.charAt(0).toUpperCase() : 'U'),
-        buyerSeller: authUser.buyerSeller || { kycStatus: 'VERIFIED', escrowTrustScore: 98 },
+        buyerSeller: authUser.buyerSeller || { kycStatus: 'UNVERIFIED', escrowTrustScore: 98 },
+        kycStatus,
       };
     }
     if (currentRole === 'PUBLIC') return null;
@@ -971,6 +973,86 @@ export function AppProvider({ children }) {
     }
   };
 
+  // User Profile & Identity (KYC) Actions
+  const updateUserProfile = async ({ name, phone, profile }) => {
+    try {
+      const res = await api.auth.updateProfile({ name, phone, profile });
+      const updated = res?.data || res;
+      if (updated) {
+        setAuthUser((prev) => ({
+          ...prev,
+          ...updated,
+        }));
+        useAppStore.getState().setUser(updated);
+      }
+      showToast('Profile information updated successfully.', 'success');
+      return updated;
+    } catch (err) {
+      console.error('Failed to update profile:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to update profile';
+      showToast(msg, 'error');
+      throw err;
+    }
+  };
+
+  const submitUserKyc = async ({ documentType, documentNumber } = {}) => {
+    try {
+      const res = await api.auth.submitKyc({ documentType, documentNumber });
+      const data = res?.data || res;
+
+      // Refresh full profile to get updated database state
+      try {
+        const profRes = await api.auth.getProfile();
+        const updated = profRes?.data || profRes;
+        if (updated) {
+          setAuthUser(updated);
+          useAppStore.getState().setUser(updated);
+        }
+      } catch {
+        setAuthUser((prev) => (prev ? {
+          ...prev,
+          buyerSeller: { ...(prev.buyerSeller || {}), kycStatus: 'PENDING' }
+        } : prev));
+      }
+
+      showToast(data?.message || 'KYC Identity Document submitted. Compliance approval pending.', 'success');
+      return data;
+    } catch (err) {
+      console.error('Failed to submit KYC:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to submit KYC document';
+      showToast(msg, 'error');
+      throw err;
+    }
+  };
+
+  const changeUserPassword = async ({ oldPassword, newPassword }) => {
+    try {
+      const res = await api.auth.changePassword({ oldPassword, newPassword });
+      const data = res?.data || res;
+      showToast(data?.message || 'Password updated successfully.', 'success');
+      return data;
+    } catch (err) {
+      console.error('Failed to change password:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to change password';
+      showToast(msg, 'error');
+      throw err;
+    }
+  };
+
+  const refreshUserProfile = async () => {
+    try {
+      const res = await api.auth.getProfile();
+      const updated = res?.data || res;
+      if (updated) {
+        setAuthUser(updated);
+        useAppStore.getState().setUser(updated);
+      }
+      return updated;
+    } catch (err) {
+      console.warn('Could not refresh profile:', err.message);
+    }
+  };
+
   // Organizer Actions (Flow C)
   const applyForOrganizer = async ({ orgName, email, website, volume, description }) => {
     try {
@@ -1455,6 +1537,10 @@ export function AppProvider({ children }) {
         withdrawWallet,
         markNotificationRead,
         markAllNotificationsRead,
+        updateUserProfile,
+        submitUserKyc,
+        changeUserPassword,
+        refreshUserProfile,
         applyForOrganizer,
         createEventDraft,
         addCategoryToEvent,
