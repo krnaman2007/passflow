@@ -53,9 +53,29 @@ export const authenticateUser = async (req, res, next) => {
 };
 
 /**
- * Middleware to restrict access to verified Organizers or Admins.
+ * Middleware to restrict access to users with an Organizer profile (or Admins).
  */
 export const requireOrganizer = (req, res, next) => {
+  if (!req.user) {
+    return next(new AppError('Authentication required', 401, 'UNAUTHORIZED'));
+  }
+
+  // Admin bypass
+  if (req.user.role === 'ADMIN') {
+    return next();
+  }
+
+  if (!req.user.organizer) {
+    return next(new AppError('Organizer profile required for this action', 403, 'FORBIDDEN'));
+  }
+
+  next();
+};
+
+/**
+ * Middleware to restrict access to VERIFIED Organizers (or Admins).
+ */
+export const requireVerifiedOrganizer = (req, res, next) => {
   if (!req.user) {
     return next(new AppError('Authentication required', 401, 'UNAUTHORIZED'));
   }

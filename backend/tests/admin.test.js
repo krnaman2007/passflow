@@ -92,10 +92,20 @@ describe('Admin Management API Endpoints (/admin)', () => {
       },
     });
     testEventId = testEvent.id;
+
+    // Seed initial anti-scalping rule for list rules test
+    await prisma.antiScalpingRule.create({
+      data: {
+        eventId: testEventId,
+        maxResalePrice: 200,
+        isActive: true,
+      },
+    });
   }, 120000);
 
   afterAll(async () => {
     if (testEventId) {
+      await prisma.antiScalpingRule.deleteMany({ where: { eventId: testEventId } });
       await prisma.ticketCategory.deleteMany({ where: { eventId: testEventId } });
       await prisma.event.deleteMany({ where: { id: testEventId } });
     }
@@ -771,7 +781,7 @@ describe('Admin Management API Endpoints (/admin)', () => {
           .post('/admin/solvency/generate')
           .set('Authorization', `Bearer ${adminToken}`)
           .send({
-            backingAssets: 2500000,
+            backingAssets: 100000000,
             notes: 'Quarterly solvency audit snapshot',
           })
           .expect(201);

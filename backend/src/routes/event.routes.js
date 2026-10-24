@@ -1,7 +1,7 @@
 import express from 'express';
 import eventController from '../controllers/event.controller.js';
 import ticketController from '../controllers/ticket.controller.js';
-import { authenticateUser, requireOrganizer } from '../middleware/auth.js';
+import { authenticateUser, requireVerifiedOrganizer } from '../middleware/auth.js';
 import validate from '../middleware/validate.js';
 import { purchaseTicketSchema } from '../schemas/ticket.schema.js';
 import {
@@ -35,7 +35,7 @@ const router = express.Router();
 router.post(
   '/events',
   authenticateUser,
-  requireOrganizer,
+  requireVerifiedOrganizer,
   validate(createEventSchema),
   eventController.createEvent
 );
@@ -50,7 +50,7 @@ router.get('/events/:id', eventController.getEventById);
 router.put(
   '/events/:id',
   authenticateUser,
-  requireOrganizer,
+  requireVerifiedOrganizer,
   validate(updateEventSchema),
   eventController.updateEvent
 );
@@ -59,7 +59,7 @@ router.put(
 router.patch(
   '/events/:id/status',
   authenticateUser,
-  requireOrganizer,
+  requireVerifiedOrganizer,
   validate(updateEventStatusSchema),
   eventController.updateEventStatus
 );
@@ -104,7 +104,7 @@ router.get(
 router.post(
   '/events/:id/categories',
   authenticateUser,
-  requireOrganizer,
+  requireVerifiedOrganizer,
   validate(createCategorySchema),
   eventController.addCategory
 );
@@ -116,7 +116,7 @@ router.get('/events/:id/categories', eventController.getCategories);
 router.put(
   '/categories/:id',
   authenticateUser,
-  requireOrganizer,
+  requireVerifiedOrganizer,
   validate(updateCategorySchema),
   eventController.updateCategory
 );
@@ -125,7 +125,7 @@ router.put(
 router.get(
   '/categories/:id/inventory',
   authenticateUser,
-  requireOrganizer,
+  requireVerifiedOrganizer,
   eventController.getCategoryInventory
 );
 
@@ -133,7 +133,7 @@ router.get(
 router.put(
   '/categories/:id/inventory',
   authenticateUser,
-  requireOrganizer,
+  requireVerifiedOrganizer,
   validate(updateInventorySchema),
   eventController.updateCategoryInventory
 );

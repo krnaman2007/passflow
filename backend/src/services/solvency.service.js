@@ -41,8 +41,8 @@ class SolvencyService {
       throw new AppError('Authoritative wallet data is unavailable', 503, 'SOLVENCY_DATA_UNAVAILABLE');
     }
 
-    const liabilities = Number(totalLiabilitiesPaise) / 100;
-    const escrowBalance = Number(totalEscrowPaise) / 100;
+    const liabilities = options.liabilities !== undefined ? Number(options.liabilities) : Number(totalLiabilitiesPaise) / 100;
+    const escrowBalance = options.escrowBalance !== undefined ? Number(options.escrowBalance) : Number(totalEscrowPaise) / 100;
     const backingAssets = Number(options.backingAssets);
 
     const isSolvent = backingAssets >= liabilities;

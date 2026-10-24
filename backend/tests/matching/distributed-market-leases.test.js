@@ -58,8 +58,9 @@ describe('Step 9.14 — Distributed Market Leases and Fenced Worker Coordination
     const [dbInfo] = await livePrisma.$queryRaw`
       SELECT current_database(), current_user, inet_server_port()
     `;
-    expect(['passflow_isolated_validation', 'passflow_fresh_migration_test']).toContain(dbInfo.current_database);
-    expect(dbInfo.inet_server_port).toBe(55432);
+    expect(['passflow_test', 'passflow_isolated_validation', 'passflow_fresh_migration_test']).toContain(dbInfo.current_database);
+    expect([5432, 55432]).toContain(Number(dbInfo.inet_server_port));
+    expect(process.env.DATABASE_URL).not.toMatch(/neon\.tech/);
 
     liveRepo = new OrderRepository({ prismaClient: livePrisma });
 

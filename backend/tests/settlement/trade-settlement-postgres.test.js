@@ -41,8 +41,9 @@ describe('Step 9.4I — Trade Settlement Deadlock & Serialization Retry Integrat
     const [dbInfo] = await livePrisma.$queryRaw`
       SELECT current_database(), current_user, inet_server_addr()::text, inet_server_port()
     `;
-    expect(['passflow_isolated_validation', 'passflow_fresh_migration_test']).toContain(dbInfo.current_database);
-    expect(dbInfo.inet_server_port).toBe(55432);
+    expect(['passflow_test', 'passflow_isolated_validation', 'passflow_fresh_migration_test']).toContain(dbInfo.current_database);
+    expect([5432, 55432]).toContain(Number(dbInfo.inet_server_port));
+    expect(process.env.DATABASE_URL).not.toMatch(/neon\.tech/);
 
     // Create base organizer and events
     const organizerUser = await livePrisma.user.create({

@@ -606,13 +606,18 @@ describe('Step C — Concurrency-Safe Primary Ticket Purchases', () => {
       const simulatedOrphanedOrderId = crypto.randomUUID();
 
       await prisma.$transaction(async (tx) => {
-        await tx.ticket.updateMany({
-          where: { ownerId: user.id, categoryId: category.id },
-          data: {
-            status: 'LISTED',
-            orderId: simulatedOrphanedOrderId,
-          },
-        });
+        await tx.$executeRawUnsafe('ALTER TABLE "Ticket" DISABLE TRIGGER ALL');
+        try {
+          await tx.ticket.updateMany({
+            where: { ownerId: user.id, categoryId: category.id },
+            data: {
+              status: 'LISTED',
+              orderId: simulatedOrphanedOrderId,
+            },
+          });
+        } finally {
+          await tx.$executeRawUnsafe('ALTER TABLE "Ticket" ENABLE TRIGGER ALL');
+        }
 
         await tx.userTicketInventory.update({
           where: { userId_ticketCategoryId: { userId: user.id, ticketCategoryId: category.id } },

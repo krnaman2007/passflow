@@ -361,6 +361,50 @@ describe('Market Data API (/market)', () => {
   });
 
   describe('GET /market/summary', () => {
+    let summaryExecId = null;
+
+    beforeAll(async () => {
+      const sOrder1 = await prisma.order.create({
+        data: {
+          userId: buyerUserId,
+          eventId,
+          ticketCategoryId: categoryId,
+          side: 'BID',
+          status: 'FILLED',
+          price: 2050,
+          initialQuantity: 500000,
+          remainingQuantity: 0,
+        },
+      });
+      const sOrder2 = await prisma.order.create({
+        data: {
+          userId: sellerUserId,
+          eventId,
+          ticketCategoryId: categoryId,
+          side: 'ASK',
+          status: 'FILLED',
+          price: 2050,
+          initialQuantity: 500000,
+          remainingQuantity: 0,
+        },
+      });
+      const sExec = await prisma.execution.create({
+        data: {
+          incomingOrderId: sOrder1.id,
+          restingOrderId: sOrder2.id,
+          price: 2050,
+          quantity: 500000,
+        },
+      });
+      summaryExecId = sExec.id;
+    });
+
+    afterAll(async () => {
+      if (summaryExecId) {
+        await prisma.execution.deleteMany({ where: { id: summaryExecId } });
+      }
+    });
+
     it('should return market summary of top events (200 OK)', async () => {
       const res = await request(app).get('/market/summary').expect(200);
 

@@ -24,6 +24,10 @@ describe('History, Notifications & Supporting Modules Endpoints & Services', () 
   let testNotificationId = null;
 
   beforeAll(async () => {
+    // Reset any global antiBot rules from other tests
+    await prisma.antiBotRule.deleteMany({ where: { userId: null } }).catch(() => {});
+    rulesService.seedDefaults();
+
     // Register test user
     const regRes = await request(app)
       .post('/auth/register')
@@ -35,6 +39,7 @@ describe('History, Notifications & Supporting Modules Endpoints & Services', () 
   });
 
   afterAll(async () => {
+    await prisma.antiBotRule.deleteMany({ where: { userId: null } }).catch(() => {});
     if (userId) {
       await prisma.notification.deleteMany({ where: { userId } }).catch(() => {});
       await prisma.transactionHistory.deleteMany({ where: { userId } }).catch(() => {});
@@ -132,31 +137,31 @@ describe('History, Notifications & Supporting Modules Endpoints & Services', () 
   });
 
   describe('AntiScalpingRule & AntiBotRule Methods', () => {
-    it('rulesService.validatePrice() should allow prices within cap and reject prices above cap', () => {
+    it('rulesService.validatePrice() should allow prices within cap and reject prices above cap', async () => {
       // Pre-seeded rule Nightfall General has maxPrice 120
       const allowedOrder = { eventId: 'nightfall', price: 100, side: 'ASK' };
-      expect(rulesService.validatePrice(allowedOrder, false)).toBe(true);
+      expect(await rulesService.validatePrice(allowedOrder, false)).toBe(true);
 
       const overpricedOrder = { eventId: 'nightfall', price: 250, side: 'ASK' };
-      expect(rulesService.validatePrice(overpricedOrder, false)).toBe(false);
+      expect(await rulesService.validatePrice(overpricedOrder, false)).toBe(false);
 
-      expect(() => {
-        rulesService.validatePrice(overpricedOrder, true);
-      }).toThrow('exceeds anti-scalping price cap');
+      await expect(
+        rulesService.validatePrice(overpricedOrder, true)
+      ).rejects.toThrow('exceeds anti-scalping price cap');
     });
 
-    it('rulesService.check() should track and throttle bot requests when limit exceeded', () => {
+    it('rulesService.check() should track and throttle bot requests when limit exceeded', async () => {
       const botUserId = 'bot-user-1';
       // Default rate limit is 20
       for (let i = 0; i < 20; i++) {
-        expect(rulesService.check(botUserId, 'ORDER_RATE_LIMIT', false)).toBe(true);
+        expect(await rulesService.check(botUserId, 'ORDER_RATE_LIMIT', false)).toBe(true);
       }
 
       // 21st request should be throttled
-      expect(rulesService.check(botUserId, 'ORDER_RATE_LIMIT', false)).toBe(false);
-      expect(() => {
-        rulesService.check(botUserId, 'ORDER_RATE_LIMIT', true);
-      }).toThrow('Rate limit exceeded');
+      expect(await rulesService.check(botUserId, 'ORDER_RATE_LIMIT', false)).toBe(false);
+      await expect(
+        rulesService.check(botUserId, 'ORDER_RATE_LIMIT', true)
+      ).rejects.toThrow('Rate limit exceeded');
     });
   });
 
@@ -235,7 +240,7 @@ describe('History, Notifications & Supporting Modules Endpoints & Services', () 
       expect(proof.isSolvent).toBe(true);
       expect(proof.ratio).toBe(2.0);
 
-      const verification = solvencyService.verify();
+      const verification = await solvencyService.verify();
       expect(verification.isSolvent).toBe(true);
       expect(verification.verified).toBe(true);
     });

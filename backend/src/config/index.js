@@ -1,6 +1,21 @@
 import dotenv from 'dotenv';
+import path from 'path';
 
-dotenv.config();
+if (process.env.NODE_ENV === 'test') {
+  dotenv.config({ path: path.resolve(process.cwd(), '.env.test'), override: true });
+} else {
+  dotenv.config();
+}
+
+// Safety Guard: ensure test suite NEVER executes against shared/production Neon database
+if (process.env.NODE_ENV === 'test') {
+  const dbUrl = process.env.DATABASE_URL || '';
+  if (dbUrl.includes('neon.tech') || dbUrl.includes('ep-cold-scene')) {
+    throw new Error(
+      '❌ [SAFETY GUARD]: Test suite cannot run against shared/production Neon database! Configure a dedicated local test database in .env.test.'
+    );
+  }
+}
 
 const parseAllowedOrigins = (raw) => {
   if (!raw) return ['http://localhost:5173', 'http://localhost:5174'];

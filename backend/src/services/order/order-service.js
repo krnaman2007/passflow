@@ -423,6 +423,7 @@ export class OrderService {
     const orderId = crypto.randomUUID();
     let holdRecord = null;
     let inventoryReserved = false;
+    let reservedTicketIds = [];
 
     // 3. Pre-matching Reservation
     if (side === 'BID') {
@@ -496,13 +497,13 @@ export class OrderService {
           );
         }
 
-        // Associate tickets with this order and mark as LISTED
+        // Associate tickets with this order reservation and mark as LISTED
         const ticketIds = eligibleTickets.map((t) => t.id);
+        reservedTicketIds = ticketIds;
         await tx.ticket.updateMany({
           where: { id: { in: ticketIds } },
           data: {
             status: 'LISTED',
-            orderId,
           },
         });
 
@@ -557,6 +558,17 @@ export class OrderService {
           } catch (linkErr) {
             console.error('Failed to link hold after post-commit error:', linkErr);
           }
+        } else if (side === 'ASK' && reservedTicketIds.length > 0) {
+          try {
+            await this.prisma.ticket.updateMany({
+              where: { id: { in: reservedTicketIds } },
+              data: {
+                orderId: err.orderId || orderId,
+              },
+            });
+          } catch (linkErr) {
+            console.error('Failed to link tickets after post-commit error:', linkErr);
+          }
         }
         // Do NOT release reservations! Rethrow post-commit error for market reconciliation.
         throw err;
@@ -599,6 +611,17 @@ export class OrderService {
           } catch (linkErr) {
             console.error('Failed to link hold to committed order:', linkErr);
           }
+        } else if (side === 'ASK' && reservedTicketIds.length > 0) {
+          try {
+            await this.prisma.ticket.updateMany({
+              where: { id: { in: reservedTicketIds } },
+              data: {
+                orderId: persistedOrder.id,
+              },
+            });
+          } catch (linkErr) {
+            console.error('Failed to link tickets to committed order:', linkErr);
+          }
         }
 
         // Return the stored outcome if payload matches
@@ -637,16 +660,18 @@ export class OrderService {
       } else if (side === 'ASK' && inventoryReserved) {
         try {
           await this.prisma.$transaction(async (tx) => {
-            await tx.ticket.updateMany({
-              where: {
-                orderId,
-                status: 'LISTED',
-              },
-              data: {
-                status: 'OWNED',
-                orderId: null,
-              },
-            });
+            if (reservedTicketIds.length > 0) {
+              await tx.ticket.updateMany({
+                where: {
+                  id: { in: reservedTicketIds },
+                  status: 'LISTED',
+                },
+                data: {
+                  status: 'OWNED',
+                  orderId: null,
+                },
+              });
+            }
             await tx.userTicketInventory.update({
               where: {
                 userId_ticketCategoryId: {
@@ -685,6 +710,22 @@ export class OrderService {
       } catch (linkErr) {
         console.error(
           `Warning: Order ${submissionResult.orderId} committed but hold linkage failed:`,
+          linkErr
+        );
+      }
+    } else if (side === 'ASK' && reservedTicketIds.length > 0) {
+      try {
+        await this.prisma.ticket.updateMany({
+          where: {
+            id: { in: reservedTicketIds },
+          },
+          data: {
+            orderId: submissionResult.orderId,
+          },
+        });
+      } catch (linkErr) {
+        console.error(
+          `Warning: Order ${submissionResult.orderId} committed but ticket orderId linkage failed:`,
           linkErr
         );
       }

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticateUser, requireOrganizer } from '../middleware/auth.js';
+import { authenticateUser, requireVerifiedOrganizer } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { createDutchAuctionSchema, purchaseDutchAuctionSchema } from '../schemas/dutch-auction.schema.js';
 import * as dutchAuctionController from '../controllers/dutch-auction.controller.js';
@@ -14,7 +14,7 @@ const router = Router();
 router.post(
   '/',
   authenticateUser,
-  requireOrganizer,
+  requireVerifiedOrganizer,
   validate(createDutchAuctionSchema),
   dutchAuctionController.createAuction
 );

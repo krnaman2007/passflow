@@ -67,7 +67,9 @@ class RulesService {
         },
         orderBy: { createdAt: 'asc' },
       });
-      return rules.map((rule) => ({ ...rule, enabled: rule.isActive, maxPrice: Number(rule.maxResalePrice) }));
+      if (rules.length > 0) {
+        return rules.map((rule) => ({ ...rule, enabled: rule.isActive, maxPrice: Number(rule.maxResalePrice) }));
+      }
     } catch {
       // Unit tests and local development without a migrated database retain a
       // deterministic fallback, but production uses the persisted rules above.
@@ -175,7 +177,14 @@ class RulesService {
         where: { userId: null, ruleType: 'ORDER_RATE_LIMIT' },
         orderBy: { updatedAt: 'desc' },
       });
-      if (rule) return { ordersPerMinute: rule.limit, enabled: rule.status === 'ACTIVE', updatedAt: rule.updatedAt };
+      if (rule) {
+        return {
+          ...this.antiBotConfig,
+          ordersPerMinute: rule.limit,
+          enabled: rule.status === 'ACTIVE',
+          updatedAt: rule.updatedAt,
+        };
+      }
     } catch {
       // See fallback note in listAntiScalpingRules.
     }
@@ -208,7 +217,12 @@ class RulesService {
         : await prisma.antiBotRule.create({
             data: { ruleType: 'ORDER_RATE_LIMIT', limit: this.antiBotConfig.ordersPerMinute, status: this.antiBotConfig.enabled ? 'ACTIVE' : 'SUSPENDED' },
           });
-      return { ordersPerMinute: persisted.limit, enabled: persisted.status === 'ACTIVE', updatedAt: persisted.updatedAt };
+      return {
+        ...this.antiBotConfig,
+        ordersPerMinute: persisted.limit,
+        enabled: persisted.status === 'ACTIVE',
+        updatedAt: persisted.updatedAt,
+      };
     } catch (err) {
       if (process.env.NODE_ENV === 'production') throw err;
       return { ...this.antiBotConfig };
@@ -239,10 +253,11 @@ class RulesService {
         // Handle tick / paise vs currency unit: if order price is integer ticks (e.g. 15000 = $150 or $1500)
         const cap = rule.maxResalePrice || rule.maxPrice;
         if (cap !== undefined && cap !== null) {
-          const capPaise = Math.round(Number(cap) * 100);
-          const orderPricePaise = Number(order.price);
+          const capUnits = Number(cap);
+          const capPaise = Math.round(capUnits * 100);
+          const orderPrice = Number(order.price);
 
-          if (orderPricePaise > capPaise) {
+          if (orderPrice > capPaise || (orderPrice > capUnits && orderPrice < capPaise)) {
             if (throwOnError) {
               throw new AppError(
                 `Order price (${order.price}) exceeds anti-scalping price cap (${cap})`,

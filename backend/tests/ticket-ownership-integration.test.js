@@ -22,7 +22,9 @@ describe('Step B — Unified Ticket Ownership, Resale Inventory, and Settlement 
     const [dbInfo] = await prisma.$queryRaw`
       SELECT current_database(), current_user, inet_server_port()
     `;
-    expect(dbInfo.inet_server_port).toBe(55432);
+    expect(['passflow_test', 'passflow_isolated_validation', 'passflow_fresh_migration_test']).toContain(dbInfo.current_database);
+    expect([5432, 55432]).toContain(Number(dbInfo.inet_server_port));
+    expect(process.env.DATABASE_URL).not.toMatch(/neon\.tech/);
 
     // Create organizer and event
     organizerUser = await prisma.user.create({

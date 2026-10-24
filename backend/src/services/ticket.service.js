@@ -289,7 +289,7 @@ export const ticketService = {
             }
 
             return {
-              tickets: createdTickets,
+              tickets: createdTickets.sort((a, b) => a.id.localeCompare(b.id)),
               transactionId: transaction.id,
               amountDebited: (Number(totalPaise) / 100).toFixed(2),
               newWalletBalance: (Number(updatedAvailable) / 100).toFixed(2),
@@ -434,7 +434,7 @@ export const ticketService = {
       orderBy: { ticket: { createdAt: 'asc' } },
     });
 
-    const existingTickets = existingOwnerships.map((o) => o.ticket);
+    const existingTickets = existingOwnerships.map((o) => o.ticket).sort((a, b) => a.id.localeCompare(b.id));
     const wallet = transaction?.wallet || (await client.wallet.findUnique({ where: { userId } }));
     const inventory = category?.inventory || (await client.ticketInventory.findUnique({ where: { categoryId } }));
 
