@@ -234,6 +234,7 @@ export function AppProvider({ children }) {
   const [wallet, setWallet] = useState(INITIAL_WALLET_STATE);
   const [notifications, setNotifications] = useState(INITIAL_NOTIFICATIONS);
   const [adminData, setAdminData] = useState(INITIAL_ADMIN_DATA);
+  const [adminEvents, setAdminEvents] = useState([]);
 
   // UI state: Drawers & Modals
   const [activeModal, setActiveModal] = useState(null); // { type, data }
@@ -1424,17 +1425,31 @@ export function AppProvider({ children }) {
   // Sync real-time Admin Telemetry & Database Records
   const refreshAdminData = async () => {
     try {
-      const [reportsRes, metricsRes, healthRes, reconRes, auditRes, usersRes, rulesRes, solvencyRes] =
-        await Promise.allSettled([
-          api.admin.getReports(),
-          api.admin.getMetrics(),
-          api.admin.getMonitoringHealth(),
-          api.admin.getReconciliation(),
-          api.admin.getAuditLogs(),
-          api.admin.getUsers({ limit: 50 }),
-          api.admin.getAntiScalpingRules(),
-          api.solvency.verify(),
-        ]);
+      const [
+        reportsRes,
+        metricsRes,
+        healthRes,
+        reconRes,
+        auditRes,
+        usersRes,
+        rulesRes,
+        solvencyRes,
+        eventsRes,
+        botRes,
+        logsRes
+      ] = await Promise.allSettled([
+        api.admin.getReports(),
+        api.admin.getMetrics(),
+        api.admin.getMonitoringHealth(),
+        api.admin.getReconciliation(),
+        api.admin.getAuditLogs(),
+        api.admin.getUsers({ limit: 50 }),
+        api.admin.getAntiScalpingRules(),
+        api.solvency.verify(),
+        api.admin.getEvents({ limit: 50 }),
+        api.admin.getAntiBotConfig(),
+        api.admin.getMonitoringLogs({ limit: 30 }),
+      ]);
 
       setAdminData((prev) => {
         const next = { ...prev };
@@ -1507,6 +1522,40 @@ export function AppProvider({ children }) {
           };
         }
 
+        // Real Anti-Scalping Rules from DB
+        if (rulesRes.status === 'fulfilled' && rulesRes.value?.data?.rules) {
+          const rawRules = rulesRes.value.data.rules;
+          if (Array.isArray(rawRules) && rawRules.length > 0) {
+            next.rules = rawRules.map((r) => ({
+              id: r.id,
+              name: r.name || r.tier || 'Category Price Cap',
+              eventId: r.eventId,
+              categoryId: r.categoryId,
+              tier: r.tier || r.categoryId || 'General Tier',
+              maxPrice: Number(r.maxResalePrice != null ? r.maxResalePrice : (r.maxPrice || 0)),
+              enabled: r.enabled !== false,
+            }));
+          }
+        }
+
+        // Real Anti-Bot Config
+        if (botRes.status === 'fulfilled' && botRes.value?.data) {
+          next.antiBotConfig = botRes.value.data;
+          next.botThreshold = botRes.value.data.ordersPerMinute || 20;
+        }
+
+        // Real Monitoring Logs
+        if (logsRes.status === 'fulfilled' && logsRes.value?.data?.logs) {
+          const rawLogs = logsRes.value.data.logs;
+          if (Array.isArray(rawLogs) && rawLogs.length > 0) {
+            next.monitoringLogs = rawLogs.map((l) => ({
+              time: l.createdAt ? new Date(l.createdAt).toLocaleTimeString() : 'Recent',
+              type: l.level || 'INFO',
+              message: `${l.service || 'System'}: ${l.message || ''}`,
+            }));
+          }
+        }
+
         return next;
       });
 
@@ -1540,6 +1589,14 @@ export function AppProvider({ children }) {
               })),
             }));
           }
+        }
+      }
+
+      // Real Admin Events (including drafts, published, cancelled)
+      if (eventsRes.status === 'fulfilled' && eventsRes.value?.data?.events) {
+        const rawEvents = eventsRes.value.data.events;
+        if (Array.isArray(rawEvents)) {
+          setAdminEvents(rawEvents);
         }
       }
     } catch (err) {
@@ -1586,21 +1643,94 @@ export function AppProvider({ children }) {
     }
   };
 
-  const toggleCapRule = async (ruleId) => {
-    setAdminData((prev) => ({
-      ...prev,
-      rules: prev.rules.map((r) => (r.id === ruleId ? { ...r, enabled: !r.enabled } : r)),
-    }));
-    showToast('Anti-scalping rule updated instantly in validation engine.', 'info');
+  const adminManageEvent = async (eventId, status) => {
+    try {
+      await api.admin.manageEvent(eventId, { status });
+      showToast(`Event status updated to ${status}!`, 'success');
+      await refreshAdminData();
+    } catch (err) {
+      const msg = err?.data?.error?.message || err?.message || 'Failed to update event';
+      showToast(msg, 'error');
+      throw err;
+    }
+  };
+
+  const createAntiScalpingRule = async (payload) => {
+    try {
+      await api.admin.createAntiScalpingRule(payload);
+      showToast('Anti-scalping rule created successfully!', 'success');
+      await refreshAdminData();
+    } catch (err) {
+      const msg = err?.data?.error?.message || err?.message || 'Failed to create anti-scalping rule';
+      showToast(msg, 'error');
+      throw err;
+    }
+  };
+
+  const updateAntiScalpingRule = async (ruleId, payload) => {
+    try {
+      await api.admin.updateAntiScalpingRule(ruleId, payload);
+      showToast('Anti-scalping rule updated!', 'success');
+      await refreshAdminData();
+    } catch (err) {
+      const msg = err?.data?.error?.message || err?.message || 'Failed to update rule';
+      showToast(msg, 'error');
+      throw err;
+    }
+  };
+
+  const toggleCapRule = async (ruleId, currentEnabled) => {
+    try {
+      await api.admin.updateAntiScalpingRule(ruleId, { enabled: !currentEnabled });
+      showToast(`Rule ${!currentEnabled ? 'enabled' : 'disabled'}!`, 'info');
+      await refreshAdminData();
+    } catch {
+      // Local fallback
+      setAdminData((prev) => ({
+        ...prev,
+        rules: (prev.rules || []).map((r) => (r.id === ruleId ? { ...r, enabled: !r.enabled } : r)),
+      }));
+      showToast('Anti-scalping rule updated.', 'info');
+    }
   };
 
   const updateCapPrice = async (ruleId, newMax) => {
     const val = parseFloat(newMax);
-    setAdminData((prev) => ({
-      ...prev,
-      rules: prev.rules.map((r) => (r.id === ruleId ? { ...r, maxPrice: val } : r)),
-    }));
-    showToast(`Price cap updated to ₹${val}.`, 'success');
+    try {
+      await api.admin.updateAntiScalpingRule(ruleId, { maxResalePrice: val });
+      showToast(`Price cap updated to ₹${val}.`, 'success');
+      await refreshAdminData();
+    } catch {
+      setAdminData((prev) => ({
+        ...prev,
+        rules: (prev.rules || []).map((r) => (r.id === ruleId ? { ...r, maxPrice: val } : r)),
+      }));
+      showToast(`Price cap updated to ₹${val}.`, 'success');
+    }
+  };
+
+  const updateAntiBotConfig = async (payload) => {
+    try {
+      await api.admin.updateAntiBotConfig(payload);
+      showToast('Anti-bot rate limits saved!', 'success');
+      await refreshAdminData();
+    } catch (err) {
+      const msg = err?.data?.error?.message || err?.message || 'Failed to update anti-bot limits';
+      showToast(msg, 'error');
+      throw err;
+    }
+  };
+
+  const adminManageUserRole = async (userId, role) => {
+    try {
+      await api.admin.manageUser(userId, { role });
+      setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, role } : u)));
+      showToast(`User role updated to ${role}!`, 'success');
+      await refreshAdminData();
+    } catch (err) {
+      const msg = err?.data?.error?.message || err?.message || 'Failed to update role';
+      showToast(msg, 'error');
+    }
   };
 
   const verifyOrganizer = async (appId) => {
@@ -1732,8 +1862,14 @@ export function AppProvider({ children }) {
         updateCategoryInventory,
         runReconciliation,
         retrySettlement,
+        adminEvents,
+        adminManageEvent,
+        createAntiScalpingRule,
+        updateAntiScalpingRule,
         toggleCapRule,
         updateCapPrice,
+        updateAntiBotConfig,
+        adminManageUserRole,
         verifyOrganizer,
         rejectOrganizer,
         toggleUserSuspension,

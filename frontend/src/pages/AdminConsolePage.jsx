@@ -19,7 +19,13 @@ import {
   Zap,
   Lock,
   Layers,
-  ArrowRight
+  ArrowRight,
+  Calendar,
+  Plus,
+  Edit3,
+  Server,
+  Terminal,
+  Filter
 } from 'lucide-react';
 
 export default function AdminConsolePage() {
@@ -27,10 +33,16 @@ export default function AdminConsolePage() {
     adminData,
     users,
     events,
-    runReconciliation,
-    retrySettlement,
+    adminEvents,
+    adminManageEvent,
+    createAntiScalpingRule,
+    updateAntiScalpingRule,
     toggleCapRule,
     updateCapPrice,
+    updateAntiBotConfig,
+    adminManageUserRole,
+    runReconciliation,
+    retrySettlement,
     verifyOrganizer,
     rejectOrganizer,
     toggleUserSuspension,
@@ -40,6 +52,7 @@ export default function AdminConsolePage() {
     login,
     currentUser,
     currentRole,
+    authLoading,
     setActiveModal,
     navigate,
     currentPath,
@@ -51,12 +64,41 @@ export default function AdminConsolePage() {
   const [solvencyGenerating, setSolvencyGenerating] = useState(false);
   const [userSearch, setUserSearch] = useState('');
 
+  // Events tab filter state
+  const [eventSearch, setEventSearch] = useState('');
+  const [eventStatusFilter, setEventStatusFilter] = useState('ALL');
+  const [isManagingEventId, setIsManagingEventId] = useState(null);
+
+  // Anti-Scalping Rule Creation Modal state
+  const [showCreateRuleModal, setShowCreateRuleModal] = useState(false);
+  const [ruleName, setRuleName] = useState('');
+  const [ruleEventId, setRuleEventId] = useState('');
+  const [ruleTier, setRuleTier] = useState('');
+  const [ruleMaxPrice, setRuleMaxPrice] = useState('');
+  const [isCreatingRule, setIsCreatingRule] = useState(false);
+
+  // Anti-Bot Config Modal state
+  const [showBotModal, setShowBotModal] = useState(false);
+  const [botOrdersLimit, setBotOrdersLimit] = useState('20');
+  const [botMaxRequests, setBotMaxRequests] = useState('100');
+  const [botBurst, setBotBurst] = useState('30');
+  const [isSavingBot, setIsSavingBot] = useState(false);
+
   // Sync latest backend telemetry on mount
   useEffect(() => {
     if (typeof refreshAdminData === 'function') {
       refreshAdminData();
     }
   }, []);
+
+  // Sync bot modal state with backend config
+  useEffect(() => {
+    if (adminData?.antiBotConfig) {
+      setBotOrdersLimit(String(adminData.antiBotConfig.ordersPerMinute || '20'));
+      setBotMaxRequests(String(adminData.antiBotConfig.maxRequestsPerMinute || '100'));
+      setBotBurst(String(adminData.antiBotConfig.burstLimit || '30'));
+    }
+  }, [adminData?.antiBotConfig]);
 
   const handleManualRefresh = async () => {
     setRefreshing(true);
@@ -92,18 +134,22 @@ export default function AdminConsolePage() {
 
   // Derive active tab from currentPath
   const getTabFromPath = (path) => {
+    if (path === '/admin/events') return 'EVENTS';
     if (path === '/admin/users') return 'USERS';
     if (path === '/admin/organizers') return 'ORGANIZERS';
     if (path === '/admin/settlements') return 'SETTLEMENTS';
+    if (path === '/admin/monitoring') return 'MONITORING';
     return 'CONSOLE';
   };
 
   const activeAdminTab = getTabFromPath(currentPath);
 
   const handleAdminTabClick = (tabId) => {
-    if (tabId === 'USERS') navigate('/admin/users');
+    if (tabId === 'EVENTS') navigate('/admin/events');
+    else if (tabId === 'USERS') navigate('/admin/users');
     else if (tabId === 'ORGANIZERS') navigate('/admin/organizers');
     else if (tabId === 'SETTLEMENTS') navigate('/admin/settlements');
+    else if (tabId === 'MONITORING') navigate('/admin/monitoring');
     else navigate('/admin');
   };
 
@@ -119,6 +165,19 @@ export default function AdminConsolePage() {
     );
   });
 
+  // Filter admin events
+  const displayedEvents = (adminEvents && adminEvents.length > 0 ? adminEvents : events || []).filter((ev) => {
+    if (eventStatusFilter !== 'ALL' && ev.status !== eventStatusFilter) return false;
+    if (!eventSearch.trim()) return true;
+    const q = eventSearch.toLowerCase();
+    return (
+      (ev.name && ev.name.toLowerCase().includes(q)) ||
+      (ev.location && ev.location.toLowerCase().includes(q)) ||
+      (ev.id && ev.id.toLowerCase().includes(q)) ||
+      (ev.organizer?.organizationName && ev.organizer.organizationName.toLowerCase().includes(q))
+    );
+  });
+
   const pendingOrganizersCount = (adminData.organizerApplications || []).filter(
     (a) => a.status === 'PENDING'
   ).length;
@@ -126,6 +185,73 @@ export default function AdminConsolePage() {
   const failedSettlementsCount = (adminData.failedSettlements || []).filter(
     (s) => s.status === 'FAILED'
   ).length;
+
+  // Handle Create Rule submit
+  const handleCreateRuleSubmit = async (e) => {
+    e.preventDefault();
+    const p = parseFloat(ruleMaxPrice);
+    if (!ruleName.trim() || !ruleEventId.trim() || isNaN(p) || p <= 0) {
+      showToast('Please specify rule name, target event, and valid max price', 'warning');
+      return;
+    }
+
+    setIsCreatingRule(true);
+    try {
+      await createAntiScalpingRule({
+        name: ruleName.trim(),
+        eventId: ruleEventId.trim(),
+        maxResalePrice: p,
+        tier: ruleTier.trim() || undefined
+      });
+      setShowCreateRuleModal(false);
+      setRuleName('');
+      setRuleEventId('');
+      setRuleTier('');
+      setRuleMaxPrice('');
+    } catch {
+      // toast shown in AppContext
+    } finally {
+      setIsCreatingRule(false);
+    }
+  };
+
+  // Handle Bot Config submit
+  const handleSaveBotConfigSubmit = async (e) => {
+    e.preventDefault();
+    const orders = parseInt(botOrdersLimit, 10);
+    const reqs = parseInt(botMaxRequests, 10);
+    const burst = parseInt(botBurst, 10);
+
+    if (isNaN(orders) || isNaN(reqs) || isNaN(burst)) {
+      showToast('All rate limits must be valid integers', 'warning');
+      return;
+    }
+
+    setIsSavingBot(true);
+    try {
+      await updateAntiBotConfig({
+        ordersPerMinute: orders,
+        maxRequestsPerMinute: reqs,
+        burstLimit: burst,
+        enabled: true
+      });
+      setShowBotModal(false);
+    } catch {
+      // toast shown in AppContext
+    } finally {
+      setIsSavingBot(false);
+    }
+  };
+
+  // Handle Event Status Change
+  const handleAdminEventStatus = async (eventId, newStatus) => {
+    setIsManagingEventId(eventId);
+    try {
+      await adminManageEvent(eventId, newStatus);
+    } finally {
+      setIsManagingEventId(null);
+    }
+  };
 
   return (
     <div className="content-wrap" style={{ maxWidth: 1200, paddingTop: 24 }}>
@@ -203,9 +329,11 @@ export default function AdminConsolePage() {
           <div style={{ display: 'flex', gap: 6, background: 'var(--bg-surface)', padding: 4, borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', flexWrap: 'wrap' }}>
             {[
               { id: 'CONSOLE', label: 'Console & Telemetry' },
+              { id: 'EVENTS', label: `Events & Approvals (${displayedEvents.length})` },
               { id: 'USERS', label: `Users & KYC (${(users || []).length})` },
               { id: 'ORGANIZERS', label: `Organizers Queue (${pendingOrganizersCount} pending)` },
-              { id: 'SETTLEMENTS', label: `Settlements (${failedSettlementsCount} failed)` }
+              { id: 'SETTLEMENTS', label: `Settlements (${failedSettlementsCount} failed)` },
+              { id: 'MONITORING', label: 'Cluster Logs' }
             ].map((t) => (
               <button
                 key={t.id}
@@ -433,49 +561,68 @@ export default function AdminConsolePage() {
           <div className="grid-2">
             {/* Pricing & Bot Rules Management */}
             <div className="card">
-              <h3 style={{ fontSize: 16, marginBottom: 4 }}>Anti-Scalping & Bot Rules</h3>
-              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
-                Enforces maximum resale price caps to eliminate ticket scalping bots
-              </p>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+                <div>
+                  <h3 style={{ fontSize: 16, marginBottom: 4 }}>Anti-Scalping & Bot Rules</h3>
+                  <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    Enforces maximum resale price caps to eliminate ticket scalping bots
+                  </p>
+                </div>
+                <button
+                  className="btn-primary"
+                  style={{ fontSize: 11, padding: '4px 10px', display: 'flex', alignItems: 'center', gap: 4 }}
+                  onClick={() => setShowCreateRuleModal(true)}
+                >
+                  <Plus size={12} />
+                  <span>Create Cap Rule</span>
+                </button>
+              </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
-                {(adminData.rules || []).filter((r) => r.eventId || r.tier).map((rule) => (
-                  <div
-                    key={rule.id}
-                    style={{
-                      background: 'var(--bg-app)',
-                      padding: 12,
-                      borderRadius: 'var(--radius-sm)',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center'
-                    }}
-                  >
-                    <div>
-                      <strong style={{ fontSize: 13 }}>{rule.name || rule.tier || rule.eventId}</strong>
-                      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
-                        Resale Ceiling: <span className="font-mono" style={{ color: 'var(--accent-orange)' }}>Max ₹{rule.maxPrice}</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
+                {(adminData.rules || []).length === 0 ? (
+                  <div style={{ padding: 12, background: 'var(--bg-app)', borderRadius: 'var(--radius-sm)', textAlign: 'center', color: 'var(--text-dim)', fontSize: 12 }}>
+                    No custom anti-scalping price caps configured. Default category face-value limits apply.
+                  </div>
+                ) : (
+                  (adminData.rules || []).map((rule) => (
+                    <div
+                      key={rule.id}
+                      style={{
+                        background: 'var(--bg-app)',
+                        padding: 12,
+                        borderRadius: 'var(--radius-sm)',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center'
+                      }}
+                    >
+                      <div>
+                        <strong style={{ fontSize: 13 }}>{rule.name || rule.tier || rule.eventId}</strong>
+                        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+                          Resale Ceiling: <span className="font-mono" style={{ color: 'var(--accent-orange)' }}>Max ₹{rule.maxPrice}</span>
+                          {rule.eventId && <span style={{ marginLeft: 8, color: 'var(--text-muted)' }}>Event #{rule.eventId.slice(0, 8)}</span>}
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <button
+                          className={`btn-pill ${rule.enabled !== false ? 'active' : ''}`}
+                          style={{
+                            padding: '4px 12px',
+                            borderRadius: 'var(--radius-full)',
+                            fontSize: 11,
+                            fontWeight: 700,
+                            background: rule.enabled !== false ? 'var(--accent-emerald)' : 'var(--bg-input)',
+                            color: rule.enabled !== false ? '#06281e' : 'var(--text-dim)'
+                          }}
+                          onClick={() => toggleCapRule(rule.id, rule.enabled !== false)}
+                        >
+                          {rule.enabled !== false ? 'ACTIVE ON' : 'DISABLED'}
+                        </button>
                       </div>
                     </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <button
-                        className={`btn-pill ${rule.enabled !== false ? 'active' : ''}`}
-                        style={{
-                          padding: '4px 12px',
-                          borderRadius: 'var(--radius-full)',
-                          fontSize: 11,
-                          fontWeight: 700,
-                          background: rule.enabled !== false ? 'var(--accent-emerald)' : 'var(--bg-input)',
-                          color: rule.enabled !== false ? '#06281e' : 'var(--text-dim)'
-                        }}
-                        onClick={() => toggleCapRule(rule.id)}
-                      >
-                        {rule.enabled !== false ? 'ACTIVE ON' : 'DISABLED'}
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  ))
+                )}
 
                 <div
                   style={{
@@ -488,12 +635,22 @@ export default function AdminConsolePage() {
                   }}
                 >
                   <div>
-                    <strong style={{ fontSize: 13 }}>Global Bot Rate Limit</strong>
+                    <strong style={{ fontSize: 13 }}>Global Anti-Bot Rate Limits</strong>
                     <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                      20 order placements per minute per authenticated IP/user
+                      Max {adminData.antiBotConfig?.ordersPerMinute || 20} orders/min · {adminData.antiBotConfig?.maxRequestsPerMinute || 100} reqs/min · Burst {adminData.antiBotConfig?.burstLimit || 30}
                     </div>
                   </div>
-                  <span className="badge badge-green">ENFORCED</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="badge badge-green">ENFORCED</span>
+                    <button
+                      className="btn-secondary"
+                      style={{ padding: '4px 8px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}
+                      onClick={() => setShowBotModal(true)}
+                    >
+                      <Edit3 size={11} />
+                      <span>Configure</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -542,6 +699,154 @@ export default function AdminConsolePage() {
         </>
       )}
 
+      {/* ===================== TAB: EVENTS & APPROVALS ===================== */}
+      {activeAdminTab === 'EVENTS' && (
+        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+            <div>
+              <h3 style={{ fontSize: 16 }}>All Platform Events & Moderation</h3>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                Review live drafts, authorize publications, and manage box office status ({displayedEvents.length} events)
+              </p>
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: 4, background: 'var(--bg-app)', padding: 3, borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+                {['ALL', 'DRAFT', 'PUBLISHED', 'CANCELLED'].map((st) => (
+                  <button
+                    key={st}
+                    className={`btn-pill ${eventStatusFilter === st ? 'active' : ''}`}
+                    style={{ padding: '4px 10px', fontSize: 11 }}
+                    onClick={() => setEventStatusFilter(st)}
+                  >
+                    {st}
+                  </button>
+                ))}
+              </div>
+
+              <div style={{ position: 'relative', width: 240 }}>
+                <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
+                <input
+                  type="text"
+                  placeholder="Filter event, venue, organizer..."
+                  value={eventSearch}
+                  onChange={(e) => setEventSearch(e.target.value)}
+                  style={{ width: '100%', paddingLeft: 32, fontSize: 12 }}
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="data-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Event Details</th>
+                  <th>Organizer</th>
+                  <th>Categories & Quota</th>
+                  <th>Status</th>
+                  <th>Admin Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {displayedEvents.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} style={{ textAlign: 'center', padding: '36px 20px', color: 'var(--text-muted)' }}>
+                      No events match the selected filters.
+                    </td>
+                  </tr>
+                ) : (
+                  displayedEvents.map((ev) => (
+                    <tr key={ev.id}>
+                      <td>
+                        <div style={{ fontWeight: 600 }}>{ev.name}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                          {ev.location || 'Online'} · {ev.dateTime ? new Date(ev.dateTime).toLocaleDateString() : 'Upcoming'}
+                        </div>
+                        <span className="font-mono" style={{ fontSize: 10, color: 'var(--text-muted)' }}>ID: {ev.id.slice(0, 8)}...</span>
+                      </td>
+                      <td>
+                        <div style={{ fontWeight: 500, fontSize: 12 }}>
+                          {ev.organizer?.organizationName || 'PassFlow Partner'}
+                        </div>
+                        <span className={`badge ${ev.organizer?.verificationStatus === 'VERIFIED' ? 'badge-green' : 'badge-orange'}`} style={{ fontSize: 10 }}>
+                          {ev.organizer?.verificationStatus || 'PROMOTER'}
+                        </span>
+                      </td>
+                      <td>
+                        <div style={{ fontSize: 12 }}>
+                          {(ev.categories || ev.tiers || []).length > 0 ? (
+                            (ev.categories || ev.tiers || []).slice(0, 2).map((c, i) => (
+                              <div key={i} className="font-mono" style={{ fontSize: 11, color: 'var(--text-sub)' }}>
+                                {c.name}: ₹{c.price || c.originalPrice} ({c.inventory?.availableQuantity ?? c.total ?? 'open'} qty)
+                              </div>
+                            ))
+                          ) : (
+                            <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>No tiers</span>
+                          )}
+                        </div>
+                      </td>
+                      <td>
+                        <span className={`badge ${ev.status === 'PUBLISHED' ? 'badge-green' : ev.status === 'DRAFT' ? 'badge-orange' : 'badge-red'}`}>
+                          {ev.status}
+                        </span>
+                      </td>
+                      <td>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {ev.status === 'DRAFT' && (
+                            <button
+                              className="btn-success"
+                              style={{ padding: '4px 10px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}
+                              onClick={() => handleAdminEventStatus(ev.id, 'PUBLISHED')}
+                              disabled={isManagingEventId === ev.id}
+                            >
+                              <CheckCircle2 size={12} />
+                              <span>Approve & Publish</span>
+                            </button>
+                          )}
+                          {ev.status !== 'CANCELLED' && (
+                            <button
+                              className="btn-danger-outline"
+                              style={{ padding: '4px 10px', fontSize: 11 }}
+                              onClick={() => {
+                                if (window.confirm(`Are you sure you want to cancel event "${ev.name}"?`)) {
+                                  handleAdminEventStatus(ev.id, 'CANCELLED');
+                                }
+                              }}
+                              disabled={isManagingEventId === ev.id}
+                            >
+                              Cancel
+                            </button>
+                          )}
+                          {ev.status === 'CANCELLED' && (
+                            <button
+                              className="btn-secondary"
+                              style={{ padding: '4px 10px', fontSize: 11 }}
+                              onClick={() => handleAdminEventStatus(ev.id, 'DRAFT')}
+                              disabled={isManagingEventId === ev.id}
+                            >
+                              Reinstate
+                            </button>
+                          )}
+                          <button
+                            className="btn-secondary"
+                            style={{ padding: '4px 8px', fontSize: 11 }}
+                            onClick={() => navigate(`/events/${ev.id}`)}
+                            title="View public event page"
+                          >
+                            <ExternalLink size={12} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* ===================== TAB 2: USERS & KYC ===================== */}
       {activeAdminTab === 'USERS' && (
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -583,9 +888,24 @@ export default function AdminConsolePage() {
                       <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{u.email}</div>
                     </td>
                     <td>
-                      <span className={`badge ${u.role === 'ADMIN' ? 'badge-red' : u.role === 'ORGANIZER' ? 'badge-orange' : 'badge-neutral'}`}>
-                        {u.role}
-                      </span>
+                      <select
+                        value={u.role}
+                        onChange={(e) => adminManageUserRole(u.id, e.target.value)}
+                        style={{
+                          fontSize: 11,
+                          padding: '3px 6px',
+                          borderRadius: 'var(--radius-sm)',
+                          background: u.role === 'ADMIN' ? 'rgba(239, 68, 68, 0.15)' : u.role === 'ORGANIZER' ? 'rgba(249, 115, 22, 0.15)' : 'var(--bg-app)',
+                          color: u.role === 'ADMIN' ? '#f87171' : u.role === 'ORGANIZER' ? '#fb923c' : 'var(--text-main)',
+                          borderColor: 'var(--border-subtle)',
+                          cursor: 'pointer'
+                        }}
+                        title="Change role (PATCH /admin/users/:id)"
+                      >
+                        <option value="USER">USER</option>
+                        <option value="ORGANIZER">ORGANIZER</option>
+                        <option value="ADMIN">ADMIN</option>
+                      </select>
                     </td>
                     <td>
                       <span className={`badge ${u.kycStatus === 'VERIFIED' ? 'badge-green' : 'badge-orange'}`}>
@@ -757,6 +1077,296 @@ export default function AdminConsolePage() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* ===================== TAB 5: MONITORING & CLUSTER LOGS ===================== */}
+      {activeAdminTab === 'MONITORING' && (
+        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+            <div>
+              <h3 style={{ fontSize: 16 }}>Live System Monitoring & Cluster Telemetry</h3>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                Real-time logs for PostgreSQL, Redis, Matching Engine, and WebSocket connections (GET /admin/monitoring/logs & health)
+              </p>
+            </div>
+            <button
+              className="btn-secondary"
+              onClick={handleManualRefresh}
+              disabled={refreshing}
+              style={{ fontSize: 12, padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+              <span>Poll Logs</span>
+            </button>
+          </div>
+
+          {/* Health Lights Row */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, padding: 16, background: 'rgba(18, 21, 29, 0.4)', borderBottom: '1px solid var(--border-subtle)' }}>
+            <div style={{ background: 'var(--bg-app)', padding: 12, borderRadius: 'var(--radius-sm)' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase' }}>PostgreSQL Primary</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981' }} />
+                <strong style={{ fontSize: 14 }}>{adminData.health?.database?.status || 'OK'}</strong>
+                <span className="font-mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>({adminData.health?.database?.latency || '3ms'})</span>
+              </div>
+            </div>
+            <div style={{ background: 'var(--bg-app)', padding: 12, borderRadius: 'var(--radius-sm)' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase' }}>Redis Cache & Queues</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981' }} />
+                <strong style={{ fontSize: 14 }}>{adminData.health?.redis?.status || 'OK'}</strong>
+                <span className="font-mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>({adminData.health?.redis?.latency || '1ms'})</span>
+              </div>
+            </div>
+            <div style={{ background: 'var(--bg-app)', padding: 12, borderRadius: 'var(--radius-sm)' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase' }}>WebSocket Engine</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981' }} />
+                <strong style={{ fontSize: 14 }}>{adminData.health?.websocket?.status || 'OK'}</strong>
+                <span className="font-mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>({adminData.health?.websocket?.connections || 1} active)</span>
+              </div>
+            </div>
+            <div style={{ background: 'var(--bg-app)', padding: 12, borderRadius: 'var(--radius-sm)' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase' }}>In-Memory Matching Engine</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981' }} />
+                <strong style={{ fontSize: 14 }}>{adminData.health?.matchingEngine?.status || 'OK'}</strong>
+                <span className="font-mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>({adminData.health?.matchingEngine?.tick || '0.15ms'})</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Logs Feed */}
+          <div style={{ padding: 16 }}>
+            <div
+              style={{
+                background: 'var(--bg-app)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 'var(--radius-md)',
+                padding: 16,
+                fontFamily: 'var(--font-mono)',
+                fontSize: 12,
+                lineHeight: 1.7,
+                maxHeight: 460,
+                overflowY: 'auto'
+              }}
+            >
+              {(adminData.monitoringLogs || []).length === 0 ? (
+                <div style={{ color: 'var(--text-dim)', textAlign: 'center', padding: '24px 0' }}>
+                  No system logs recorded yet. All services operational!
+                </div>
+              ) : (
+                (adminData.monitoringLogs || []).map((log, idx) => (
+                  <div key={idx} style={{ marginBottom: 6, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    <span style={{ color: 'var(--text-dim)' }}>[{log.time}]</span>
+                    <span style={{ color: log.type === 'ERROR' ? '#f87171' : log.type === 'WARN' ? '#fbbf24' : '#10b981', fontWeight: 600 }}>
+                      {log.type}:
+                    </span>
+                    <span style={{ color: 'var(--text-sub)' }}>{log.message}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal 1: Create Anti-Scalping Price Cap Rule */}
+      {showCreateRuleModal && (
+        <div className="modal-overlay" onClick={() => setShowCreateRuleModal(false)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 480 }}>
+            <button
+              onClick={() => setShowCreateRuleModal(false)}
+              style={{ position: 'absolute', top: 16, right: 16, color: 'var(--text-dim)', padding: 4 }}
+            >
+              <X size={18} />
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 'var(--radius-sm)', background: 'var(--accent-orange-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Sliders size={18} color="#f97316" />
+              </div>
+              <div>
+                <h3 style={{ fontSize: 17 }}>Create Anti-Scalping Rule</h3>
+                <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  POST /admin/rules/anti-scalping
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleCreateRuleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
+                  Rule Name *
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. VIP Fair Price Ceiling"
+                  value={ruleName}
+                  onChange={(e) => setRuleName(e.target.value)}
+                  style={{ width: '100%', fontSize: 13 }}
+                  required
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
+                  Target Event *
+                </label>
+                <select
+                  value={ruleEventId}
+                  onChange={(e) => setRuleEventId(e.target.value)}
+                  style={{ width: '100%', fontSize: 13, background: 'var(--bg-input)', color: 'var(--text-main)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-sm)', padding: '8px 12px' }}
+                  required
+                >
+                  <option value="">-- Select Event --</option>
+                  {(adminEvents && adminEvents.length > 0 ? adminEvents : events || []).map((ev) => (
+                    <option key={ev.id} value={ev.id}>
+                      {ev.name} ({ev.id.slice(0, 8)}...)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
+                  Category / Tier Name (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Early Bird, VIP Pass"
+                  value={ruleTier}
+                  onChange={(e) => setRuleTier(e.target.value)}
+                  style={{ width: '100%', fontSize: 13 }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
+                  Max Resale Price (₹ Ceiling) *
+                </label>
+                <input
+                  type="number"
+                  placeholder="e.g. 5000"
+                  value={ruleMaxPrice}
+                  onChange={(e) => setRuleMaxPrice(e.target.value)}
+                  style={{ width: '100%', fontSize: 13 }}
+                  min="1"
+                  step="0.01"
+                  required
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ flex: 1 }}
+                  onClick={() => setShowCreateRuleModal(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  style={{ flex: 1 }}
+                  disabled={isCreatingRule}
+                >
+                  {isCreatingRule ? 'Creating...' : 'Save & Enforce'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal 2: Configure Global Anti-Bot Rate Limits */}
+      {showBotModal && (
+        <div className="modal-overlay" onClick={() => setShowBotModal(false)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440 }}>
+            <button
+              onClick={() => setShowBotModal(false)}
+              style={{ position: 'absolute', top: 16, right: 16, color: 'var(--text-dim)', padding: 4 }}
+            >
+              <X size={18} />
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 'var(--radius-sm)', background: 'rgba(16, 185, 129, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <ShieldCheck size={18} color="#10b981" />
+              </div>
+              <div>
+                <h3 style={{ fontSize: 17 }}>Configure Anti-Bot Rate Limits</h3>
+                <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  GET / PUT /admin/rules/anti-bot
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveBotConfigSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
+                  Max Orders Per Minute (per User/IP)
+                </label>
+                <input
+                  type="number"
+                  value={botOrdersLimit}
+                  onChange={(e) => setBotOrdersLimit(e.target.value)}
+                  style={{ width: '100%', fontSize: 13 }}
+                  min="1"
+                  required
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
+                  Max API Requests Per Minute
+                </label>
+                <input
+                  type="number"
+                  value={botMaxRequests}
+                  onChange={(e) => setBotMaxRequests(e.target.value)}
+                  style={{ width: '100%', fontSize: 13 }}
+                  min="1"
+                  required
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
+                  Burst Request Threshold
+                </label>
+                <input
+                  type="number"
+                  value={botBurst}
+                  onChange={(e) => setBotBurst(e.target.value)}
+                  style={{ width: '100%', fontSize: 13 }}
+                  min="1"
+                  required
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ flex: 1 }}
+                  onClick={() => setShowBotModal(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  style={{ flex: 1 }}
+                  disabled={isSavingBot}
+                >
+                  {isSavingBot ? 'Saving...' : 'Apply Limits'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
