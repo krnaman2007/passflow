@@ -19,7 +19,8 @@ export { formatBackendEvent };
 
 
 export default function EventsPage() {
-  const { navigate, currentRole, setEvents: updateContextEvents } = useApp();
+  const { navigate, currentRole, currentUser, setEvents: updateContextEvents } = useApp();
+  const effectiveRole = currentUser ? (currentUser.role || 'USER') : (currentRole || 'PUBLIC');
 
   const [backendEvents, setBackendEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -121,7 +122,7 @@ export default function EventsPage() {
               <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
             </button>
 
-            {(currentRole === 'ORGANIZER' || currentRole === 'ADMIN') && (
+            {(effectiveRole === 'ORGANIZER' || effectiveRole === 'ADMIN') && (
               <button
                 className="btn-primary"
                 onClick={() => navigate('/organizer/create-event')}
@@ -247,7 +248,7 @@ export default function EventsPage() {
             <button className="btn-secondary" onClick={() => setSearchTerm('')}>
               Clear Search
             </button>
-          ) : currentRole === 'ORGANIZER' || currentRole === 'ADMIN' ? (
+          ) : effectiveRole === 'ORGANIZER' || effectiveRole === 'ADMIN' ? (
             <button className="btn-primary" onClick={() => navigate('/organizer/create-event')}>
               <span>Create Event in Backend</span>
               <ArrowRight size={15} />

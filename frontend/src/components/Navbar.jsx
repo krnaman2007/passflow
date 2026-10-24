@@ -36,6 +36,7 @@ export default function Navbar() {
   const avatarRef = useRef(null);
 
   const unreadCount = notifications.filter((n) => n.unread).length;
+  const effectiveRole = currentUser ? (currentUser.role || 'USER') : (currentRole || 'PUBLIC');
 
   // Close menus on outside click
   useEffect(() => {
@@ -124,7 +125,7 @@ export default function Navbar() {
             <span>Market</span>
           </button>
 
-          {currentRole !== 'PUBLIC' && (
+          {effectiveRole !== 'PUBLIC' && (
             <button
               className={`nav-item ${currentPath === '/tickets' ? 'active' : ''}`}
               onClick={() => navigate('/tickets')}
@@ -134,7 +135,7 @@ export default function Navbar() {
             </button>
           )}
 
-          {currentRole === 'ORGANIZER' && (
+          {effectiveRole === 'ORGANIZER' && (
             <button
               className={`nav-item ${currentPath.startsWith('/organizer') ? 'active' : ''}`}
               onClick={() => navigate('/organizer')}
@@ -145,7 +146,7 @@ export default function Navbar() {
             </button>
           )}
 
-          {currentRole === 'ADMIN' && (
+          {effectiveRole === 'ADMIN' && (
             <button
               className={`nav-item ${currentPath.startsWith('/admin') ? 'active' : ''}`}
               onClick={() => navigate('/admin')}
@@ -161,7 +162,7 @@ export default function Navbar() {
       {/* Right: User Controls & Auth Buttons */}
       <div className="nav-right">
         {/* If Logged in: Wallet Pill & User Avatar */}
-        {currentRole !== 'PUBLIC' ? (
+        {effectiveRole !== 'PUBLIC' ? (
           <>
             {/* Wallet Pill */}
             <div className="relative" ref={walletRef} style={{ position: 'relative' }}>
@@ -299,7 +300,7 @@ export default function Navbar() {
                     <span>Profile & KYC</span>
                   </button>
 
-                  {currentRole === 'USER' && (
+                  {effectiveRole === 'USER' && (
                     <button
                       className="menu-item"
                       onClick={() => {
@@ -312,7 +313,7 @@ export default function Navbar() {
                     </button>
                   )}
 
-                  {currentRole === 'ORGANIZER' && (
+                  {effectiveRole === 'ORGANIZER' && (
                     <button
                       className="menu-item"
                       onClick={() => {
@@ -325,7 +326,7 @@ export default function Navbar() {
                     </button>
                   )}
 
-                  {currentRole === 'ADMIN' && (
+                  {effectiveRole === 'ADMIN' && (
                     <button
                       className="menu-item"
                       onClick={() => {

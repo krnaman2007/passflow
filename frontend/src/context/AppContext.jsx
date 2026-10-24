@@ -522,6 +522,16 @@ export function AppProvider({ children }) {
     };
   }, [authUser]);
 
+  // Keep currentRole strictly synced with authoritative authUser.role
+  useEffect(() => {
+    if (authUser?.role && currentRole !== authUser.role) {
+      setCurrentRole(authUser.role);
+      try {
+        localStorage.setItem('passflow_role', authUser.role);
+      } catch {}
+    }
+  }, [authUser?.role, currentRole]);
+
   // Fast Role Switcher
   const switchRole = (newRole) => {
     setCurrentRole(newRole);
