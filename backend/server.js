@@ -11,6 +11,7 @@ import { marketStreamService } from './src/services/market-stream/index.js';
 import notificationService from './src/services/notification.service.js';
 import monitoringService from './src/services/monitoring.service.js';
 import corsOptions from './src/config/cors.js';
+import prisma from './src/db/prisma.js';
 
 const server = http.createServer(app);
 
@@ -94,6 +95,29 @@ export const startServer = async () => {
       : { ready: true };
     if (!coordinatorStatus.ready) {
       throw new Error(`Market coordinator not ready: ${coordinatorStatus.reason}`);
+    }
+
+    // 3b. Pre-warm and synchronize active published event orderbooks
+    try {
+      const activeCategories = await prisma.ticketCategory.findMany({
+        where: { event: { status: 'PUBLISHED' } },
+        select: { id: true, eventId: true },
+      });
+      for (const cat of activeCategories) {
+        try {
+          await orderService.matchingService.initializeAndSynchronizeMarket({
+            eventId: cat.eventId,
+            ticketCategoryId: cat.id,
+          });
+        } catch (mErr) {
+          logger.warn(`Deferred market warmup for ${cat.eventId}:${cat.id}: ${mErr.message}`);
+        }
+      }
+      if (activeCategories.length > 0) {
+        logger.info(`Initialized and warmed ${activeCategories.length} active event orderbooks.`);
+      }
+    } catch (warmupErr) {
+      logger.warn(`Market warmup notice: ${warmupErr.message}`);
     }
 
     // 4. Start settlement recovery worker only after prerequisites succeed

@@ -381,6 +381,12 @@ export class OrderService {
     await this.rulesService.validatePrice({ eventId, categoryId: ticketCategoryId, side, price });
     await this.rulesService.check(userId, 'ORDER_RATE_LIMIT');
 
+    // Ensure market is initialized and synchronized in READY state for trading
+    const marketKey = formatMarketKey(eventId, ticketCategoryId);
+    if (!this.matchingService.stateManager.isReady(marketKey)) {
+      await this.matchingService.initializeAndSynchronizeMarket(marketKey);
+    }
+
     // 2. Check for existing order by (userId, idempotencyKey)
     const existingOrder = await this.orderRepository.findByIdempotencyKey(userId, idempotencyKey);
     if (existingOrder) {
@@ -880,6 +886,11 @@ export class OrderService {
     }
 
     // 3. Execute cancellation under MarketExecutionQueue
+    const marketKey = formatMarketKey(order.eventId, order.ticketCategoryId);
+    if (!this.matchingService.stateManager.isReady(marketKey)) {
+      await this.matchingService.initializeAndSynchronizeMarket(marketKey);
+    }
+
     const cancelResult = await this.matchingService.cancelLimitOrder({
       eventId: order.eventId,
       ticketCategoryId: order.ticketCategoryId,
