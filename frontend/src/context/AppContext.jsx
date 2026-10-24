@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import {
   INITIAL_USERS,
-  INITIAL_EVENTS,
   INITIAL_ORDER_BOOKS,
   INITIAL_USER_TICKETS,
   INITIAL_USER_ORDERS,
@@ -10,8 +9,8 @@ import {
   INITIAL_ADMIN_DATA
 } from '../mockData';
 import { marketStream } from '../services/marketStream.js';
-import { useAppStore } from '../store/useStore.js';
 import { api, checkBackendHealth, BACKEND_URL } from '../services/api.js';
+import { formatBackendEvent } from '../utils/eventAdapter.js';
 
 
 const AppContext = createContext(null);
@@ -149,7 +148,33 @@ export function AppProvider({ children }) {
   const [users, setUsers] = useState(INITIAL_USERS);
 
   // Entities State
-  const [events, setEvents] = useState(INITIAL_EVENTS);
+  const [events, setEvents] = useState([]);
+
+  // Fetch real events from PostgreSQL backend on mount
+  useEffect(() => {
+    let isMounted = true;
+    async function loadLiveEvents() {
+      try {
+        const response = await api.events.listEvents();
+        const rawList =
+          response?.data?.events ||
+          response?.events ||
+          (Array.isArray(response?.data) ? response.data : []) ||
+          (Array.isArray(response) ? response : []);
+
+        if (Array.isArray(rawList) && rawList.length > 0 && isMounted) {
+          const formatted = rawList.map((ev, idx) => formatBackendEvent(ev, idx));
+          setEvents(formatted);
+        }
+      } catch (err) {
+        console.warn('Backend events load deferred:', err.message);
+      }
+    }
+    loadLiveEvents();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
   const [orderBooks, setOrderBooks] = useState(INITIAL_ORDER_BOOKS);
   const [userTickets, setUserTickets] = useState(INITIAL_USER_TICKETS);
   const [userOrders, setUserOrders] = useState(INITIAL_USER_ORDERS);

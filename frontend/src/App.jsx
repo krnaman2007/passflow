@@ -36,7 +36,7 @@ function MainRouter() {
     if (currentPath === '/notifications' || currentPath.startsWith('/notifications/')) return <NotificationsPage />;
     if (currentPath === '/profile' || currentPath.startsWith('/profile/')) return <ProfilePage />;
     if (currentPath === '/organizer/apply') return <OrganizerApplyPage />;
-    if (currentPath === '/organizer/events/new') return <OrganizerCreateEventPage />;
+    if (currentPath === '/organizer/events/new' || currentPath === '/organizer/create-event') return <OrganizerCreateEventPage />;
     if (currentPath === '/organizer' || currentPath.startsWith('/organizer/')) return <OrganizerDashboardPage />;
     if (currentPath.startsWith('/admin')) return <AdminConsolePage />;
     if (currentPath === '/login') return <LoginPage />;
