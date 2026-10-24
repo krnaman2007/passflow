@@ -38,7 +38,16 @@ export const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Idempotency-Key',
+    'idempotency-key',
+    'X-Idempotency-Key',
+    'x-idempotency-key',
+    'Accept'
+  ],
 };
 
 export default corsOptions;

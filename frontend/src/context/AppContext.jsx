@@ -289,6 +289,7 @@ export function AppProvider({ children }) {
             }));
           }
           await syncLiveWallet();
+          fetchLiveWalletTransactions();
           fetchLiveNotifications();
           fetchLiveOrders();
           fetchLiveTickets();
@@ -352,6 +353,7 @@ export function AppProvider({ children }) {
 
     // Refresh live wallet, notifications, & orders in background
     syncLiveWallet();
+    fetchLiveWalletTransactions();
     fetchLiveNotifications();
     fetchLiveOrders();
     fetchLiveTickets();
@@ -922,63 +924,131 @@ export function AppProvider({ children }) {
     }
   };
 
-  // Wallet Deposit & Withdraw
-  const depositWallet = (amount) => {
+  // Real Ledger Transaction Fetcher
+  const fetchLiveWalletTransactions = async () => {
+    try {
+      const token = getAuthToken();
+      if (!token) return;
+      const res = await api.wallet.getTransactions({ limit: 50 });
+      const rawList = res?.data?.transactions || res?.transactions || [];
+      if (Array.isArray(rawList) && rawList.length > 0) {
+        const formatted = rawList.map((tx) => {
+          const isDebit = Number(tx.availableDelta || 0) < 0 || tx.entryType?.includes('WITHDRAW') || tx.type === 'WITHDRAW' || tx.type === 'PURCHASE';
+          let rupeeAmount = 0;
+          if (tx.amount != null) {
+            rupeeAmount = Math.abs(Number(tx.amount));
+            if (tx.amountPaise && Number(tx.amountPaise) === rupeeAmount) {
+              rupeeAmount = rupeeAmount / 100;
+            }
+          } else if (tx.availableDelta != null) {
+            rupeeAmount = Math.abs(Number(tx.availableDelta) / 100);
+          }
+
+          const sign = isDebit ? -rupeeAmount : rupeeAmount;
+          const dateObj = tx.createdAt ? new Date(tx.createdAt) : new Date();
+
+          return {
+            id: tx.id,
+            type: tx.entryType || tx.type || 'TRANSACTION',
+            amount: sign,
+            status: tx.status === 'COMPLETED' ? 'Done' : (tx.status || 'Done'),
+            date: dateObj.toLocaleDateString('en-IN', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + dateObj.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+            note: tx.description || `${tx.entryType || tx.type}`,
+            sequenceNumber: tx.sequenceNumber,
+            raw: tx
+          };
+        });
+
+        setWallet((prev) => ({
+          ...prev,
+          transactions: formatted,
+        }));
+        return formatted;
+      }
+    } catch (err) {
+      console.warn('Could not fetch wallet transactions:', err.message);
+    }
+  };
+
+  // Real Wallet Deposit & Withdraw (Flow: Instant UPI / Gateway in INR Paise)
+  const depositWallet = async (amount, description) => {
     const num = parseFloat(amount);
     if (isNaN(num) || num <= 0) {
       showToast('Enter a valid deposit amount', 'warning');
-      return;
+      return false;
     }
 
-    setWallet((prev) => ({
-      ...prev,
-      balance: prev.balance + num,
-      available: prev.available + num,
-      transactions: [
-        {
-          id: `tx_${Date.now()}`,
-          type: 'DEPOSIT',
-          amount: num,
-          status: 'Done',
-          date: 'Just now',
-          note: 'Mock Instant Gateway'
-        },
-        ...prev.transactions
-      ]
-    }));
+    const amountPaise = Math.round(num * 100);
+    const idempotencyKey = `dep-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const desc = description || 'Simulated Instant UPI / Gateway Deposit';
 
-    showToast(`+$${num.toFixed(2)} deposited into your wallet!`, 'success');
+    try {
+      const res = await api.wallet.deposit(amountPaise, idempotencyKey, desc);
+      const data = res?.data || res;
+      if (data?.wallet) {
+        const avail = Number(data.wallet.availableBalance || 0) / 100;
+        const resBal = Number(data.wallet.reservedBalance || 0) / 100;
+        setWallet((prev) => ({
+          ...prev,
+          balance: avail + resBal,
+          available: avail,
+          held: resBal,
+          reservedBalance: resBal,
+        }));
+      } else {
+        await syncLiveWallet();
+      }
+      await fetchLiveWalletTransactions();
+      showToast(`+₹${num.toLocaleString('en-IN', { minimumFractionDigits: 2 })} deposited into your escrow wallet!`, 'success');
+      return true;
+    } catch (err) {
+      console.error('Wallet deposit failed:', err);
+      const errMsg = err?.data?.error?.message || err?.message || 'Failed to process deposit';
+      showToast(errMsg, 'error');
+      return false;
+    }
   };
 
-  const withdrawWallet = (amount) => {
+  const withdrawWallet = async (amount, description) => {
     const num = parseFloat(amount);
     if (isNaN(num) || num <= 0) {
       showToast('Enter a valid withdrawal amount', 'warning');
-      return;
+      return false;
     }
     if (num > wallet.available) {
-      showToast(`Cannot withdraw more than available balance ($${wallet.available.toFixed(2)})`, 'error');
-      return;
+      showToast(`Cannot withdraw more than available balance (₹${wallet.available.toLocaleString('en-IN', { minimumFractionDigits: 2 })})`, 'error');
+      return false;
     }
 
-    setWallet((prev) => ({
-      ...prev,
-      balance: prev.balance - num,
-      available: prev.available - num,
-      transactions: [
-        {
-          id: `tx_${Date.now()}`,
-          type: 'WITHDRAW',
-          amount: -num,
-          status: 'Done',
-          date: 'Just now',
-          note: 'ACH Bank Payout'
-        },
-        ...prev.transactions
-      ]
-    }));
+    const amountPaise = Math.round(num * 100);
+    const idempotencyKey = `wth-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const desc = description || 'Direct IMPS / Bank Payout';
 
-    showToast(`-$${num.toFixed(2)} withdrawn to your bank account!`, 'info');
+    try {
+      const res = await api.wallet.withdraw(amountPaise, idempotencyKey, desc);
+      const data = res?.data || res;
+      if (data?.wallet) {
+        const avail = Number(data.wallet.availableBalance || 0) / 100;
+        const resBal = Number(data.wallet.reservedBalance || 0) / 100;
+        setWallet((prev) => ({
+          ...prev,
+          balance: avail + resBal,
+          available: avail,
+          held: resBal,
+          reservedBalance: resBal,
+        }));
+      } else {
+        await syncLiveWallet();
+      }
+      await fetchLiveWalletTransactions();
+      showToast(`-₹${num.toLocaleString('en-IN', { minimumFractionDigits: 2 })} payout processed to your bank account!`, 'info');
+      return true;
+    } catch (err) {
+      console.error('Wallet withdraw failed:', err);
+      const errMsg = err?.data?.error?.message || err?.message || 'Failed to process withdrawal';
+      showToast(errMsg, 'error');
+      return false;
+    }
   };
 
   // Real-Time Backend Notifications Handlers
@@ -1630,6 +1700,7 @@ export function AppProvider({ children }) {
         fetchLiveNotifications,
         fetchLiveOrders,
         fetchLiveTickets,
+        fetchLiveWalletTransactions,
         // Real Backend Auth & Session
         authUser,
         authLoading,
