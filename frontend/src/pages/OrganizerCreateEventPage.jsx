@@ -26,6 +26,7 @@ export default function OrganizerCreateEventPage() {
     showToast,
     currentUser,
     currentRole,
+    authLoading,
     login
   } = useApp();
 
@@ -65,7 +66,18 @@ export default function OrganizerCreateEventPage() {
     currentUser?.role === 'ADMIN' ||
     currentUser?.organizer?.verificationStatus === 'VERIFIED';
 
-  // 1. Unauthenticated or Unverified Guard
+  // 1. Session Restoring Guard
+  if (authLoading) {
+    return (
+      <div className="content-wrap" style={{ maxWidth: 640, textAlign: 'center', padding: '80px 24px', margin: '40px auto' }}>
+        <RefreshCw size={32} className="spin" style={{ margin: '0 auto 16px', display: 'block', color: 'var(--brand-primary, #6366f1)' }} />
+        <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8, color: 'var(--text-main)' }}>Restoring Session...</h3>
+        <p style={{ color: 'var(--text-sub)', fontSize: 14 }}>Verifying organizer permissions</p>
+      </div>
+    );
+  }
+
+  // 2. Unauthenticated or Unverified Guard
   if (!currentUser || currentRole === 'PUBLIC') {
     return (
       <div className="content-wrap" style={{ maxWidth: 640 }}>

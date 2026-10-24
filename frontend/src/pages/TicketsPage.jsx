@@ -30,6 +30,7 @@ export default function TicketsPage() {
     navigate,
     currentRole,
     currentUser,
+    authLoading,
     login,
     showToast,
     fetchLiveTickets
@@ -121,7 +122,18 @@ export default function TicketsPage() {
     return ticket.status === statusFilter;
   });
 
-  // 1. Guard: Visitor / Unauthenticated
+  // 1. Session Restoring Guard
+  if (authLoading) {
+    return (
+      <div className="content-wrap" style={{ maxWidth: 640, textAlign: 'center', padding: '80px 24px', margin: '40px auto' }}>
+        <RefreshCw size={32} className="spin" style={{ margin: '0 auto 16px', display: 'block', color: 'var(--brand-primary, #6366f1)' }} />
+        <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8, color: 'var(--text-main)' }}>Restoring Tickets...</h3>
+        <p style={{ color: 'var(--text-sub)', fontSize: 14 }}>Loading your authenticated vault</p>
+      </div>
+    );
+  }
+
+  // 2. Guard: Visitor / Unauthenticated
   if (!currentUser || currentRole === 'PUBLIC') {
     return (
       <div className="content-wrap" style={{ maxWidth: 640 }}>

@@ -41,6 +41,46 @@ function extractRouteParams(path) {
   return {};
 }
 
+// Helpers to retrieve and persist authenticated user session across page refreshes
+function getStoredUser() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem('passflow_user');
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function getStoredRole() {
+  if (typeof window === 'undefined') return 'PUBLIC';
+  try {
+    const token = getAuthToken();
+    if (!token) return 'PUBLIC';
+    return localStorage.getItem('passflow_role') || 'USER';
+  } catch {
+    return 'PUBLIC';
+  }
+}
+
+function persistUserSession(user, role) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (user) {
+      localStorage.setItem('passflow_user', JSON.stringify(user));
+    } else {
+      localStorage.removeItem('passflow_user');
+    }
+    if (role && role !== 'PUBLIC') {
+      localStorage.setItem('passflow_role', role);
+    } else {
+      localStorage.removeItem('passflow_role');
+    }
+  } catch {
+    // Ignore localStorage errors
+  }
+}
+
 export function AppProvider({ children }) {
   // Navigation & Routing with full browser address bar sync
   const initialPath = typeof window !== 'undefined' ? normalizePath(window.location.pathname) : '/events';
@@ -157,7 +197,7 @@ export function AppProvider({ children }) {
   }, []);
 
   // Role: 'PUBLIC' | 'USER' | 'ORGANIZER' | 'ADMIN'
-  const [currentRole, setCurrentRole] = useState('PUBLIC');
+  const [currentRole, setCurrentRole] = useState(getStoredRole);
   const [users, setUsers] = useState(INITIAL_USERS);
 
   // Entities State
@@ -230,9 +270,9 @@ export function AppProvider({ children }) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Live Authenticated User state from Backend
-  const [authUser, setAuthUser] = useState(null);
-  const [authLoading, setAuthLoading] = useState(true);
+  // Live Authenticated User state from Backend (initialized from persistent storage)
+  const [authUser, setAuthUser] = useState(getStoredUser);
+  const [authLoading, setAuthLoading] = useState(() => !getStoredUser() && !!getAuthToken());
 
   // Sync latest authoritative wallet balance from Backend
   const syncLiveWallet = async () => {
@@ -269,12 +309,42 @@ export function AppProvider({ children }) {
 
       try {
         marketStream.setAuthToken(token);
-        const res = await api.auth.getProfile();
-        const user = res?.data || res;
+        let user;
+        try {
+          const res = await api.auth.getProfile();
+          user = res?.data || res;
+        } catch (profileErr) {
+          // If access token expired (HTTP 401), attempt refresh token rotation
+          const refreshToken = localStorage.getItem('passflow_refresh_token');
+          if (profileErr.status === 401 && refreshToken) {
+            try {
+              const refreshRes = await api.auth.refresh(refreshToken);
+              const refreshData = refreshRes?.data || refreshRes;
+              if (refreshData?.accessToken) {
+                setAuthToken(refreshData.accessToken);
+                marketStream.setAuthToken(refreshData.accessToken);
+                if (refreshData.refreshToken) {
+                  localStorage.setItem('passflow_refresh_token', refreshData.refreshToken);
+                }
+                const retryRes = await api.auth.getProfile();
+                user = retryRes?.data || retryRes;
+              } else {
+                throw profileErr;
+              }
+            } catch {
+              throw profileErr;
+            }
+          } else {
+            throw profileErr;
+          }
+        }
+
         if (user && isMounted) {
           setAuthUser(user);
-          setCurrentRole(user.role || 'USER');
-          useAppStore.getState().setUser(user, token);
+          const activeRole = user.role || 'USER';
+          setCurrentRole(activeRole);
+          persistUserSession(user, activeRole);
+          useAppStore.getState().setUser(user, getAuthToken());
 
           if (user.wallet) {
             const avail = Number(user.wallet.availableBalance || 0) / 100;
@@ -295,10 +365,14 @@ export function AppProvider({ children }) {
           fetchLiveTickets();
         }
       } catch (err) {
-        console.warn('Session restoration failed or expired:', err.message);
-        if (isMounted) {
+        console.warn('Session restoration notice:', err.message);
+        // Only wipe credentials if explicitly 401 Unauthorized
+        // Do NOT wipe if it's a temporary network failure (status 0) or server 502/503
+        if (err.status === 401 && isMounted) {
           setAuthToken(null);
           setAuthUser(null);
+          setCurrentRole('PUBLIC');
+          persistUserSession(null, 'PUBLIC');
           useAppStore.getState().logout();
           marketStream.clearAuthToken();
         }
@@ -334,7 +408,9 @@ export function AppProvider({ children }) {
     }
 
     setAuthUser(user);
-    setCurrentRole(user.role || 'USER');
+    const activeRole = user.role || 'USER';
+    setCurrentRole(activeRole);
+    persistUserSession(user, activeRole);
     useAppStore.getState().setUser(user, tokens.accessToken);
     marketStream.setAuthToken(tokens.accessToken);
 
@@ -382,7 +458,9 @@ export function AppProvider({ children }) {
     }
 
     setAuthUser(user);
-    setCurrentRole(user.role || 'USER');
+    const activeRole = user.role || role || 'USER';
+    setCurrentRole(activeRole);
+    persistUserSession(user, activeRole);
     useAppStore.getState().setUser(user, tokens.accessToken);
     marketStream.setAuthToken(tokens.accessToken);
 
@@ -419,6 +497,7 @@ export function AppProvider({ children }) {
       // Ignore localStorage errors
     }
 
+    persistUserSession(null, 'PUBLIC');
     setAuthUser(null);
     setCurrentRole('PUBLIC');
     useAppStore.getState().logout();
@@ -445,6 +524,11 @@ export function AppProvider({ children }) {
   // Fast Role Switcher
   const switchRole = (newRole) => {
     setCurrentRole(newRole);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('passflow_role', newRole);
+      } catch {}
+    }
     if (newRole === 'PUBLIC') {
       showToast('Switched to Visitor / Public view', 'info');
       if (['/tickets', '/wallet', '/orders', '/organizer', '/admin'].includes(currentPath)) {
