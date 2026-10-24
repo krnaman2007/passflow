@@ -10,17 +10,24 @@ import { config } from './index.js';
 export const isOriginAllowed = (origin) => {
   if (!origin) return true;
 
+  const normalized = origin.trim().replace(/\/$/, '');
+
   const configured = Array.isArray(config.allowedOrigins)
     ? config.allowedOrigins
     : [config.frontendUrl];
 
-  if (configured.includes(origin)) {
+  if (configured.some((allowed) => allowed && allowed.trim().replace(/\/$/, '') === normalized)) {
+    return true;
+  }
+
+  // Allow Vercel deployments (*.vercel.app)
+  if (/^https:\/\/[a-z0-9-_.]+\.vercel\.app$/i.test(normalized)) {
     return true;
   }
 
   // In development and test modes, permit any localhost or 127.0.0.1 port (e.g. 5173, 5174, etc.)
   if (config.nodeEnv === 'development' || !config.nodeEnv || config.nodeEnv === 'test') {
-    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$/.test(origin)) {
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$/.test(normalized)) {
       return true;
     }
   }
@@ -48,6 +55,7 @@ export const corsOptions = {
     'x-idempotency-key',
     'Accept'
   ],
+  optionsSuccessStatus: 200,
 };
 
 export default corsOptions;

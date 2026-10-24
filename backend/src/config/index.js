@@ -21,7 +21,7 @@ const parseAllowedOrigins = (raw) => {
   if (!raw) return ['http://localhost:5173', 'http://localhost:5174'];
   return raw
     .split(',')
-    .map((o) => o.trim())
+    .map((o) => o.trim().replace(/\/$/, ''))
     .filter(Boolean);
 };
 
