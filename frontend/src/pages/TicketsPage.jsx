@@ -25,6 +25,16 @@ export default function TicketsPage() {
   const [selectedTicketId, setSelectedTicketId] = useState(userTickets[0]?.id || 'TK-20931');
   const selectedTicket = userTickets.find((t) => t.id === selectedTicketId) || userTickets[0];
 
+  const handleSelectTicket = (id) => {
+    if (typeof document !== 'undefined' && document.startViewTransition) {
+      document.startViewTransition(() => {
+        setSelectedTicketId(id);
+      });
+    } else {
+      setSelectedTicketId(id);
+    }
+  };
+
   return (
     <div className="content-wrap">
       {/* Header */}
@@ -58,7 +68,7 @@ export default function TicketsPage() {
                   borderColor: isSelected ? 'var(--accent-orange)' : undefined,
                   background: isSelected ? 'var(--bg-card)' : undefined
                 }}
-                onClick={() => setSelectedTicketId(ticket.id)}
+                onClick={() => handleSelectTicket(ticket.id)}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
                   <div>

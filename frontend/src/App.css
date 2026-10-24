@@ -32,6 +32,14 @@
   color: var(--text-main);
   cursor: pointer;
   user-select: none;
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.18s ease;
+}
+.brand-badge:hover {
+  transform: translateY(-1px);
+  opacity: 0.95;
+}
+.brand-badge:active {
+  transform: scale(0.97) !important;
 }
 
 .brand-diamond {
@@ -39,6 +47,11 @@
   font-size: 18px;
   filter: drop-shadow(0 0 8px rgba(249, 115, 22, 0.6));
   animation: pulse-diamond 3s infinite ease-in-out;
+  transition: filter 0.2s ease, transform 0.2s ease;
+}
+.brand-badge:hover .brand-diamond {
+  filter: drop-shadow(0 0 12px rgba(249, 115, 22, 0.9));
+  transform: scale(1.1);
 }
 
 @keyframes pulse-diamond {
@@ -53,24 +66,45 @@
 }
 
 .nav-item {
-  padding: 7px 14px;
+  padding: 8px 16px;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
   font-weight: 500;
   font-size: 13px;
-  transition: all var(--transition-fast);
+  transition: color 0.18s ease,
+              background 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.16s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  border: 1px solid transparent;
+  user-select: none;
 }
 .nav-item:hover {
   color: var(--text-main);
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.07);
+  transform: translateY(-1px);
+}
+.nav-item:active {
+  transform: scale(0.96) translateY(0.5px) !important;
 }
 .nav-item.active {
   color: var(--text-main);
   background: var(--bg-card);
-  border: 1px solid var(--border-medium);
+  border-color: rgba(249, 115, 22, 0.35);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.nav-item svg {
+  transition: color 0.2s ease, filter 0.2s ease, transform 0.2s ease;
+}
+.nav-item.active svg {
+  color: var(--accent-orange);
+  filter: drop-shadow(0 0 6px rgba(249, 115, 22, 0.5));
+}
+.nav-item:hover svg {
+  transform: scale(1.08);
 }
 .nav-badge-tab {
   font-size: 10px;
@@ -80,6 +114,11 @@
   color: var(--accent-orange);
   border: 1px solid var(--accent-orange-border);
   font-weight: 600;
+  transition: all 0.2s ease;
+}
+.nav-item:hover .nav-badge-tab {
+  border-color: var(--accent-orange);
+  box-shadow: 0 0 8px rgba(249, 115, 22, 0.3);
 }
 
 .nav-right {
@@ -97,6 +136,10 @@
   border-radius: var(--radius-full);
   padding: 3px 4px;
   gap: 2px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.role-switcher-pill:hover {
+  border-color: var(--accent-orange-border);
 }
 
 .role-chip {
@@ -105,15 +148,21 @@
   font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);
-  transition: all var(--transition-fast);
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  cursor: pointer;
+  user-select: none;
 }
 .role-chip:hover {
   color: var(--text-main);
+  transform: translateY(-1px);
+}
+.role-chip:active {
+  transform: scale(0.95) !important;
 }
 .role-chip.active {
   background: var(--accent-orange);
   color: #fff;
-  box-shadow: 0 0 10px rgba(249, 115, 22, 0.4);
+  box-shadow: 0 0 12px rgba(249, 115, 22, 0.45);
 }
 
 /* Wallet Pill */
@@ -130,11 +179,20 @@
   font-weight: 600;
   color: var(--text-main);
   cursor: pointer;
-  transition: all var(--transition-fast);
+  user-select: none;
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+              background 0.2s ease,
+              border-color 0.2s ease,
+              box-shadow 0.2s ease;
 }
 .wallet-pill:hover {
   border-color: var(--accent-orange-border);
   background: var(--bg-card);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+.wallet-pill:active {
+  transform: scale(0.97) !important;
 }
 .wallet-pill .amount {
   color: var(--accent-emerald);
@@ -176,10 +234,20 @@
   font-weight: 500;
   cursor: pointer;
   position: relative;
+  user-select: none;
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+              background 0.2s ease,
+              border-color 0.2s ease,
+              box-shadow 0.2s ease;
 }
 .avatar-btn:hover {
-  border-color: var(--border-medium);
+  border-color: var(--accent-orange-border);
   background: var(--bg-card);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+.avatar-btn:active {
+  transform: scale(0.97) !important;
 }
 .avatar-circle {
   width: 26px;
@@ -192,6 +260,10 @@
   font-size: 11px;
   font-weight: 700;
   color: #fff;
+  transition: transform 0.2s ease;
+}
+.avatar-btn:hover .avatar-circle {
+  transform: scale(1.05);
 }
 
 .avatar-dropdown-menu {
@@ -205,6 +277,7 @@
   padding: 6px;
   box-shadow: var(--shadow-lg);
   z-index: 150;
+  animation: fadeIn 0.15s ease-out;
 }
 .menu-header {
   padding: 10px 12px;
@@ -221,10 +294,16 @@
   color: var(--text-sub);
   font-size: 13px;
   text-align: left;
+  user-select: none;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
 }
 .menu-item:hover {
-  background: var(--bg-card);
+  background: var(--bg-card-hover);
   color: var(--text-main);
+  transform: translateX(3px);
+}
+.menu-item:active {
+  transform: scale(0.98) !important;
 }
 .menu-item.danger:hover {
   color: var(--accent-rose);
@@ -329,15 +408,27 @@
   color: var(--text-muted);
   font-size: 13px;
   font-weight: 500;
+  user-select: none;
+  cursor: pointer;
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+              background 0.2s ease,
+              border-color 0.2s ease,
+              color 0.18s ease,
+              box-shadow 0.2s ease;
 }
 .filter-chip:hover {
   color: var(--text-main);
   border-color: var(--border-medium);
+  transform: translateY(-1px);
+}
+.filter-chip:active {
+  transform: scale(0.96) !important;
 }
 .filter-chip.active {
   background: var(--bg-card);
   color: var(--accent-orange);
   border-color: var(--accent-orange-border);
+  box-shadow: 0 2px 10px rgba(249, 115, 22, 0.2);
 }
 
 /* Event Card */
@@ -348,12 +439,17 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  transition: all var(--transition-normal);
+  transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 0.24s ease,
+              box-shadow 0.24s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .event-card:hover {
-  border-color: var(--border-medium);
-  transform: translateY(-3px);
-  box-shadow: var(--shadow-lg);
+  border-color: var(--accent-orange-border);
+  transform: translateY(-4px);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5), 0 0 20px rgba(249, 115, 22, 0.1);
+}
+.event-card:active {
+  transform: scale(0.995);
 }
 
 .event-card-banner {
@@ -456,10 +552,15 @@
   align-items: center;
   justify-content: center;
   color: var(--text-sub);
+  user-select: none;
+  transition: background 0.16s ease, color 0.16s ease, transform 0.12s ease;
 }
 .qty-btn:hover:not(:disabled) {
   background: var(--bg-card-hover);
   color: var(--text-main);
+}
+.qty-btn:active:not(:disabled) {
+  transform: scale(0.9) !important;
 }
 .qty-val {
   width: 36px;
@@ -622,3 +723,33 @@
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* ------------------- TICKETS VAULT & SELECTED CARDS ------------------- */
+.selected-ticket-card {
+  border-color: var(--accent-orange) !important;
+  background: var(--bg-card) !important;
+  box-shadow: 0 0 24px rgba(249, 115, 22, 0.2), 0 8px 24px rgba(0, 0, 0, 0.5) !important;
+  transform: translateY(-2px);
+}
+
+/* Quick price and percentage chips in Trading Desk */
+.quick-chip {
+  transition: transform 0.16s cubic-bezier(0.16, 1, 0.3, 1),
+              background 0.18s ease,
+              border-color 0.18s ease,
+              color 0.18s ease;
+  user-select: none;
+  cursor: pointer;
+}
+.quick-chip:hover {
+  transform: translateY(-1px);
+}
+.quick-chip:active {
+  transform: scale(0.95) !important;
+}
+
+/* Table action buttons & row hover */
+tr {
+  transition: background-color 0.18s ease;
+}
+

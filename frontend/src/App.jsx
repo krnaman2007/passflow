@@ -51,8 +51,10 @@ function MainRouter() {
       <Toast />
       <Modals />
 
-      <main style={{ flex: 1 }}>
-        {renderCurrentPage()}
+      <main className="app-main-content">
+        <div key={currentPath} className="page-transition-wrapper">
+          {renderCurrentPage()}
+        </div>
       </main>
 
       {/* Production Footer */}

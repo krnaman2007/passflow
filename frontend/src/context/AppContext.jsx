@@ -51,15 +51,27 @@ export function AppProvider({ children }) {
     ...extractRouteParams(initialPath)
   });
 
-  // Listen for browser Back / Forward buttons and address bar navigation
+  // Route state updater helper
+  const updateRouteState = (cleanPath, params = {}) => {
+    setCurrentPath(cleanPath);
+    setRouteParams((prev) => ({
+      ...prev,
+      ...extractRouteParams(cleanPath),
+      ...params
+    }));
+  };
+
+  // Listen for browser Back / Forward buttons and address bar navigation with smooth transitions
   useEffect(() => {
     const handlePopState = () => {
       const path = normalizePath(window.location.pathname);
-      setCurrentPath(path);
-      setRouteParams((prev) => ({
-        ...prev,
-        ...extractRouteParams(path)
-      }));
+      if (typeof document !== 'undefined' && document.startViewTransition) {
+        document.startViewTransition(() => {
+          updateRouteState(path);
+        });
+      } else {
+        updateRouteState(path);
+      }
     };
 
     window.addEventListener('popstate', handlePopState);
@@ -200,18 +212,21 @@ export function AppProvider({ children }) {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
-  // Full browser navigation handler (pushes state to address bar and updates page)
+  // Full browser navigation handler with View Transitions API & smooth scroll
   const navigate = (path, params = {}) => {
     const cleanPath = normalizePath(path);
     if (typeof window !== 'undefined' && window.location.pathname !== cleanPath) {
       window.history.pushState({}, '', cleanPath);
     }
-    setCurrentPath(cleanPath);
-    setRouteParams((prev) => ({
-      ...prev,
-      ...extractRouteParams(cleanPath),
-      ...params
-    }));
+
+    if (typeof document !== 'undefined' && document.startViewTransition) {
+      document.startViewTransition(() => {
+        updateRouteState(cleanPath, params);
+      });
+    } else {
+      updateRouteState(cleanPath, params);
+    }
+
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 

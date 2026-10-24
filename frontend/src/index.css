@@ -52,6 +52,9 @@
 
   --transition-fast: 0.15s ease;
   --transition-normal: 0.22s ease;
+  --transition-spring: 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-smooth: 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-page: 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 *, *::before, *::after {
@@ -105,13 +108,41 @@ a {
   text-decoration: none;
 }
 
-button {
+/* Universal Button & Clickable Element Motion */
+button,
+[role="button"] {
   cursor: pointer;
   border: none;
   background: transparent;
   font-family: inherit;
   font-size: inherit;
-  transition: all var(--transition-fast);
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.16s cubic-bezier(0.16, 1, 0.3, 1),
+              background 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              color 0.18s ease,
+              border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 0.2s ease,
+              filter 0.18s ease;
+}
+
+/* Universal Tactile Button Click / Press Interaction */
+button:active:not(:disabled),
+[role="button"]:active {
+  transform: scale(0.96) translateY(1px) !important;
+  transition-duration: 0.08s !important;
+}
+
+/* Universal Focus-Visible Ring */
+button:focus-visible,
+[role="button"]:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--accent-orange) !important;
 }
 
 input, select, textarea {
@@ -123,7 +154,7 @@ input, select, textarea {
   border-radius: var(--radius-sm);
   padding: 8px 12px;
   outline: none;
-  transition: border-color var(--transition-fast);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 input:focus, select:focus, textarea:focus {
@@ -138,6 +169,31 @@ input:focus, select:focus, textarea:focus {
   flex-direction: column;
 }
 
+.app-main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.page-transition-wrapper {
+  flex: 1;
+  width: 100%;
+  animation: pageEnter 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: opacity, transform;
+}
+
+@keyframes pageEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .content-wrap {
   width: 100%;
   max-width: 1240px;
@@ -146,7 +202,7 @@ input:focus, select:focus, textarea:focus {
   flex: 1;
 }
 
-/* Buttons */
+/* Primary Button */
 .btn-primary {
   background: linear-gradient(135deg, #ea580c 0%, #f97316 100%);
   color: #fff;
@@ -158,21 +214,32 @@ input:focus, select:focus, textarea:focus {
   justify-content: center;
   gap: 8px;
   box-shadow: 0 2px 8px rgba(249, 115, 22, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              filter 0.18s ease,
+              background 0.2s ease;
+  position: relative;
+  overflow: hidden;
 }
-.btn-primary:hover {
-  filter: brightness(1.1);
-  transform: translateY(-1px);
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.12);
+  transform: translateY(-1.5px);
+  box-shadow: 0 6px 20px rgba(249, 115, 22, 0.45);
 }
-.btn-primary:active {
-  transform: translateY(0);
+.btn-primary:active:not(:disabled) {
+  transform: translateY(1px) scale(0.97) !important;
+  box-shadow: 0 2px 6px rgba(249, 115, 22, 0.25);
+  filter: brightness(0.95);
 }
 .btn-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-  transform: none;
+  transform: none !important;
+  box-shadow: none;
 }
 
+/* Secondary Button */
 .btn-secondary {
   background: var(--bg-card);
   color: var(--text-sub);
@@ -184,24 +251,54 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
   justify-content: center;
   gap: 8px;
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+              background 0.2s ease,
+              border-color 0.2s ease,
+              box-shadow 0.2s ease,
+              color 0.18s ease;
 }
-.btn-secondary:hover {
+.btn-secondary:hover:not(:disabled) {
   background: var(--bg-card-hover);
-  border-color: var(--border-hover);
+  border-color: var(--accent-orange-border);
   color: var(--text-main);
+  transform: translateY(-1.5px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+.btn-secondary:active:not(:disabled) {
+  transform: translateY(1px) scale(0.97) !important;
+  background: var(--bg-surface);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none !important;
 }
 
+/* Success Button */
 .btn-success {
-  background: var(--accent-emerald);
-  color: #06281e;
+  background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  color: #04241a;
   font-weight: 600;
   padding: 8px 16px;
   border-radius: var(--radius-sm);
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              filter 0.18s ease;
 }
-.btn-success:hover {
-  filter: brightness(1.1);
+.btn-success:hover:not(:disabled) {
+  filter: brightness(1.12);
+  transform: translateY(-1.5px);
+  box-shadow: 0 6px 18px rgba(16, 185, 129, 0.45);
+}
+.btn-success:active:not(:disabled) {
+  transform: translateY(1px) scale(0.97) !important;
+  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.25);
 }
 
+/* Danger Outline Button */
 .btn-danger-outline {
   background: transparent;
   color: var(--accent-rose);
@@ -210,9 +307,41 @@ input:focus, select:focus, textarea:focus {
   font-weight: 500;
   padding: 4px 10px;
   border-radius: var(--radius-sm);
+  transition: transform 0.16s cubic-bezier(0.16, 1, 0.3, 1),
+              background 0.2s ease,
+              border-color 0.2s ease,
+              color 0.18s ease;
 }
-.btn-danger-outline:hover {
+.btn-danger-outline:hover:not(:disabled) {
   background: var(--accent-rose-subtle);
+  border-color: var(--accent-rose);
+  transform: translateY(-1px);
+}
+.btn-danger-outline:active:not(:disabled) {
+  transform: translateY(1px) scale(0.96) !important;
+}
+
+/* Pill / Toggle Buttons */
+.btn-pill {
+  transition: transform 0.16s cubic-bezier(0.16, 1, 0.3, 1),
+              background 0.2s ease,
+              border-color 0.2s ease,
+              color 0.18s ease,
+              box-shadow 0.2s ease,
+              filter 0.18s ease;
+  user-select: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+}
+.btn-pill:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+.btn-pill:active {
+  transform: scale(0.96) translateY(0.5px) !important;
 }
 
 /* Cards & Surfaces */
@@ -223,14 +352,78 @@ input:focus, select:focus, textarea:focus {
   padding: 20px;
   position: relative;
   overflow: hidden;
-  transition: border-color var(--transition-fast), transform var(--transition-fast);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              background 0.2s ease,
+              box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .card-hover:hover {
-  border-color: var(--border-medium);
+  border-color: var(--accent-orange-border);
   background: var(--bg-card);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
+  transform: translateY(-3px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+.card:active {
+  transform: scale(0.99);
+}
+
+/* View Transitions API (Modern Cross-Page Motion) */
+@keyframes vtPageOut {
+  from {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.992) translateY(-6px);
+  }
+}
+
+@keyframes vtPageIn {
+  from {
+    opacity: 0;
+    transform: scale(1.008) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+::view-transition-old(root) {
+  animation: 0.22s cubic-bezier(0.2, 0, 0, 1) both vtPageOut;
+}
+
+::view-transition-new(root) {
+  animation: 0.26s cubic-bezier(0.2, 0, 0, 1) both vtPageIn;
+}
+
+::view-transition-image-pair(root) {
+  isolation: isolate;
+}
+
+/* Accessibility: Respect Reduced Motion Preferences */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+  .page-transition-wrapper {
+    animation: none !important;
+  }
+  button,
+  [role="button"],
+  .btn-primary,
+  .btn-secondary,
+  .btn-success,
+  .nav-item,
+  .card {
+    transition: none !important;
+    transform: none !important;
+  }
 }
 
 /* Status Badges */
