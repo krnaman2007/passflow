@@ -350,9 +350,9 @@ export default function EventDetailPage() {
                 </h4>
               </div>
               <p style={{ fontSize: 13, color: 'var(--text-sub)', marginBottom: 12 }}>
-                Wallet balance: ${purchaseSuccess.balanceBefore.toFixed(2)} →{' '}
+                Wallet balance: ₹{purchaseSuccess.balanceBefore.toLocaleString('en-IN', { minimumFractionDigits: 2 })} →{' '}
                 <strong style={{ color: 'var(--accent-emerald)' }}>
-                  ${(purchaseSuccess.balanceBefore - purchaseSuccess.totalCost).toFixed(2)}
+                  ₹{(purchaseSuccess.balanceBefore - purchaseSuccess.totalCost).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                 </strong>
                 . Your tickets are issued directly by the backend and ready to hold or trade.
               </p>
@@ -396,7 +396,7 @@ export default function EventDetailPage() {
                     <div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <strong style={{ fontSize: 15 }}>{tier.name}</strong>
-                        <span className="badge badge-neutral font-mono">${tier.price}</span>
+                        <span className="badge badge-neutral font-mono">₹{tier.price}</span>
                       </div>
                       <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4 }}>
                         {isTierSoldOut ? (
@@ -521,13 +521,13 @@ export default function EventDetailPage() {
                     <span>
                       {line.qty} x {line.name}
                     </span>
-                    <span className="font-mono">${line.cost.toFixed(2)}</span>
+                    <span className="font-mono">₹{line.cost.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
                   </div>
                 ))}
 
                 <div className="summary-line total">
                   <span>Total</span>
-                  <span className="font-mono">${totalCost.toFixed(2)}</span>
+                  <span className="font-mono">₹{totalCost.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
                 </div>
 
                 {currentRole !== 'PUBLIC' && (
@@ -540,7 +540,7 @@ export default function EventDetailPage() {
                       }}
                     >
                       <span>Wallet Balance:</span>
-                      <span className="font-mono">${walletBalance.toFixed(2)}</span>
+                      <span className="font-mono">₹{walletBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
                     </div>
                     <div
                       style={{
@@ -557,7 +557,7 @@ export default function EventDetailPage() {
                             balanceAfter >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                         }}
                       >
-                        ${balanceAfter.toFixed(2)}
+                        ₹{balanceAfter.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                       </span>
                     </div>
                   </div>

@@ -14,6 +14,7 @@ import {
   ArrowRight,
   ShieldAlert,
 } from 'lucide-react';
+import TradingChart from '../components/TradingChart';
 
 export default function MarketPage() {
   const {
@@ -208,36 +209,19 @@ export default function MarketPage() {
 
     setIsSubmitting(true);
     try {
-      // Attempt backend order placement if authenticated
-      if (activeEventId && activeCategoryId) {
-        try {
-          await api.orders.placeOrder({
-            eventId: activeEventId,
-            ticketCategoryId: activeCategoryId,
-            side: side === 'BUY' ? 'BID' : 'ASK',
-            type: orderType,
-            price: Math.round(numPrice * 100), // convert to paise
-            quantity: qty,
-          });
-        } catch (apiErr) {
-          // If 401 or backend mock user session, gracefully fallback to local handler
-          console.warn('Backend order placement routed to local balance ledger:', apiErr.message);
-        }
-      }
-
-      placeOrder({
+      await placeOrder({
         side,
         type: orderType,
         price: numPrice,
         qty,
         eventId: activeEventId,
         categoryId: activeCategoryId,
-        tier: currentTier.name,
+        tier: currentTier?.name || 'General',
       });
 
       refetchMarket();
     } catch (err) {
-      showToast(err.message || 'Failed to place order', 'error');
+      console.warn('Market order placement failed:', err.message);
     } finally {
       setIsSubmitting(false);
     }
@@ -514,6 +498,15 @@ export default function MarketPage() {
           </span>
         </div>
       </div>
+
+      {/* Real OHLC Candlestick Chart */}
+      <TradingChart
+        eventId={activeEventId}
+        categoryId={activeCategoryId}
+        eventName={currentEvent?.title || currentEvent?.name}
+        tierName={currentTier?.name}
+        basePrice={currentTier?.price}
+      />
 
       {/* Main 2-column Grid: Orderbook on Left, Order Form on Right */}
       <div className="trading-desk-grid">

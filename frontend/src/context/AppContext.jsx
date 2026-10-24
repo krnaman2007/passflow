@@ -520,204 +520,109 @@ export function AppProvider({ children }) {
     }
   }, [currentUser, currentRole]);
 
-  // Primary Purchase Handler (Flow A)
-  const purchasePrimaryTickets = (eventId, selectedTiers) => {
-    // selectedTiers: { [tierId]: qty }
-    const event = events.find((e) => e.id === eventId);
-    if (!event) return false;
+  // Real-Time WebSocket Push Subscriptions (Part 3)
+  useEffect(() => {
+    const unsubWallet = marketStream.onWalletUpdate(() => {
+      syncLiveWallet();
+      fetchLiveWalletTransactions();
+    });
 
-    let totalCost = 0;
-    let totalQty = 0;
-    const tierSummaries = [];
-
-    Object.entries(selectedTiers).forEach(([tierId, qty]) => {
-      if (qty > 0) {
-        const tier = event.tiers.find((t) => t.id === tierId);
-        if (tier) {
-          totalCost += tier.price * qty;
-          totalQty += qty;
-          tierSummaries.push(`${qty}x ${tier.name}`);
-        }
+    const unsubFill = marketStream.onOrderFill((fillPayload) => {
+      fetchLiveOrders();
+      syncLiveWallet();
+      fetchLiveTickets();
+      if (fillPayload?.tradeId) {
+        showToast(`Trade match executed (#${String(fillPayload.tradeId).slice(0, 8)})`, 'info');
       }
     });
 
-    if (totalQty === 0) {
-      showToast('Please select at least 1 ticket.', 'warning');
-      return false;
-    }
+    const unsubNotif = marketStream.onNotification((notif) => {
+      fetchLiveNotifications();
+      if (notif?.message) {
+        showToast(notif.message, 'info');
+      }
+    });
 
-    if (wallet.available < totalCost) {
-      showToast(`Insufficient balance: Need $${totalCost.toFixed(2)}, Available $${wallet.available.toFixed(2)}`, 'error');
-      return false;
-    }
-
-    // Deduct wallet
-    const newBalance = wallet.balance - totalCost;
-    const newAvailable = wallet.available - totalCost;
-    const newTx = {
-      id: `tx_${Date.now()}`,
-      type: 'PURCHASE',
-      amount: -totalCost,
-      status: 'Done',
-      date: 'Just now',
-      note: `${event.title} (${tierSummaries.join(', ')})`
+    return () => {
+      unsubWallet();
+      unsubFill();
+      unsubNotif();
     };
+  }, []);
 
-    setWallet((prev) => ({
-      ...prev,
-      balance: newBalance,
-      available: newAvailable,
-      transactions: [newTx, ...prev.transactions]
-    }));
+  // Primary Ticket Purchase (Real Backend: POST /api/v1/events/:id/purchase)
+  const purchasePrimaryTickets = async (eventId, selectedTiers) => {
+    const entries = Object.entries(selectedTiers).filter(([_, qty]) => Number(qty) > 0);
+    if (entries.length === 0) {
+      showToast('Please select at least 1 ticket to purchase.', 'warning');
+      return false;
+    }
 
-    // Create tickets
-    const newTickets = [];
-    Object.entries(selectedTiers).forEach(([tierId, qty]) => {
-      const tier = event.tiers.find((t) => t.id === tierId);
-      for (let i = 0; i < qty; i++) {
-        const ticketNumber = Math.floor(10000 + Math.random() * 90000);
-        newTickets.push({
-          id: `TK-${ticketNumber}`,
-          eventId: event.id,
-          eventName: event.title,
-          tier: tier.name,
-          status: 'OWNED',
-          pricePaid: tier.price,
-          faceValue: tier.price,
-          resaleCap: tier.cap || 120,
-          qrPayload: `PASSFLOW-TICKET-${event.id.toUpperCase()}-TK-${ticketNumber}-AUTH`,
-          ownershipChain: [
-            { type: 'PRIMARY', user: currentUser?.name || 'Ali K.', action: `Bought from organizer, $${tier.price}`, date: 'Just now' }
-          ]
+    try {
+      let totalPurchased = 0;
+      for (const [categoryId, qty] of entries) {
+        const idempotencyKey = `buy-${eventId}-${categoryId}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+        await api.tickets.purchaseTickets(eventId, {
+          categoryId,
+          quantity: Number(qty),
+          idempotencyKey,
         });
+        totalPurchased += Number(qty);
       }
-    });
 
-    setUserTickets((prev) => [...newTickets, ...prev]);
+      // Synchronize authoritative state from PostgreSQL backend
+      await fetchLiveTickets();
+      await syncLiveWallet();
+      await fetchLiveWalletTransactions();
 
-    // Update event inventory
-    setEvents((prevEvents) =>
-      prevEvents.map((ev) => {
-        if (ev.id !== eventId) return ev;
-        return {
-          ...ev,
-          tiers: ev.tiers.map((t) => {
-            const purchased = selectedTiers[t.id] || 0;
-            return {
-              ...t,
-              left: Math.max(0, t.left - purchased)
-            };
-          })
-        };
-      })
-    );
-
-    // Notification
-    const notif = {
-      id: `notif_${Date.now()}`,
-      title: 'Tickets Purchased Successfully',
-      body: `You bought ${totalQty} ticket(s) for ${event.title} (-$${totalCost.toFixed(2)})`,
-      time: 'Just now',
-      unread: true,
-      type: 'PURCHASE'
-    };
-    setNotifications((prev) => [notif, ...prev]);
-
-    showToast(`✓ ${totalQty} tickets added to your inventory!`, 'success');
-    return true;
+      showToast(`✓ Successfully purchased ${totalPurchased} ticket(s) from primary issuer!`, 'success');
+      return true;
+    } catch (err) {
+      console.error('Primary ticket purchase failed:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to complete primary purchase';
+      showToast(msg, 'error');
+      throw err;
+    }
   };
 
-  // Resale: Place Order (Flow B)
-  const placeOrder = ({ side, type, price, qty, eventId = 'nightfall', tier = 'General' }) => {
+  // Resale: Place Order (Real Backend: POST /api/v1/orders)
+  const placeOrder = async ({ side, type = 'LIMIT', price, qty, eventId, categoryId, ticketCategoryId, tier }) => {
     const numPrice = parseFloat(price);
     const numQty = parseInt(qty, 10);
-    const total = numPrice * numQty;
+    const catId = categoryId || ticketCategoryId;
 
-    // Check anti-scalping cap
-    const capRule = adminData.rules.find((r) => r.eventId === eventId && r.tier === tier && r.enabled);
-    if (capRule && numPrice > capRule.maxPrice) {
-      showToast(`Rejected: Price $${numPrice} exceeds anti-scalping cap ($${capRule.maxPrice})`, 'error');
+    if (!eventId || !catId) {
+      showToast('Event and Ticket Category are required to place an order.', 'error');
       return false;
     }
 
-    const targetEvent = events.find((e) => e.id === eventId);
-    const eventName = targetEvent?.title || 'Live Exchange Event';
+    const pricePaise = Math.round(numPrice * 100);
+    const idempotencyKey = `ord-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 
-    if (side === 'BUY') {
-      if (wallet.available < total) {
-        showToast(`Insufficient funds: Need $${total.toFixed(2)}, Available: $${wallet.available.toFixed(2)}`, 'error');
-        return false;
-      }
-
-      // Hold funds
-      setWallet((prev) => ({
-        ...prev,
-        held: prev.held + total,
-        available: prev.available - total,
-        transactions: [
-          {
-            id: `tx_${Date.now()}`,
-            type: 'HOLD',
-            amount: total,
-            status: 'Held',
-            date: 'Just now',
-            note: `Buy ${numQty} @ $${numPrice.toFixed(2)} (${tier})`
-          },
-          ...prev.transactions
-        ]
-      }));
-
-      const newOrder = {
-        id: `ORD-${Math.floor(1000 + Math.random() * 9000)}`,
+    try {
+      const res = await api.orders.placeOrder({
         eventId,
-        eventName,
-        tier,
-        side: 'BUY',
-        type,
-        qty: numQty,
-        price: numPrice,
-        filled: 0,
-        status: 'OPEN',
-        heldAmount: total,
-        date: 'Just now'
-      };
+        ticketCategoryId: catId,
+        side: side === 'BUY' || side === 'BID' ? 'BUY' : 'SELL',
+        type: type || 'LIMIT',
+        price: pricePaise,
+        quantity: numQty,
+        idempotencyKey,
+      });
 
-      setUserOrders((prev) => [newOrder, ...prev]);
-      showToast(`Buy order placed: ${numQty}x ${tier} @ $${numPrice}. $${total.toFixed(2)} held in wallet.`, 'success');
-      return true;
-    } else {
-      // SELL order
-      // Check if user has an OWNED ticket in this category
-      const ownedTicket = userTickets.find((t) => t.status === 'OWNED' && t.tier.toLowerCase() === tier.toLowerCase());
-      if (!ownedTicket) {
-        showToast(`You do not own any unlisted ${tier} tickets to sell.`, 'error');
-        return false;
-      }
+      // Refresh authoritative orders, wallet, and tickets
+      await fetchLiveOrders();
+      await syncLiveWallet();
+      await fetchLiveWalletTransactions();
+      await fetchLiveTickets();
 
-      // Lock ticket as LISTED
-      setUserTickets((prev) =>
-        prev.map((t) => (t.id === ownedTicket.id ? { ...t, status: 'LISTED', listedPrice: numPrice } : t))
-      );
-
-      const newOrder = {
-        id: `ORD-${Math.floor(1000 + Math.random() * 9000)}`,
-        eventId,
-        eventName,
-        tier,
-        side: 'SELL',
-
-        type,
-        qty: 1,
-        price: numPrice,
-        filled: 0,
-        status: 'OPEN',
-        ticketId: ownedTicket.id,
-        date: 'Just now'
-      };
-
-      setUserOrders((prev) => [newOrder, ...prev]);
-      showToast(`Ticket #${ownedTicket.id} listed for resale at $${numPrice.toFixed(2)}!`, 'success');
-      return true;
+      showToast(`✓ ${side} limit order placed on matching engine for ₹${numPrice.toLocaleString('en-IN')}`, 'success');
+      return res?.data || res;
+    } catch (err) {
+      console.error('Order placement failed:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to place order';
+      showToast(msg, 'error');
+      throw err;
     }
   };
 

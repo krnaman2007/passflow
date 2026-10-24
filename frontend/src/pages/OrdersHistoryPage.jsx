@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
+import { api } from '../services/api';
 import {
   FileText,
   ArrowRight,
@@ -23,7 +24,6 @@ export default function OrdersHistoryPage() {
     wallet,
     currentRole,
     login,
-    api,
     showToast
   } = useApp();
 

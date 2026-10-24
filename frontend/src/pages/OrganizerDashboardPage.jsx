@@ -16,7 +16,10 @@ import {
   DollarSign,
   ShieldCheck,
   Lock,
-  ExternalLink
+  ExternalLink,
+  Edit3,
+  Gavel,
+  X
 } from 'lucide-react';
 import { api } from '../services/api';
 import { formatBackendEvent } from '../utils/eventAdapter';
@@ -44,6 +47,19 @@ export default function OrganizerDashboardPage() {
   const [tierPrice, setTierPrice] = useState('');
   const [tierQty, setTierQty] = useState('');
   const [isAddingTier, setIsAddingTier] = useState(false);
+
+  // Edit tier & inventory state
+  const [editingTierId, setEditingTierId] = useState(null);
+  const [editPrice, setEditPrice] = useState('');
+  const [editTotalQty, setEditTotalQty] = useState('');
+  const [isSavingTierEdit, setIsSavingTierEdit] = useState(false);
+
+  // Dutch auction state
+  const [auctionTier, setAuctionTier] = useState(null);
+  const [auctionStartPrice, setAuctionStartPrice] = useState('');
+  const [auctionMinPrice, setAuctionMinPrice] = useState('');
+  const [auctionDurationHours, setAuctionDurationHours] = useState('24');
+  const [isCreatingAuction, setIsCreatingAuction] = useState(false);
 
   // Load Organizer Events from Backend
   const loadOrganizerData = useCallback(async (showNotification = false) => {
@@ -171,6 +187,92 @@ export default function OrganizerDashboardPage() {
       // toast shown in AppContext
     } finally {
       setIsPublishingId(null);
+    }
+  };
+
+  const handleStartEditTier = (tier) => {
+    setEditingTierId(tier.id);
+    setEditPrice(String(tier.price || ''));
+    setEditTotalQty(String(tier.total || ''));
+  };
+
+  const handleSaveTierEdit = async (tier) => {
+    setIsSavingTierEdit(true);
+    try {
+      const p = parseFloat(editPrice);
+      const q = parseInt(editTotalQty, 10);
+      let updatedSomething = false;
+
+      if (!isNaN(p) && p > 0 && p !== tier.price) {
+        await api.events.updateCategory(tier.id, { originalPrice: p });
+        updatedSomething = true;
+      }
+
+      if (!isNaN(q) && q >= 0 && q !== tier.total) {
+        await api.events.updateCategoryInventory(tier.id, { totalQuantity: q });
+        updatedSomething = true;
+      }
+
+      if (updatedSomething) {
+        showToast(`Category tier "${tier.name}" updated successfully in database!`, 'success');
+        await loadOrganizerData();
+      }
+      setEditingTierId(null);
+    } catch (err) {
+      console.error('Failed to update category tier:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to update category';
+      showToast(msg, 'error');
+    } finally {
+      setIsSavingTierEdit(false);
+    }
+  };
+
+  const handleOpenAuction = (tier) => {
+    setAuctionTier(tier);
+    setAuctionStartPrice(String(Math.round(tier.price * 1.5)));
+    setAuctionMinPrice(String(tier.price));
+    setAuctionDurationHours('24');
+  };
+
+  const handleCreateDutchAuction = async (e) => {
+    e.preventDefault();
+    if (!auctionTier || !selectedEvent?.id) return;
+
+    const startP = parseFloat(auctionStartPrice);
+    const minP = parseFloat(auctionMinPrice);
+    const durationH = parseFloat(auctionDurationHours) || 24;
+
+    if (isNaN(startP) || startP <= 0 || isNaN(minP) || minP <= 0) {
+      showToast('Start price and minimum reserve price must be positive numbers', 'warning');
+      return;
+    }
+
+    if (minP >= startP) {
+      showToast('Minimum reserve price must be lower than the start price for a Dutch auction', 'warning');
+      return;
+    }
+
+    setIsCreatingAuction(true);
+    try {
+      const now = new Date();
+      const end = new Date(now.getTime() + durationH * 3600 * 1000);
+      await api.auctions.createAuction({
+        eventId: selectedEvent.id,
+        categoryId: auctionTier.id,
+        startPrice: startP,
+        minPrice: minP,
+        startTime: now.toISOString(),
+        endTime: end.toISOString()
+      });
+
+      showToast(`Dutch auction created for tier "${auctionTier.name}"! Price drops from ₹${startP} to ₹${minP}`, 'success');
+      setAuctionTier(null);
+    } catch (err) {
+      console.error('Failed to create Dutch auction:', err);
+      const msg = err?.data?.error?.message || err?.message || 'Failed to launch Dutch auction';
+      showToast(msg, 'error');
+    } finally {
+      setIsCreatingAuction(false);
     }
   };
 
@@ -570,6 +672,8 @@ export default function OrganizerDashboardPage() {
                   const sold = Math.max(0, (tier.total || 0) - (tier.left || 0));
                   const pctSold = tier.total > 0 ? Math.round((sold / tier.total) * 100) : 0;
 
+                  const isEditingThis = editingTierId === tier.id;
+
                   return (
                     <div
                       key={tier.id}
@@ -577,30 +681,118 @@ export default function OrganizerDashboardPage() {
                         background: 'var(--bg-app)',
                         padding: 14,
                         borderRadius: 'var(--radius-md)',
-                        border: '1px solid var(--border-subtle)',
+                        border: isEditingThis ? '1px solid var(--accent-orange)' : '1px solid var(--border-subtle)',
                         display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        flexWrap: 'wrap',
-                        gap: 12
+                        flexDirection: 'column',
+                        gap: 10
                       }}
                     >
-                      <div>
-                        <strong style={{ fontSize: 14, color: 'var(--text-main)' }}>{tier.name}</strong>
-                        <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>
-                          Face price: <span className="font-mono">₹{tier.price}</span> · Resale cap: <span className="font-mono" style={{ color: 'var(--accent-orange)' }}>₹{tier.cap || tier.price * 2}</span>
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                          gap: 12
+                        }}
+                      >
+                        <div>
+                          <strong style={{ fontSize: 14, color: 'var(--text-main)' }}>{tier.name}</strong>
+                          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>
+                            Face price: <span className="font-mono">₹{tier.price}</span> · Resale cap: <span className="font-mono" style={{ color: 'var(--accent-orange)' }}>₹{tier.cap || tier.price * 2}</span>
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                          <div style={{ textAlign: 'right' }}>
+                            <div className="font-mono" style={{ fontSize: 13, fontWeight: 600 }}>
+                              <span style={{ color: 'var(--accent-emerald)' }}>{tier.left} avail</span>,{' '}
+                              <span style={{ color: 'var(--text-muted)' }}>{sold} sold</span>
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+                              Quota: {tier.total} tickets ({pctSold}% allocated)
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              style={{ padding: '5px 8px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}
+                              onClick={() => (isEditingThis ? setEditingTierId(null) : handleStartEditTier(tier))}
+                              title="Update base price or inventory quota"
+                            >
+                              <Edit3 size={12} />
+                              <span>{isEditingThis ? 'Cancel' : 'Edit'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              style={{ padding: '5px 8px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, borderColor: 'var(--accent-orange-border)' }}
+                              onClick={() => handleOpenAuction(tier)}
+                              title="Launch Dutch price decay auction"
+                            >
+                              <Gavel size={12} color="var(--accent-orange)" />
+                              <span>Auction</span>
+                            </button>
+                          </div>
                         </div>
                       </div>
 
-                      <div style={{ textAlign: 'right' }}>
-                        <div className="font-mono" style={{ fontSize: 13, fontWeight: 600 }}>
-                          <span style={{ color: 'var(--accent-emerald)' }}>{tier.left} avail</span>,{' '}
-                          <span style={{ color: 'var(--text-muted)' }}>{sold} sold</span>
+                      {/* Inline Tier & Inventory Editor */}
+                      {isEditingThis && (
+                        <div
+                          style={{
+                            paddingTop: 10,
+                            borderTop: '1px solid var(--border-subtle)',
+                            display: 'flex',
+                            gap: 10,
+                            alignItems: 'center',
+                            flexWrap: 'wrap'
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Price (₹):</label>
+                            <input
+                              type="number"
+                              step="1"
+                              min="1"
+                              value={editPrice}
+                              onChange={(e) => setEditPrice(e.target.value)}
+                              style={{ width: 100, fontSize: 12, padding: '4px 8px' }}
+                            />
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Total Quota:</label>
+                            <input
+                              type="number"
+                              min={sold}
+                              value={editTotalQty}
+                              onChange={(e) => setEditTotalQty(e.target.value)}
+                              style={{ width: 100, fontSize: 12, padding: '4px 8px' }}
+                            />
+                          </div>
+
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            disabled={isSavingTierEdit}
+                            style={{ padding: '5px 12px', fontSize: 11 }}
+                            onClick={() => handleSaveTierEdit(tier)}
+                          >
+                            {isSavingTierEdit ? 'Saving...' : 'Save Changes'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            style={{ padding: '5px 10px', fontSize: 11 }}
+                            onClick={() => setEditingTierId(null)}
+                          >
+                            Cancel
+                          </button>
                         </div>
-                        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
-                          Quota: {tier.total} tickets ({pctSold}% allocated)
-                        </div>
-                      </div>
+                      )}
                     </div>
                   );
                 })
@@ -746,6 +938,100 @@ export default function OrganizerDashboardPage() {
                 Primary revenues are settled to your linked organizer account within 24 hours of gate validation. Anti-scalping caps protect your fans from secondary price gouging.
               </p>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dutch Auction Creation Modal */}
+      {auctionTier && (
+        <div className="modal-overlay" onClick={() => setAuctionTier(null)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
+            <button
+              onClick={() => setAuctionTier(null)}
+              style={{ position: 'absolute', top: 16, right: 16, color: 'var(--text-dim)', background: 'transparent', border: 'none', cursor: 'pointer' }}
+            >
+              <X size={18} />
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 'var(--radius-sm)', background: 'var(--accent-orange-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Gavel size={18} color="var(--accent-orange)" />
+              </div>
+              <div>
+                <h3 style={{ fontSize: 17, margin: 0 }}>Launch Dutch Auction</h3>
+                <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
+                  {selectedEvent?.title} · Tier: {auctionTier.name}
+                </p>
+              </div>
+            </div>
+
+            <p style={{ fontSize: 12, color: 'var(--text-sub)', marginBottom: 16 }}>
+              In a Dutch auction, the ticket price starts high and continuously drops linearly over time until buyers purchase tickets or the reserve price is reached.
+            </p>
+
+            <form onSubmit={handleCreateDutchAuction}>
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
+                  Starting Price (₹)
+                </label>
+                <input
+                  type="number"
+                  step="1"
+                  required
+                  value={auctionStartPrice}
+                  onChange={(e) => setAuctionStartPrice(e.target.value)}
+                  style={{ width: '100%', fontSize: 14 }}
+                />
+              </div>
+
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
+                  Minimum Reserve Price (₹)
+                </label>
+                <input
+                  type="number"
+                  step="1"
+                  required
+                  value={auctionMinPrice}
+                  onChange={(e) => setAuctionMinPrice(e.target.value)}
+                  style={{ width: '100%', fontSize: 14 }}
+                />
+              </div>
+
+              <div style={{ marginBottom: 18 }}>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-sub)', marginBottom: 4 }}>
+                  Auction Duration (Hours)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="168"
+                  required
+                  value={auctionDurationHours}
+                  onChange={(e) => setAuctionDurationHours(e.target.value)}
+                  style={{ width: '100%', fontSize: 14 }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ flex: 1 }}
+                  onClick={() => setAuctionTier(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  style={{ flex: 2 }}
+                  disabled={isCreatingAuction}
+                >
+                  {isCreatingAuction ? 'Deploying Auction...' : 'Launch Dutch Auction'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

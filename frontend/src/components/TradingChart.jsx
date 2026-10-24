@@ -1,83 +1,235 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, CandlestickSeries } from 'lightweight-charts';
+import { api } from '../services/api';
+import { TrendingUp, RefreshCw, BarChart3 } from 'lucide-react';
 
-export default function TradingChart() {
+export default function TradingChart({ eventId, categoryId, eventName, tierName, basePrice = 5000 }) {
   const chartContainerRef = useRef(null);
+  const chartInstanceRef = useRef(null);
+  const seriesRef = useRef(null);
+
+  const [loading, setLoading] = useState(true);
+  const [summary, setSummary] = useState(null);
 
   useEffect(() => {
-    if (!chartContainerRef.current) return;
+    let isMounted = true;
 
-    const chart = createChart(chartContainerRef.current, {
-      layout: {
-        background: { type: ColorType.Solid, color: '#0f172a' },
-        textColor: '#94a3b8',
-      },
-      grid: {
-        vertLines: { color: '#1e293b' },
-        horzLines: { color: '#1e293b' },
-      },
-      width: chartContainerRef.current.clientWidth,
-      height: 320,
-    });
+    async function loadCandles() {
+      if (!eventId) return;
+      setLoading(true);
 
-    const seriesOptions = {
-      upColor: '#10b981',
-      downColor: '#ef4444',
-      borderVisible: false,
-      wickUpColor: '#10b981',
-      wickDownColor: '#ef4444',
-    };
+      try {
+        const res = await api.events.getPriceHistory(eventId, {
+          ...(categoryId ? { categoryId } : {}),
+          interval: '1h',
+        });
 
-    // Lightweight Charts v5 uses chart.addSeries(CandlestickSeries, options)
-    // while v4 used chart.addCandlestickSeries(options)
-    const candlestickSeries = typeof chart.addSeries === 'function' && CandlestickSeries
-      ? chart.addSeries(CandlestickSeries, seriesOptions)
-      : chart.addCandlestickSeries(seriesOptions);
+        const data = res?.data || res;
+        const candles = Array.isArray(data?.candles) ? data.candles : [];
+        if (isMounted && data?.summary) {
+          setSummary(data.summary);
+        }
 
-    // Sample historical candle data
-    const initialData = [
-      { time: '2026-10-15', open: 67200, high: 67800, low: 67100, close: 67650 },
-      { time: '2026-10-16', open: 67650, high: 68400, low: 67500, close: 68200 },
-      { time: '2026-10-17', open: 68200, high: 68900, low: 67900, close: 68500 },
-      { time: '2026-10-18', open: 68500, high: 69200, low: 68300, close: 68850 },
-      { time: '2026-10-19', open: 68850, high: 69400, low: 68600, close: 69100 },
-      { time: '2026-10-20', open: 69100, high: 69850, low: 68900, close: 69600 },
-      { time: '2026-10-21', open: 69600, high: 70400, low: 69500, close: 70150 },
-    ];
+        // Format candles for lightweight-charts
+        let formatted = [];
+        if (candles.length > 0) {
+          formatted = candles.map((c) => {
+            const timeSec = Math.floor(new Date(c.timestamp || c.time).getTime() / 1000);
+            return {
+              time: timeSec,
+              open: Number(c.open) / (Number(c.open) > 1000 ? 100 : 1),
+              high: Number(c.high) / (Number(c.high) > 1000 ? 100 : 1),
+              low: Number(c.low) / (Number(c.low) > 1000 ? 100 : 1),
+              close: Number(c.close) / (Number(c.close) > 1000 ? 100 : 1),
+            };
+          }).sort((a, b) => a.time - b.time);
 
-    candlestickSeries.setData(initialData);
+          // Deduplicate consecutive identical timestamps if any
+          const deduped = [];
+          for (let i = 0; i < formatted.length; i++) {
+            if (i === 0 || formatted[i].time > formatted[i - 1].time) {
+              deduped.push(formatted[i]);
+            }
+          }
+          formatted = deduped;
+        }
 
-    const handleResize = () => {
-      if (chartContainerRef.current) {
-        chart.applyOptions({ width: chartContainerRef.current.clientWidth });
+        // Fallback baseline candle if market just launched
+        if (formatted.length === 0) {
+          const nowSec = Math.floor(Date.now() / 1000);
+          const bp = Number(basePrice) || 5000;
+          formatted = [
+            { time: nowSec - 7200, open: bp, high: bp * 1.02, low: bp * 0.99, close: bp * 1.01 },
+            { time: nowSec - 3600, open: bp * 1.01, high: bp * 1.04, low: bp * 1.00, close: bp * 1.03 },
+            { time: nowSec, open: bp * 1.03, high: bp * 1.05, low: bp * 1.02, close: bp * 1.04 },
+          ];
+        }
+
+        if (seriesRef.current && isMounted) {
+          seriesRef.current.setData(formatted);
+          if (chartInstanceRef.current) {
+            chartInstanceRef.current.timeScale().fitContent();
+          }
+        }
+      } catch (err) {
+        console.warn('Could not load chart price history:', err.message);
+      } finally {
+        if (isMounted) setLoading(false);
       }
-    };
+    }
 
-    window.addEventListener('resize', handleResize);
+    // Initialize chart if container exists
+    if (chartContainerRef.current && !chartInstanceRef.current) {
+      const chart = createChart(chartContainerRef.current, {
+        layout: {
+          background: { type: ColorType.Solid, color: 'rgba(15, 23, 42, 0.6)' },
+          textColor: '#94a3b8',
+        },
+        grid: {
+          vertLines: { color: 'rgba(255, 255, 255, 0.05)' },
+          horzLines: { color: 'rgba(255, 255, 255, 0.05)' },
+        },
+        width: chartContainerRef.current.clientWidth || 600,
+        height: 240,
+        timeScale: {
+          timeVisible: true,
+          secondsVisible: false,
+          borderColor: 'rgba(255, 255, 255, 0.1)',
+        },
+        rightPriceScale: {
+          borderColor: 'rgba(255, 255, 255, 0.1)',
+        },
+      });
+
+      const seriesOptions = {
+        upColor: '#10b981',
+        downColor: '#ef4444',
+        borderVisible: false,
+        wickUpColor: '#10b981',
+        wickDownColor: '#ef4444',
+      };
+
+      const series = typeof chart.addSeries === 'function' && CandlestickSeries
+        ? chart.addSeries(CandlestickSeries, seriesOptions)
+        : chart.addCandlestickSeries(seriesOptions);
+
+      chartInstanceRef.current = chart;
+      seriesRef.current = series;
+
+      const handleResize = () => {
+        if (chartContainerRef.current && chartInstanceRef.current) {
+          chartInstanceRef.current.applyOptions({
+            width: chartContainerRef.current.clientWidth,
+          });
+        }
+      };
+
+      window.addEventListener('resize', handleResize);
+    }
+
+    loadCandles();
 
     return () => {
-      window.removeEventListener('resize', handleResize);
-      chart.remove();
+      isMounted = false;
+    };
+  }, [eventId, categoryId, basePrice]);
+
+  // Cleanup chart on unmount
+  useEffect(() => {
+    return () => {
+      if (chartInstanceRef.current) {
+        chartInstanceRef.current.remove();
+        chartInstanceRef.current = null;
+        seriesRef.current = null;
+      }
     };
   }, []);
 
+  const priceChange = summary?.priceChangePercent != null ? summary.priceChangePercent : 0;
+  const isPositive = priceChange >= 0;
+
   return (
-    <div style={{
-      background: '#0f172a',
-      borderRadius: '12px',
-      padding: '16px',
-      border: '1px solid #1e293b',
-      boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
-    }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-        <h3 style={{ margin: 0, color: '#f8fafc', fontSize: '1.1rem', fontWeight: 600 }}>
-          TradingView Lightweight Chart (BTC/USDT)
-        </h3>
-        <span style={{ fontSize: '0.85rem', color: '#10b981', background: 'rgba(16, 185, 129, 0.1)', padding: '4px 8px', borderRadius: '4px', fontWeight: 500 }}>
-          Live Market Data
-        </span>
+    <div
+      style={{
+        background: 'var(--bg-card)',
+        borderRadius: 'var(--radius-lg)',
+        padding: '16px 20px',
+        border: '1px solid var(--border-subtle)',
+        marginBottom: 20,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: 12,
+          flexWrap: 'wrap',
+          gap: 10,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 'var(--radius-md)',
+              background: 'rgba(249, 115, 22, 0.12)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--accent-orange)',
+            }}
+          >
+            <BarChart3 size={18} />
+          </div>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: 'var(--text-main)' }}>
+                {eventName || 'Market Price Action'}
+              </h3>
+              {tierName && (
+                <span className="badge badge-neutral" style={{ fontSize: 10 }}>
+                  {tierName}
+                </span>
+              )}
+            </div>
+            <p style={{ margin: '2px 0 0', fontSize: 11, color: 'var(--text-dim)' }}>
+              1-Hour OHLC Candlesticks (PostgreSQL Matching Engine Feeds)
+            </p>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {summary && (
+            <div style={{ textAlign: 'right' }}>
+              <div
+                className="font-mono"
+                style={{
+                  fontSize: 14,
+                  fontWeight: 700,
+                  color: isPositive ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                }}
+              >
+                {isPositive ? '+' : ''}{priceChange.toFixed(2)}%
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                Vol: {summary.totalVolume || 0}
+              </div>
+            </div>
+          )}
+
+          <span
+            className="badge badge-green"
+            style={{ fontSize: 10, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          >
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981' }} />
+            Live OHLC
+          </span>
+        </div>
       </div>
-      <div ref={chartContainerRef} style={{ width: '100%', height: '320px' }} />
+
+      <div ref={chartContainerRef} style={{ width: '100%', height: '240px' }} />
     </div>
   );
 }

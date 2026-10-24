@@ -63,6 +63,7 @@ export class MarketStreamClient {
     this.statusListeners = new Set();
     this.fillListeners = new Set();
     this.walletListeners = new Set();
+    this.notificationListeners = new Set();
 
     // Active market subscriptions: key -> { eventId, ticketCategoryId, callbacks, currentSequence, seenTrades, resyncTimer, resyncCount }
     this.subscriptions = new Map();
@@ -167,15 +168,27 @@ export class MarketStreamClient {
     socket.on('market:orderbook', (update) => {
       this._handleOrderBookUpdate(update);
     });
+    socket.on('depth:update', (update) => {
+      this._handleOrderBookUpdate(update);
+    });
+    socket.on('market:update', (update) => {
+      this._handleOrderBookUpdate(update);
+    });
 
     // 3. Trade Execution Event
     socket.on('market:trade', (trade) => {
+      this._handleTrade(trade);
+    });
+    socket.on('trade:new', (trade) => {
       this._handleTrade(trade);
     });
 
     // 4. Private Order-Fill Notification
     socket.on('order:fill', (fill) => {
       this._handleOrderFill(fill);
+    });
+    socket.on('order:status', (status) => {
+      this._handleOrderFill(status);
     });
 
     // 5. Market Error Notification
@@ -186,6 +199,11 @@ export class MarketStreamClient {
     // 6. Real-Time Wallet Update Notification (Balance / Hold changes)
     socket.on('wallet:update', (wallet) => {
       this._handleWalletUpdate(wallet);
+    });
+
+    // 7. Real-Time System & User Notification
+    socket.on('notification', (notif) => {
+      this._handleNotification(notif);
     });
   }
 
@@ -629,6 +647,38 @@ export class MarketStreamClient {
     for (const listener of this.walletListeners) {
       try {
         listener(wallet);
+      } catch {
+        // Ignore listener exceptions
+      }
+    }
+  }
+
+  /**
+   * Registers a callback for real-time notifications.
+   * Event: 'notification'
+   *
+   * @param {Function} callback
+   * @returns {Function} Unsubscribe listener
+   */
+  onNotification(callback) {
+    if (typeof callback === 'function') {
+      this.notificationListeners.add(callback);
+      return () => this.notificationListeners.delete(callback);
+    }
+    return () => {};
+  }
+
+  /**
+   * Handles incoming authenticated `notification` events.
+   *
+   * @private
+   * @param {Object} notif
+   */
+  _handleNotification(notif) {
+    if (!notif) return;
+    for (const listener of this.notificationListeners) {
+      try {
+        listener(notif);
       } catch {
         // Ignore listener exceptions
       }

@@ -401,7 +401,7 @@ export default function Modals() {
                 <AlertTriangle size={18} color="#f43f5e" />
               </div>
               <div>
-                <h3 style={{ fontSize: 17 }}>Settlement Discrepancy #8821</h3>
+                <h3 style={{ fontSize: 17 }}>Settlement Discrepancy #{data?.id || '8821'}</h3>
                 <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                   Review mismatched ledger & escrow state
                 </p>
@@ -411,15 +411,17 @@ export default function Modals() {
             <div style={{ background: 'var(--bg-card)', padding: 16, borderRadius: 'var(--radius-md)', marginBottom: 20 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 13 }}>
                 <span style={{ color: 'var(--text-muted)' }}>Trade Reference:</span>
-                <span className="font-mono">T-5530 (Nightfall Festival)</span>
+                <span className="font-mono">{data?.tradeRef || data?.tradeId || 'Execution #' + (data?.id || '5530')}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 13 }}>
                 <span style={{ color: 'var(--text-muted)' }}>Mismatched Escrow Amount:</span>
-                <span className="font-mono" style={{ color: 'var(--accent-rose)', fontWeight: 600 }}>$212.00</span>
+                <span className="font-mono" style={{ color: 'var(--accent-rose)', fontWeight: 600 }}>
+                  ₹{Number(data?.amount || data?.discrepancy || 21200).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                </span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
                 <span style={{ color: 'var(--text-muted)' }}>Failure Reason:</span>
-                <span style={{ color: 'var(--text-sub)' }}>Bank gateway lock timeout during settlement</span>
+                <span style={{ color: 'var(--text-sub)' }}>{data?.reason || 'Atomic settlement timeout or concurrency retry threshold exceeded'}</span>
               </div>
             </div>
 
@@ -431,7 +433,7 @@ export default function Modals() {
                 className="btn-primary"
                 style={{ flex: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
                 onClick={() => {
-                  retrySettlement('8821');
+                  retrySettlement(data?.id || data?.settlementId || '8821');
                   handleClose();
                 }}
               >

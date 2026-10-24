@@ -312,7 +312,7 @@ export default function EventsPage() {
                     <div className="price-col">
                       <span className="label">Primary Face Value</span>
                       <span className="val font-mono">
-                        {ev.isSoldOut ? 'Sold out' : `from $${ev.primaryFrom}`}
+                        {ev.isSoldOut ? 'Sold out' : `from ₹${Number(ev.primaryFrom).toLocaleString('en-IN')}`}
                       </span>
                       <span className="sub">
                         {ev.isSoldOut ? '0 left at face value' : `${ev.totalAvailable} tickets available`}
