@@ -2,31 +2,8 @@ import crypto from 'node:crypto';
 import { AppError } from '../middleware/errorHandler.js';
 import prisma from '../db/prisma.js';
 
-// Pre-seeded Anti-Scalping Rules (mirroring production/mock seed)
-const initialRules = [
-  {
-    id: 'rule_1',
-    name: 'Nightfall General',
-    eventId: 'nightfall',
-    tier: 'General',
-    maxPrice: 120,
-    maxResalePrice: 120,
-    enabled: true,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-  {
-    id: 'rule_2',
-    name: 'Nightfall VIP',
-    eventId: 'nightfall',
-    tier: 'VIP',
-    maxPrice: 300,
-    maxResalePrice: 300,
-    enabled: true,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-];
+// Dynamic Anti-Scalping Rules (persisted and queried directly via Prisma / PostgreSQL)
+const initialRules = [];
 
 // Anti-Bot Global Rate Limiting State
 const defaultAntiBotConfig = {

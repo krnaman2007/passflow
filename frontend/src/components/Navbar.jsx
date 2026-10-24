@@ -26,7 +26,8 @@ export default function Navbar() {
     wallet,
     notifications,
     backendStatus,
-    logout
+    logout,
+    events,
   } = useApp();
 
   const [walletMenuOpen, setWalletMenuOpen] = useState(false);
@@ -106,7 +107,18 @@ export default function Navbar() {
 
           <button
             className={`nav-item ${currentPath.startsWith('/market') ? 'active' : ''}`}
-            onClick={() => navigate('/market/nightfall/general')}
+            onClick={() => {
+              if (Array.isArray(events) && events.length > 0) {
+                const firstEv = events[0];
+                const firstCat = firstEv.tiers?.[0]?.id || firstEv.categories?.[0]?.id || '';
+                navigate(firstCat ? `/market/${firstEv.id}/${firstCat}` : `/market/${firstEv.id}`, {
+                  id: firstEv.id,
+                  categoryId: firstCat,
+                });
+              } else {
+                navigate('/market');
+              }
+            }}
           >
             <TrendingUp size={15} />
             <span>Market</span>

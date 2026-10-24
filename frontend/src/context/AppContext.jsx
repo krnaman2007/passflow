@@ -34,8 +34,8 @@ function extractRouteParams(path) {
   }
   if (parts[0] === 'market') {
     return {
-      id: parts[1] || 'nightfall',
-      categoryId: parts[2] || 'general'
+      id: parts[1] || null,
+      categoryId: parts[2] || null,
     };
   }
   return {};
@@ -46,8 +46,8 @@ export function AppProvider({ children }) {
   const initialPath = typeof window !== 'undefined' ? normalizePath(window.location.pathname) : '/events';
   const [currentPath, setCurrentPath] = useState(initialPath);
   const [routeParams, setRouteParams] = useState({
-    id: 'nightfall',
-    categoryId: 'general',
+    id: null,
+    categoryId: null,
     ...extractRouteParams(initialPath)
   });
 
@@ -157,7 +157,7 @@ export function AppProvider({ children }) {
   }, []);
 
   // Role: 'PUBLIC' | 'USER' | 'ORGANIZER' | 'ADMIN'
-  const [currentRole, setCurrentRole] = useState('USER');
+  const [currentRole, setCurrentRole] = useState('PUBLIC');
   const [users, setUsers] = useState(INITIAL_USERS);
 
   // Entities State
@@ -430,24 +430,19 @@ export function AppProvider({ children }) {
     }
   };
 
-  // Current active user object (prefers real authenticated user from backend)
+  // Current active user object (authoritative real user from backend)
   const currentUser = React.useMemo(() => {
-    if (authUser) {
-      const kycStatus = authUser.buyerSeller?.kycStatus || 'UNVERIFIED';
-      return {
-        ...authUser,
-        avatar: authUser.name ? authUser.name.charAt(0).toUpperCase() : (authUser.email ? authUser.email.charAt(0).toUpperCase() : 'U'),
-        buyerSeller: authUser.buyerSeller || { kycStatus: 'UNVERIFIED', escrowTrustScore: 98 },
-        kycStatus,
-      };
-    }
-    if (currentRole === 'PUBLIC') return null;
-    if (currentRole === 'ORGANIZER') return users.find((u) => u.role === 'ORGANIZER') || users[1];
-    if (currentRole === 'ADMIN') return users.find((u) => u.role === 'ADMIN') || users[2];
-    return users.find((u) => u.id === 'usr_ali') || users[0];
-  }, [authUser, currentRole, users]);
+    if (!authUser) return null;
+    const kycStatus = authUser.buyerSeller?.kycStatus || 'UNVERIFIED';
+    return {
+      ...authUser,
+      avatar: authUser.name ? authUser.name.charAt(0).toUpperCase() : (authUser.email ? authUser.email.charAt(0).toUpperCase() : 'U'),
+      buyerSeller: authUser.buyerSeller || { kycStatus: 'UNVERIFIED', escrowTrustScore: 100 },
+      kycStatus,
+    };
+  }, [authUser]);
 
-  // Fast Role Switcher (for development preview)
+  // Fast Role Switcher
   const switchRole = (newRole) => {
     setCurrentRole(newRole);
     if (newRole === 'PUBLIC') {
@@ -455,12 +450,6 @@ export function AppProvider({ children }) {
       if (['/tickets', '/wallet', '/orders', '/organizer', '/admin'].includes(currentPath)) {
         setCurrentPath('/events');
       }
-    } else if (newRole === 'ORGANIZER') {
-      showToast('Switched to Organizer: Lumen Events', 'info');
-    } else if (newRole === 'ADMIN') {
-      showToast('Switched to Admin: admin_01', 'info');
-    } else {
-      showToast('Switched to User: Ali K. (Buyer/Seller)', 'info');
     }
   };
 

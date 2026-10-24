@@ -24,7 +24,8 @@ export default function OrdersHistoryPage() {
     wallet,
     currentRole,
     login,
-    showToast
+    showToast,
+    navigate,
   } = useApp();
 
   const [tab, setTab] = useState('ORDERS'); // 'ORDERS' | 'TRADES' | 'TRANSACTIONS'
@@ -246,7 +247,23 @@ export default function OrdersHistoryPage() {
                       <Inbox size={32} color="var(--text-dim)" style={{ margin: '0 auto 8px auto', display: 'block' }} />
                       <strong style={{ color: 'var(--text-main)', fontSize: 14 }}>No orders found</strong>
                       <div style={{ fontSize: 12, marginTop: 4 }}>
-                        Place limit bids or asks on the <a href="/market/coldplay-mumbai/general" style={{ color: 'var(--accent-orange)' }}>Market Page</a> to trade tickets.
+                        Place limit bids or asks on the{' '}
+                        <button
+                          type="button"
+                          onClick={() => navigate('/market')}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--accent-orange)',
+                            cursor: 'pointer',
+                            textDecoration: 'underline',
+                            padding: 0,
+                            font: 'inherit',
+                          }}
+                        >
+                          Market Page
+                        </button>{' '}
+                        to trade tickets.
                       </div>
                     </td>
                   </tr>

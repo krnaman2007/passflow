@@ -132,7 +132,7 @@ describe('Step 9.17 Secondary Market WebSocket Frontend Integration Tests', () =
     mockSocket.simulateConnect();
 
     const unsub = client.subscribeMarket({
-      eventId: 'evt_nightfall',
+      eventId: 'evt_festival_001',
       ticketCategoryId: 'cat_vip',
     });
 
@@ -140,7 +140,7 @@ describe('Step 9.17 Secondary Market WebSocket Frontend Integration Tests', () =
       mockSocket.emitted.some(
         (e) =>
           e.event === 'market:subscribe' &&
-          e.data.eventId === 'evt_nightfall' &&
+          e.data.eventId === 'evt_festival_001' &&
           e.data.ticketCategoryId === 'cat_vip'
       )
     );
@@ -152,7 +152,7 @@ describe('Step 9.17 Secondary Market WebSocket Frontend Integration Tests', () =
       mockSocket.emitted.some(
         (e) =>
           e.event === 'market:unsubscribe' &&
-          e.data.eventId === 'evt_nightfall' &&
+          e.data.eventId === 'evt_festival_001' &&
           e.data.ticketCategoryId === 'cat_vip'
       )
     );

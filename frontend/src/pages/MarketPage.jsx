@@ -89,7 +89,10 @@ export default function MarketPage() {
   // If routeParams.id changed and event is not in context, fetch event directly
   useEffect(() => {
     let isMounted = true;
-    if (routeParams.id && (!currentEvent || currentEvent.id !== routeParams.id)) {
+    if (
+      routeParams.id &&
+      (!currentEvent || currentEvent.id !== routeParams.id)
+    ) {
       api.events
         .getEventById(routeParams.id)
         .then((res) => {
@@ -128,6 +131,21 @@ export default function MarketPage() {
     }
     return tiers.find((t) => t.id === activeCategoryId) || tiers[0];
   }, [tiers, activeCategoryId]);
+
+  // Keep browser address bar synchronized with the active real event and tier
+  useEffect(() => {
+    if (activeEventId && activeCategoryId) {
+      const isMissingParams = !routeParams.id || !routeParams.categoryId;
+      const isMismatch = routeParams.id !== activeEventId || routeParams.categoryId !== activeCategoryId;
+
+      if (isMissingParams || isMismatch) {
+        navigate(`/market/${activeEventId}/${activeCategoryId}`, {
+          id: activeEventId,
+          categoryId: activeCategoryId,
+        });
+      }
+    }
+  }, [activeEventId, activeCategoryId, routeParams.id, routeParams.categoryId, navigate]);
 
   // Hook up real-time secondary market stream
   const {

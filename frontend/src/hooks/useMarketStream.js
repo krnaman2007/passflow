@@ -59,7 +59,7 @@ export function useMarketStream(eventId, ticketCategoryId) {
 
   // Authoritative fetch from backend REST endpoints
   const fetchAuthoritativeMarketData = useCallback(async (targetEventId, targetCategoryId) => {
-    if (!targetEventId || !targetCategoryId || targetEventId === 'nightfall') return;
+    if (!targetEventId || !targetCategoryId) return;
 
     try {
       const [depthRes, tradesRes, marketRes] = await Promise.allSettled([

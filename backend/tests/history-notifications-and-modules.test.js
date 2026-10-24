@@ -138,11 +138,17 @@ describe('History, Notifications & Supporting Modules Endpoints & Services', () 
 
   describe('AntiScalpingRule & AntiBotRule Methods', () => {
     it('rulesService.validatePrice() should allow prices within cap and reject prices above cap', async () => {
-      // Pre-seeded rule Nightfall General has maxPrice 120
-      const allowedOrder = { eventId: 'nightfall', price: 100, side: 'ASK' };
+      await rulesService.createAntiScalpingRule({
+        name: 'Test Event General Cap',
+        eventId: 'test_event_cap_1',
+        tier: 'General',
+        maxPrice: 120,
+      });
+
+      const allowedOrder = { eventId: 'test_event_cap_1', tier: 'General', price: 100, side: 'ASK' };
       expect(await rulesService.validatePrice(allowedOrder, false)).toBe(true);
 
-      const overpricedOrder = { eventId: 'nightfall', price: 250, side: 'ASK' };
+      const overpricedOrder = { eventId: 'test_event_cap_1', tier: 'General', price: 250, side: 'ASK' };
       expect(await rulesService.validatePrice(overpricedOrder, false)).toBe(false);
 
       await expect(
