@@ -76,8 +76,16 @@ export default function OrganizerCreateEventPage() {
     );
   }
 
-  // 2. Unauthenticated or Unverified Guard
-  if (!currentUser || currentRole === 'PUBLIC') {
+  const effectiveRole = currentUser ? (currentUser.role || 'USER') : (currentRole || 'PUBLIC');
+  const isOrganizerOrAdmin =
+    effectiveRole === 'ADMIN' ||
+    effectiveRole === 'ORGANIZER' ||
+    currentUser?.role === 'ADMIN' ||
+    currentUser?.role === 'ORGANIZER' ||
+    currentUser?.organizer != null;
+
+  // 2. Unauthenticated Guard (Visitor / PUBLIC)
+  if (!currentUser || effectiveRole === 'PUBLIC') {
     return (
       <div className="content-wrap" style={{ maxWidth: 640 }}>
         <button
@@ -146,6 +154,82 @@ export default function OrganizerCreateEventPage() {
             >
               <Sparkles size={13} color="var(--accent-orange)" />
               <span>1-Click Sign In as Ali (Verified Organizer)</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. Authenticated but Not an Organizer Guard (Role: USER)
+  if (!isOrganizerOrAdmin) {
+    return (
+      <div className="content-wrap" style={{ maxWidth: 640 }}>
+        <button
+          className="btn-secondary"
+          style={{ marginBottom: 20, padding: '6px 12px', fontSize: 12 }}
+          onClick={() => navigate('/events')}
+        >
+          <ArrowLeft size={14} />
+          <span>Back to Events</span>
+        </button>
+
+        <div className="card" style={{ textAlign: 'center', padding: '40px 24px' }}>
+          <div
+            style={{
+              width: 56,
+              height: 56,
+              borderRadius: '50%',
+              background: 'rgba(239, 68, 68, 0.1)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: 16
+            }}
+          >
+            <ShieldAlert size={28} color="#ef4444" />
+          </div>
+
+          <div
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '4px 10px',
+              borderRadius: 6,
+              background: 'rgba(239, 68, 68, 0.15)',
+              color: '#ef4444',
+              fontSize: 12,
+              fontWeight: 700,
+              letterSpacing: 0.5,
+              marginBottom: 12
+            }}
+          >
+            403 FORBIDDEN · ORGANIZER CLEARANCE REQUIRED
+          </div>
+
+          <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>
+            Organizer Clearance Required
+          </h2>
+          <p style={{ color: 'var(--text-sub)', fontSize: 14, maxWidth: 460, margin: '0 auto 24px', lineHeight: 1.6 }}>
+            Your account ({currentUser.email}) is currently registered with role <strong style={{ color: 'var(--accent-orange)' }}>USER</strong>. Event creation, ticket tier minting, and inventory issuance require an approved organizer profile.
+          </p>
+
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+            <button
+              className="btn-primary"
+              style={{ padding: '10px 22px', fontSize: 14 }}
+              onClick={() => navigate('/organizer/apply')}
+            >
+              <span>Apply for Organizer Status</span>
+              <ArrowRight size={14} />
+            </button>
+            <button
+              className="btn-secondary"
+              style={{ padding: '10px 20px', fontSize: 14 }}
+              onClick={() => navigate('/events')}
+            >
+              Browse Public Events
             </button>
           </div>
         </div>

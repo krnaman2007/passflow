@@ -3,6 +3,7 @@ import { AppProvider, useApp } from './context/AppContext';
 import Navbar from './components/Navbar';
 import Toast from './components/Toast';
 import Modals from './components/Modals';
+import MobileBottomNav from './components/MobileBottomNav';
 
 // Pages
 import EventsPage from './pages/EventsPage';
@@ -56,6 +57,8 @@ function MainRouter() {
           {renderCurrentPage()}
         </div>
       </main>
+
+      <MobileBottomNav />
 
       {/* Production Footer */}
       <footer

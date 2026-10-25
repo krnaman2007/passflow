@@ -21,7 +21,10 @@ export default function NotificationsPage() {
     markNotificationRead,
     markAllNotificationsRead,
     fetchLiveNotifications,
+    currentUser,
     currentRole,
+    authLoading,
+    navigate,
     login,
     showToast
   } = useApp();
@@ -30,10 +33,10 @@ export default function NotificationsPage() {
   const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
-    if (typeof fetchLiveNotifications === 'function') {
+    if ((currentUser || currentRole !== 'PUBLIC') && typeof fetchLiveNotifications === 'function') {
       fetchLiveNotifications();
     }
-  }, []);
+  }, [currentUser, currentRole]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -58,52 +61,96 @@ export default function NotificationsPage() {
     return true;
   });
 
-  return (
-    <div className="content-wrap" style={{ maxWidth: 780, paddingTop: 28 }}>
-      {/* Visitor Notice / 1-Click Login if Public */}
-      {currentRole === 'PUBLIC' && (
-        <div
-          className="card"
-          style={{
-            background: 'linear-gradient(135deg, rgba(249, 115, 22, 0.08), rgba(23, 27, 38, 0.95))',
-            borderColor: 'var(--accent-orange-border)',
-            marginBottom: 20,
-            padding: 16,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            flexWrap: 'wrap',
-            gap: 12
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <Lock size={18} color="var(--accent-orange)" />
-            <div>
-              <strong style={{ fontSize: 13, color: 'var(--text-main)' }}>
-                Authenticated Account Required
-              </strong>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                Sign in to view your personalized PostgreSQL notifications, order fills, and escrow updates.
-              </div>
-            </div>
-          </div>
-          <button
-            className="btn-primary"
-            style={{ fontSize: 12, padding: '7px 14px' }}
-            onClick={async () => {
-              try {
-                await login('ali@passflow.com', 'Password123!');
-                showToast('Signed in as Ali Khan (ali@passflow.com)', 'success');
-              } catch (err) {
-                showToast(err.message || 'Login failed', 'error');
-              }
+  // 1. Session Restoring Guard
+  if (authLoading) {
+    return (
+      <div className="content-wrap" style={{ maxWidth: 640, textAlign: 'center', padding: '80px 24px', margin: '40px auto' }}>
+        <RefreshCw size={32} className="spin" style={{ margin: '0 auto 16px', display: 'block', color: 'var(--brand-primary, #6366f1)' }} />
+        <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8, color: 'var(--text-main)' }}>Restoring Notifications...</h3>
+        <p style={{ color: 'var(--text-sub)', fontSize: 14 }}>Connecting to alerts stream</p>
+      </div>
+    );
+  }
+
+  const effectiveRole = currentUser ? (currentUser.role || 'USER') : (currentRole || 'PUBLIC');
+
+  // 2. Visitor / Unauthenticated Guard
+  if (!currentUser || effectiveRole === 'PUBLIC') {
+    return (
+      <div className="content-wrap" style={{ maxWidth: 640 }}>
+        <div className="card" style={{ textAlign: 'center', padding: '40px 24px', marginTop: 20 }}>
+          <div
+            style={{
+              width: 56,
+              height: 56,
+              borderRadius: '50%',
+              background: 'rgba(239, 68, 68, 0.1)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: 16
             }}
           >
-            <Zap size={14} />
-            <span>1-Click Sign in as Ali Khan</span>
-          </button>
+            <Lock size={26} color="#ef4444" />
+          </div>
+
+          <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>
+            Authentication Required
+          </h2>
+          <p style={{ color: 'var(--text-sub)', fontSize: 14, maxWidth: 440, margin: '0 auto 24px' }}>
+            Sign in to view your personalized PostgreSQL notifications, order fills, and escrow updates.
+          </p>
+
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+            <button
+              className="btn-primary"
+              style={{ padding: '10px 20px', fontSize: 14 }}
+              onClick={() => navigate('/login')}
+            >
+              Sign In to Your Account
+            </button>
+            <button
+              className="btn-secondary"
+              style={{ padding: '10px 20px', fontSize: 14 }}
+              onClick={() => navigate('/register')}
+            >
+              Create Account
+            </button>
+          </div>
+
+          <div
+            style={{
+              marginTop: 32,
+              paddingTop: 24,
+              borderTop: '1px solid var(--border-subtle)',
+              fontSize: 13,
+              color: 'var(--text-muted)'
+            }}
+          >
+            <p style={{ marginBottom: 12 }}>1-Click demo authentication:</p>
+            <button
+              className="btn-secondary"
+              style={{ fontSize: 12, padding: '6px 14px' }}
+              onClick={async () => {
+                try {
+                  await login('ali@passflow.com', 'Password123!');
+                  showToast('Signed in as Ali Khan', 'success');
+                } catch (err) {
+                  showToast(err.message || 'Login failed', 'error');
+                }
+              }}
+            >
+              <Zap size={13} color="var(--accent-orange)" />
+              <span>1-Click Sign In as Ali Khan</span>
+            </button>
+          </div>
         </div>
-      )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="content-wrap" style={{ maxWidth: 780, paddingTop: 28 }}>
 
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>

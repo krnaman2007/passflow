@@ -59,6 +59,9 @@ export default function AdminConsolePage() {
     showToast
   } = useApp();
 
+  const effectiveRole = currentUser ? (currentUser.role || 'USER') : (currentRole || 'PUBLIC');
+  const isAdmin = effectiveRole === 'ADMIN' || currentUser?.role === 'ADMIN';
+
   const [refreshing, setRefreshing] = useState(false);
   const [reconRunning, setReconRunning] = useState(false);
   const [solvencyGenerating, setSolvencyGenerating] = useState(false);
@@ -84,12 +87,12 @@ export default function AdminConsolePage() {
   const [botBurst, setBotBurst] = useState('30');
   const [isSavingBot, setIsSavingBot] = useState(false);
 
-  // Sync latest backend telemetry on mount
+  // Sync latest backend telemetry on mount only if user is authorized administrator
   useEffect(() => {
-    if (typeof refreshAdminData === 'function') {
+    if (isAdmin && typeof refreshAdminData === 'function') {
       refreshAdminData();
     }
-  }, []);
+  }, [isAdmin]);
 
   // Sync bot modal state with backend config
   useEffect(() => {
@@ -253,52 +256,110 @@ export default function AdminConsolePage() {
     }
   };
 
-  return (
-    <div className="content-wrap" style={{ maxWidth: 1200, paddingTop: 24 }}>
-      {/* Non-Admin Notice / 1-Click Superadmin Switch */}
-      {currentRole !== 'ADMIN' && (
+  // 1. Session Loading Guard
+  if (authLoading) {
+    return (
+      <div className="content-wrap" style={{ maxWidth: 640, textAlign: 'center', padding: '80px 24px', margin: '40px auto' }}>
+        <RefreshCw size={32} className="spin" style={{ margin: '0 auto 16px', display: 'block', color: 'var(--brand-primary, #6366f1)' }} />
+        <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8, color: 'var(--text-main)' }}>Verifying Permissions...</h3>
+        <p style={{ color: 'var(--text-sub)', fontSize: 14 }}>Checking administrative credentials</p>
+      </div>
+    );
+  }
+
+  // 2. Unauthenticated Visitor Guard
+  if (!currentUser) {
+    return (
+      <div className="content-wrap" style={{ maxWidth: 540, paddingTop: 40 }}>
+        <div className="card" style={{ textAlign: 'center', padding: '48px 24px' }}>
+          <div
+            style={{
+              width: 56,
+              height: 56,
+              borderRadius: '50%',
+              background: 'rgba(239, 68, 68, 0.12)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: 16
+            }}
+          >
+            <Lock size={26} color="#ef4444" />
+          </div>
+          <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>
+            Admin Access Restricted
+          </h2>
+          <p style={{ color: 'var(--text-sub)', fontSize: 14, maxWidth: 420, margin: '0 auto 24px' }}>
+            The Platform Admin Console requires authentication with superadmin credentials. Please log in with an administrator account to continue.
+          </p>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+            <button className="btn-secondary" onClick={() => navigate('/events')}>
+              Return to Events
+            </button>
+            <button className="btn-primary" onClick={() => navigate('/login')}>
+              <span>Admin Log In</span>
+              <ArrowRight size={14} />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. Authenticated Non-Admin Guard (Blocked completely with 403 Forbidden)
+  if (!isAdmin) {
+    return (
+      <div className="content-wrap" style={{ maxWidth: 560, paddingTop: 40 }}>
         <div
           className="card"
           style={{
-            background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.12), rgba(23, 27, 38, 0.95))',
-            borderColor: 'rgba(239, 68, 68, 0.4)',
-            marginBottom: 20,
-            padding: 16,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            flexWrap: 'wrap',
-            gap: 12
+            textAlign: 'center',
+            padding: '48px 24px',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.05), rgba(23, 27, 38, 0.95))'
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <Lock size={18} color="#f87171" />
-            <div>
-              <strong style={{ fontSize: 13, color: '#f87171' }}>
-                Admin Authentication Required
-              </strong>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                You are currently viewing with session role: <span className="font-mono">{currentRole}</span>. Authenticate as Superadmin to execute database mutations.
-              </div>
-            </div>
-          </div>
-          <button
-            className="btn-primary"
-            style={{ fontSize: 12, padding: '7px 14px', background: '#dc2626', borderColor: '#b91c1c' }}
-            onClick={async () => {
-              try {
-                await login('admin@passflow.com', 'Password123!');
-                showToast('Switched to Platform Administrator (admin@passflow.com)', 'success');
-              } catch (err) {
-                showToast(err.message || 'Login failed', 'error');
-              }
+          <div
+            style={{
+              width: 56,
+              height: 56,
+              borderRadius: '50%',
+              background: 'rgba(239, 68, 68, 0.15)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: 16
             }}
           >
-            <Zap size={14} />
-            <span>1-Click Sign In as Platform Admin</span>
-          </button>
+            <AlertTriangle size={26} color="#ef4444" />
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <span className="badge badge-red" style={{ fontSize: 11, padding: '3px 8px' }}>
+              403 FORBIDDEN
+            </span>
+          </div>
+          <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>
+            Administrator Privileges Required
+          </h2>
+          <p style={{ color: 'var(--text-sub)', fontSize: 14, maxWidth: 440, margin: '0 auto 24px', lineHeight: 1.5 }}>
+            You are signed in as <strong style={{ color: 'var(--text-main)' }}>{currentUser.name || currentUser.email}</strong> with role <span className="font-mono badge badge-neutral" style={{ fontSize: 11 }}>{effectiveRole}</span>. This account does not have administrative rights to view platform telemetry, execute ledger reconciliations, or modify system parameters.
+          </p>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+            <button className="btn-secondary" onClick={() => navigate('/profile')}>
+              My Profile
+            </button>
+            <button className="btn-primary" onClick={() => navigate('/events')}>
+              <span>Back to Safe Area (Events)</span>
+              <ArrowRight size={14} />
+            </button>
+          </div>
         </div>
-      )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="content-wrap" style={{ maxWidth: 1200, paddingTop: 24 }}>
 
       {/* Top Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>

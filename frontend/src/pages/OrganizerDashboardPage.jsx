@@ -103,7 +103,15 @@ export default function OrganizerDashboardPage() {
 
   // Load Organizer Events from Backend
   const loadOrganizerData = useCallback(async (showNotification = false) => {
-    if (!currentUser || currentRole === 'PUBLIC') {
+    const effRole = currentUser ? (currentUser.role || 'USER') : (currentRole || 'PUBLIC');
+    const hasOrgAccess =
+      effRole === 'ADMIN' ||
+      effRole === 'ORGANIZER' ||
+      currentUser?.role === 'ADMIN' ||
+      currentUser?.role === 'ORGANIZER' ||
+      currentUser?.organizer != null;
+
+    if (!currentUser || effRole === 'PUBLIC' || !hasOrgAccess) {
       setIsLoading(false);
       return;
     }
@@ -548,8 +556,16 @@ export default function OrganizerDashboardPage() {
     );
   }
 
+  const effectiveRole = currentUser ? (currentUser.role || 'USER') : (currentRole || 'PUBLIC');
+  const isOrganizerOrAdmin =
+    effectiveRole === 'ADMIN' ||
+    effectiveRole === 'ORGANIZER' ||
+    currentUser?.role === 'ADMIN' ||
+    currentUser?.role === 'ORGANIZER' ||
+    currentUser?.organizer != null;
+
   // 2. Guard: Visitor / Unauthenticated
-  if (!currentUser || currentRole === 'PUBLIC') {
+  if (!currentUser || effectiveRole === 'PUBLIC') {
     return (
       <div className="content-wrap" style={{ maxWidth: 640 }}>
         <div className="card" style={{ textAlign: 'center', padding: '40px 24px', marginTop: 20 }}>
@@ -626,14 +642,8 @@ export default function OrganizerDashboardPage() {
     );
   }
 
-  // 2. Guard: Authenticated but Not an Organizer
-  const isOrganizerOrAdmin =
-    currentRole === 'ADMIN' ||
-    currentUser?.role === 'ADMIN' ||
-    currentUser?.role === 'ORGANIZER' ||
-    currentUser?.organizer != null;
-
-  if (!isOrganizerOrAdmin && !isLoading) {
+  // 3. Guard: Authenticated but Not an Organizer (Role: USER)
+  if (!isOrganizerOrAdmin) {
     return (
       <div className="content-wrap" style={{ maxWidth: 640 }}>
         <div className="card" style={{ textAlign: 'center', padding: '40px 24px', marginTop: 20 }}>
