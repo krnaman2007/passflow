@@ -15,6 +15,7 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import TradingChart from '../components/TradingChart';
+import { MarketDepthSkeleton } from '../components/Skeleton';
 
 export default function MarketPage() {
   const {
@@ -281,24 +282,7 @@ export default function MarketPage() {
 
   // Loading State
   if (loadingEvents && !currentEvent) {
-    return (
-      <div className="content-wrap" style={{ textAlign: 'center', padding: '80px 20px' }}>
-        <div
-          style={{
-            width: 36,
-            height: 36,
-            margin: '0 auto 16px',
-            borderRadius: '50%',
-            border: '3px solid rgba(249, 115, 22, 0.2)',
-            borderTopColor: 'var(--accent-orange)',
-            animation: 'spin 1s linear infinite',
-          }}
-        />
-        <p style={{ color: 'var(--text-muted)', fontSize: 15 }}>
-          Loading real exchange markets from PostgreSQL backend...
-        </p>
-      </div>
-    );
+    return <MarketDepthSkeleton />;
   }
 
   // No Events State

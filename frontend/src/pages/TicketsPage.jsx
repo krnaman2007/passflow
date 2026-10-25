@@ -21,6 +21,7 @@ import {
   Share2
 } from 'lucide-react';
 import { api } from '../services/api';
+import { TicketCardSkeleton, DashboardSkeleton } from '../components/Skeleton';
 
 export default function TicketsPage() {
   const {
@@ -123,12 +124,10 @@ export default function TicketsPage() {
   });
 
   // 1. Session Restoring Guard
-  if (authLoading) {
+  if (authLoading && !currentUser) {
     return (
-      <div className="content-wrap" style={{ maxWidth: 640, textAlign: 'center', padding: '80px 24px', margin: '40px auto' }}>
-        <RefreshCw size={32} className="spin" style={{ margin: '0 auto 16px', display: 'block', color: 'var(--brand-primary, #6366f1)' }} />
-        <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8, color: 'var(--text-main)' }}>Restoring Tickets...</h3>
-        <p style={{ color: 'var(--text-sub)', fontSize: 14 }}>Loading your authenticated vault</p>
+      <div className="content-wrap" style={{ maxWidth: 1200, padding: '32px 20px' }}>
+        <DashboardSkeleton count={3} />
       </div>
     );
   }
@@ -270,10 +269,10 @@ export default function TicketsPage() {
       <div className="detail-grid">
         {/* Left: Tickets Cards Grid */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {isLoading ? (
-            <div className="card" style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-dim)' }}>
-              <RefreshCw size={22} className="spin" style={{ margin: '0 auto 10px' }} />
-              <div>Loading authenticated tickets from database...</div>
+          {isLoading && userTickets.length === 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <TicketCardSkeleton />
+              <TicketCardSkeleton />
             </div>
           ) : filteredTickets.length === 0 ? (
             <div className="card" style={{ textAlign: 'center', padding: '50px 20px' }}>

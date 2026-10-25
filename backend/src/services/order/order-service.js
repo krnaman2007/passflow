@@ -383,8 +383,10 @@ export class OrderService {
 
     // Ensure market is initialized and synchronized in READY state for trading
     const marketKey = formatMarketKey(eventId, ticketCategoryId);
-    if (!this.matchingService.stateManager.isReady(marketKey)) {
-      await this.matchingService.initializeAndSynchronizeMarket(marketKey);
+    if (this.matchingService?.stateManager?.isReady && !this.matchingService.stateManager.isReady(marketKey)) {
+      if (typeof this.matchingService.initializeAndSynchronizeMarket === 'function') {
+        await this.matchingService.initializeAndSynchronizeMarket(marketKey);
+      }
     }
 
     // 2. Check for existing order by (userId, idempotencyKey)
@@ -887,8 +889,10 @@ export class OrderService {
 
     // 3. Execute cancellation under MarketExecutionQueue
     const marketKey = formatMarketKey(order.eventId, order.ticketCategoryId);
-    if (!this.matchingService.stateManager.isReady(marketKey)) {
-      await this.matchingService.initializeAndSynchronizeMarket(marketKey);
+    if (this.matchingService?.stateManager?.isReady && !this.matchingService.stateManager.isReady(marketKey)) {
+      if (typeof this.matchingService.initializeAndSynchronizeMarket === 'function') {
+        await this.matchingService.initializeAndSynchronizeMarket(marketKey);
+      }
     }
 
     const cancelResult = await this.matchingService.cancelLimitOrder({

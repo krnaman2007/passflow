@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import { api } from '../services/api';
 import { formatBackendEvent } from '../utils/eventAdapter';
+import { DashboardSkeleton, Skeleton } from '../components/Skeleton';
 
 export default function OrganizerDashboardPage() {
   const {
@@ -539,12 +540,10 @@ export default function OrganizerDashboardPage() {
   };
 
   // 1. Guard: Restoring Session
-  if (authLoading) {
+  if (authLoading && !currentUser) {
     return (
-      <div className="content-wrap" style={{ maxWidth: 640, textAlign: 'center', padding: '80px 24px', margin: '40px auto' }}>
-        <RefreshCw size={32} className="spin" style={{ margin: '0 auto 16px', display: 'block', color: 'var(--brand-primary, #6366f1)' }} />
-        <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8, color: 'var(--text-main)' }}>Restoring Session...</h3>
-        <p style={{ color: 'var(--text-sub)', fontSize: 14 }}>Verifying organizer credentials</p>
+      <div className="content-wrap" style={{ maxWidth: 1200, padding: '32px 20px' }}>
+        <DashboardSkeleton />
       </div>
     );
   }
@@ -804,12 +803,18 @@ export default function OrganizerDashboardPage() {
             </thead>
             <tbody>
               {isLoading ? (
-                <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', padding: '32px', color: 'var(--text-dim)' }}>
-                    <RefreshCw size={18} className="spin" style={{ margin: '0 auto 8px' }} />
-                    <div>Loading organizer productions from database...</div>
-                  </td>
-                </tr>
+                <>
+                  {[1, 2, 3].map((key) => (
+                    <tr key={key}>
+                      <td style={{ padding: '16px 12px' }}><Skeleton width="180px" height="18px" /></td>
+                      <td style={{ padding: '16px 12px' }}><Skeleton width="100px" height="16px" /></td>
+                      <td style={{ padding: '16px 12px' }}><Skeleton width="70px" height="22px" borderRadius="12px" /></td>
+                      <td style={{ padding: '16px 12px' }}><Skeleton width="90px" height="16px" /></td>
+                      <td style={{ padding: '16px 12px' }}><Skeleton width="80px" height="16px" /></td>
+                      <td style={{ padding: '16px 12px' }}><Skeleton width="110px" height="28px" borderRadius="6px" /></td>
+                    </tr>
+                  ))}
+                </>
               ) : organizerEvents.length === 0 ? (
                 <tr>
                   <td colSpan={6} style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-sub)' }}>
@@ -1880,9 +1885,13 @@ export default function OrganizerDashboardPage() {
             </div>
 
             {isLoadingInventory ? (
-              <div style={{ textAlign: 'center', padding: '30px', color: 'var(--text-dim)' }}>
-                <RefreshCw size={20} className="spin" style={{ margin: '0 auto 10px' }} />
-                <div>Fetching live inventory ledger from database...</div>
+              <div style={{ padding: '20px 0', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+                  <Skeleton width="100%" height="60px" borderRadius="8px" />
+                  <Skeleton width="100%" height="60px" borderRadius="8px" />
+                  <Skeleton width="100%" height="60px" borderRadius="8px" />
+                  <Skeleton width="100%" height="60px" borderRadius="8px" />
+                </div>
               </div>
             ) : inventoryStats ? (
               <div>

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { DashboardSkeleton } from '../components/Skeleton';
 import {
   ArrowLeft,
   Plus,
@@ -67,12 +68,10 @@ export default function OrganizerCreateEventPage() {
     currentUser?.organizer?.verificationStatus === 'VERIFIED';
 
   // 1. Session Restoring Guard
-  if (authLoading) {
+  if (authLoading && !currentUser) {
     return (
-      <div className="content-wrap" style={{ maxWidth: 640, textAlign: 'center', padding: '80px 24px', margin: '40px auto' }}>
-        <RefreshCw size={32} className="spin" style={{ margin: '0 auto 16px', display: 'block', color: 'var(--brand-primary, #6366f1)' }} />
-        <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8, color: 'var(--text-main)' }}>Restoring Session...</h3>
-        <p style={{ color: 'var(--text-sub)', fontSize: 14 }}>Verifying organizer permissions</p>
+      <div className="content-wrap" style={{ maxWidth: 640, padding: '40px 20px' }}>
+        <DashboardSkeleton count={2} />
       </div>
     );
   }

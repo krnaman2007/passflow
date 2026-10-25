@@ -81,6 +81,27 @@ function persistUserSession(user, role) {
   }
 }
 
+function getCachedEvents() {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = sessionStorage.getItem('passflow_events');
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function setCachedEvents(eventsList) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (Array.isArray(eventsList) && eventsList.length > 0) {
+      sessionStorage.setItem('passflow_events', JSON.stringify(eventsList));
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
 export function AppProvider({ children }) {
   // Navigation & Routing with full browser address bar sync
   const initialPath = typeof window !== 'undefined' ? normalizePath(window.location.pathname) : '/events';
@@ -201,7 +222,12 @@ export function AppProvider({ children }) {
   const [users, setUsers] = useState(INITIAL_USERS);
 
   // Entities State
-  const [events, setEvents] = useState([]);
+  const [events, setEvents] = useState(() => getCachedEvents());
+
+  const updateEventsWithCache = (newEvents) => {
+    setEvents(newEvents);
+    setCachedEvents(newEvents);
+  };
 
   // Fetch real events from PostgreSQL backend on mount
   useEffect(() => {
@@ -218,6 +244,7 @@ export function AppProvider({ children }) {
         if (Array.isArray(rawList) && rawList.length > 0 && isMounted) {
           const formatted = rawList.map((ev, idx) => formatBackendEvent(ev, idx));
           setEvents(formatted);
+          setCachedEvents(formatted);
         }
       } catch (err) {
         console.warn('Backend events load deferred:', err.message);
@@ -414,6 +441,7 @@ export function AppProvider({ children }) {
     persistUserSession(user, activeRole);
     useAppStore.getState().setUser(user, tokens.accessToken);
     marketStream.setAuthToken(tokens.accessToken);
+    setAuthLoading(false);
 
     if (user.wallet) {
       const avail = Number(user.wallet.availableBalance || 0) / 100;
@@ -428,12 +456,14 @@ export function AppProvider({ children }) {
       }));
     }
 
-    // Refresh live wallet, notifications, & orders in background
-    syncLiveWallet();
-    fetchLiveWalletTransactions();
-    fetchLiveNotifications();
-    fetchLiveOrders();
-    fetchLiveTickets();
+    // Refresh live wallet, notifications, & orders in background smoothly without blocking UI
+    Promise.allSettled([
+      syncLiveWallet(),
+      fetchLiveWalletTransactions(),
+      fetchLiveNotifications(),
+      fetchLiveOrders(),
+      fetchLiveTickets(),
+    ]).catch(() => {});
 
     return { success: true, user, tokens };
   };
@@ -464,6 +494,7 @@ export function AppProvider({ children }) {
     persistUserSession(user, activeRole);
     useAppStore.getState().setUser(user, tokens.accessToken);
     marketStream.setAuthToken(tokens.accessToken);
+    setAuthLoading(false);
 
     if (user.wallet) {
       const avail = Number(user.wallet.availableBalance || 0) / 100;
@@ -1835,6 +1866,7 @@ export function AppProvider({ children }) {
         currentUser,
         users,
         events,
+        setEvents: updateEventsWithCache,
         orderBooks,
         userTickets,
         userOrders,

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { api } from '../services/api';
 import { formatBackendEvent } from '../utils/eventAdapter';
+import { EventDetailSkeleton } from '../components/Skeleton';
 import {
   Calendar,
   Clock,
@@ -32,8 +33,22 @@ export default function EventDetailPage() {
     fetchLiveOrders,
   } = useApp();
 
-  const [liveEvent, setLiveEvent] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const eventId = routeParams?.id;
+
+  const [liveEvent, setLiveEvent] = useState(() => {
+    const fromContext = Array.isArray(events)
+      ? events.find((e) => e.id === eventId)
+      : null;
+    return fromContext && Array.isArray(fromContext.tiers) && fromContext.tiers.length > 0
+      ? fromContext
+      : null;
+  });
+  const [loading, setLoading] = useState(() => {
+    const fromContext = Array.isArray(events)
+      ? events.find((e) => e.id === eventId)
+      : null;
+    return !(fromContext && Array.isArray(fromContext.tiers) && fromContext.tiers.length > 0);
+  });
   const [error, setError] = useState(null);
 
   // Quantity selected per tier: { [tierId]: number }
@@ -42,8 +57,6 @@ export default function EventDetailPage() {
   const [purchaseSuccess, setPurchaseSuccess] = useState(null);
   const [auctionPrices, setAuctionPrices] = useState({});
   const [purchasingAuctionId, setPurchasingAuctionId] = useState(null);
-
-  const eventId = routeParams?.id;
 
   // Fetch real event details from backend
   useEffect(() => {
@@ -258,25 +271,8 @@ export default function EventDetailPage() {
   const defaultCategoryId = tiers[0]?.id || 'general';
 
   // Loading State
-  if (loading) {
-    return (
-      <div className="content-wrap" style={{ textAlign: 'center', padding: '80px 20px' }}>
-        <div
-          style={{
-            width: 36,
-            height: 36,
-            margin: '0 auto 16px',
-            borderRadius: '50%',
-            border: '3px solid rgba(249, 115, 22, 0.2)',
-            borderTopColor: 'var(--accent-orange)',
-            animation: 'spin 1s linear infinite',
-          }}
-        />
-        <p style={{ color: 'var(--text-muted)', fontSize: 15 }}>
-          Loading real event details from PostgreSQL backend...
-        </p>
-      </div>
-    );
+  if (loading && !liveEvent) {
+    return <EventDetailSkeleton />;
   }
 
   // Error State

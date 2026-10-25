@@ -15,24 +15,40 @@ import {
 } from 'lucide-react';
 
 import { formatBackendEvent } from '../utils/eventAdapter';
+import { EventGridSkeleton } from '../components/Skeleton';
 export { formatBackendEvent };
 
 
 export default function EventsPage() {
-  const { navigate, currentRole, currentUser, setEvents: updateContextEvents } = useApp();
+  const { events: contextEvents, navigate, currentRole, currentUser, setEvents: updateContextEvents } = useApp();
   const effectiveRole = currentUser ? (currentUser.role || 'USER') : (currentRole || 'PUBLIC');
 
-  const [backendEvents, setBackendEvents] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // Fast-start with cached events from AppContext / sessionStorage if available
+  const [backendEvents, setBackendEvents] = useState(() => (Array.isArray(contextEvents) && contextEvents.length > 0 ? contextEvents : []));
+  const [loading, setLoading] = useState(() => (!contextEvents || contextEvents.length === 0));
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  // Sync state if context events update
+  useEffect(() => {
+    if (Array.isArray(contextEvents) && contextEvents.length > 0) {
+      setBackendEvents(contextEvents);
+      setLoading(false);
+    }
+  }, [contextEvents]);
+
   // Fetch real events directly from backend API
   const fetchLiveEvents = useCallback(async (isManualRefresh = false) => {
-    if (isManualRefresh) setIsRefreshing(true);
-    else setLoading(true);
+    if (isManualRefresh) {
+      setIsRefreshing(true);
+    } else {
+      setBackendEvents((prev) => {
+        if (!prev || prev.length === 0) setLoading(true);
+        return prev;
+      });
+    }
     setError(null);
 
     try {
@@ -53,14 +69,19 @@ export default function EventsPage() {
       }
     } catch (err) {
       console.error('Failed to load live events from backend:', err);
-      setError(err.message || 'Unable to load events from PassFlow backend.');
+      setBackendEvents((prev) => {
+        if (!prev || prev.length === 0) {
+          setError(err.message || 'Unable to load events from PassFlow backend.');
+        }
+        return prev;
+      });
     } finally {
       setLoading(false);
       setIsRefreshing(false);
     }
   }, [updateContextEvents]);
 
-  // Initial load from backend
+  // Initial load from backend (silent if already populated)
   useEffect(() => {
     fetchLiveEvents();
   }, [fetchLiveEvents]);
@@ -164,32 +185,10 @@ export default function EventsPage() {
         </div>
       </div>
 
-      {/* Loading State */}
-      {loading && (
-        <div
-          style={{
-            padding: '60px 20px',
-            textAlign: 'center',
-            color: 'var(--text-muted)',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: 16,
-          }}
-        >
-          <div
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: '50%',
-              border: '3px solid rgba(249, 115, 22, 0.2)',
-              borderTopColor: 'var(--accent-orange)',
-              animation: 'spin 1s linear infinite',
-            }}
-          />
-          <p style={{ fontSize: '0.95rem', fontWeight: 500 }}>
-            Querying authoritative events from PostgreSQL backend...
-          </p>
+      {/* Loading State: Shimmer Skeleton */}
+      {loading && backendEvents.length === 0 && (
+        <div style={{ marginTop: 24 }}>
+          <EventGridSkeleton count={6} />
         </div>
       )}
 
