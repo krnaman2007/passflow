@@ -578,8 +578,8 @@ class DutchAuctionService {
           },
           {
             isolationLevel: 'ReadCommitted',
-            timeout: 15000,
-            maxWait: 5000,
+            timeout: 45000,
+            maxWait: 20000,
           }
         );
 

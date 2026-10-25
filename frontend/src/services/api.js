@@ -72,6 +72,18 @@ export async function apiRequest(endpoint, { method = 'GET', body, headers = {},
     const data = isJson ? await response.json() : await response.text();
 
     if (!response.ok) {
+      if (
+        response.status === 401 ||
+        (response.status === 404 && (data?.error?.code === 'USER_NOT_FOUND' || data?.error?.code === 'ACCOUNT_NOT_FOUND'))
+      ) {
+        setAuthToken(null);
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('passflow_user');
+          localStorage.removeItem('passflow_role');
+          localStorage.removeItem('token');
+          localStorage.removeItem('passflow_token');
+        }
+      }
       const errorMsg = data?.error?.message || data?.message || `HTTP ${response.status}: ${response.statusText}`;
       const error = new Error(errorMsg);
       error.status = response.status;

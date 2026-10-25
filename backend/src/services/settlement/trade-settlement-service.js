@@ -202,8 +202,8 @@ export class TradeSettlementService {
       try {
         const result = await this.prisma.$transaction((tx) => this._settle(tx, cleanId), {
           isolationLevel: 'Serializable',
-          maxWait: 5000,
-          timeout: 15000,
+          maxWait: 20000,
+          timeout: 45000,
         });
         if (this.logger?.info) {
           this.logger.info('Settlement succeeded', {

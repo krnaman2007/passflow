@@ -1,0 +1,20 @@
+{
+  "name": "passflow-exchange",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PassFlow — Fair-Price Ticket Resale Exchange with In-Memory Matching & Anti-Scalping",
+  "scripts": {
+    "dev": "concurrently -n \"BACKEND,FRONTEND\" -c \"magenta,cyan\" \"npm --prefix backend run dev\" \"npm --prefix frontend dev\"",
+    "start": "concurrently -n \"BACKEND,FRONTEND\" -c \"magenta,cyan\" \"npm --prefix backend start\" \"npm --prefix frontend dev\"",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend dev",
+    "start:backend": "npm --prefix backend start",
+    "start:frontend": "npm --prefix frontend dev",
+    "test": "npm --prefix backend test && npm --prefix frontend test",
+    "test:backend": "npm --prefix backend test",
+    "test:frontend": "npm --prefix frontend test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

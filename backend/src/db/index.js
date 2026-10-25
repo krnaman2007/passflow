@@ -3,26 +3,16 @@ import redis from './redis.js';
 import logger from '../errorlogging/logger.js';
 
 export const checkDatabaseConnections = async ({
-  timeoutMs = Number(process.env.DB_CONNECT_TIMEOUT_MS) || 15000,
-  retries = 1,
-  retryDelayMs = 1500,
+  retries = 3,
+  retryDelayMs = 2000,
   throwOnError = false,
   prismaClient = prisma,
 } = {}) => {
   let lastError = null;
 
   for (let attempt = 1; attempt <= retries; attempt++) {
-    let timer;
-    const timeoutPromise = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('Database connectivity check timed out')), timeoutMs);
-      if (timer.unref) timer.unref();
-    });
-
     try {
-      await Promise.race([
-        prismaClient.$queryRaw`SELECT 1`,
-        timeoutPromise,
-      ]);
+      await prismaClient.$queryRaw`SELECT 1`;
       logger.info('🐘 [Database] PostgreSQL (Prisma): Connected successfully');
 
       if (redis && process.env.NODE_ENV !== 'test') {
@@ -46,8 +36,6 @@ export const checkDatabaseConnections = async ({
         );
         await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
       }
-    } finally {
-      if (timer) clearTimeout(timer);
     }
   }
 

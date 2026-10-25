@@ -79,7 +79,7 @@ export const startServer = async () => {
     console.log('--------------------------------------------------');
 
     // 1. Establish database connectivity with active bounded query (with cold-start resilience)
-    const dbTimeout = Number(process.env.DB_CONNECT_TIMEOUT_MS) || 15000;
+    const dbTimeout = Number(process.env.DB_CONNECT_TIMEOUT_MS) || 25000;
     await checkDatabaseConnections({
       throwOnError: true,
       timeoutMs: dbTimeout,
