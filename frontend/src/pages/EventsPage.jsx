@@ -33,7 +33,7 @@ export default function EventsPage() {
 
   // Sync state if context events update
   useEffect(() => {
-    if (Array.isArray(contextEvents) && contextEvents.length > 0) {
+    if (Array.isArray(contextEvents)) {
       setBackendEvents(contextEvents);
       setLoading(false);
     }
@@ -43,11 +43,6 @@ export default function EventsPage() {
   const fetchLiveEvents = useCallback(async (isManualRefresh = false) => {
     if (isManualRefresh) {
       setIsRefreshing(true);
-    } else {
-      setBackendEvents((prev) => {
-        if (!prev || prev.length === 0) setLoading(true);
-        return prev;
-      });
     }
     setError(null);
 
@@ -81,7 +76,7 @@ export default function EventsPage() {
     }
   }, [updateContextEvents]);
 
-  // Initial load from backend (silent if already populated)
+  // Initial load from backend (runs on mount)
   useEffect(() => {
     fetchLiveEvents();
   }, [fetchLiveEvents]);

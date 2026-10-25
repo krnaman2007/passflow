@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import {
   INITIAL_USERS,
   INITIAL_ORDER_BOOKS,
@@ -96,6 +96,8 @@ function setCachedEvents(eventsList) {
   try {
     if (Array.isArray(eventsList) && eventsList.length > 0) {
       sessionStorage.setItem('passflow_events', JSON.stringify(eventsList));
+    } else {
+      sessionStorage.removeItem('passflow_events');
     }
   } catch {
     // Ignore storage quota errors
@@ -224,10 +226,10 @@ export function AppProvider({ children }) {
   // Entities State
   const [events, setEvents] = useState(() => getCachedEvents());
 
-  const updateEventsWithCache = (newEvents) => {
+  const updateEventsWithCache = useCallback((newEvents) => {
     setEvents(newEvents);
     setCachedEvents(newEvents);
-  };
+  }, []);
 
   // Fetch real events from PostgreSQL backend on mount
   useEffect(() => {
@@ -241,7 +243,7 @@ export function AppProvider({ children }) {
           (Array.isArray(response?.data) ? response.data : []) ||
           (Array.isArray(response) ? response : []);
 
-        if (Array.isArray(rawList) && rawList.length > 0 && isMounted) {
+        if (Array.isArray(rawList) && isMounted) {
           const formatted = rawList.map((ev, idx) => formatBackendEvent(ev, idx));
           setEvents(formatted);
           setCachedEvents(formatted);
@@ -463,7 +465,7 @@ export function AppProvider({ children }) {
       fetchLiveNotifications(),
       fetchLiveOrders(),
       fetchLiveTickets(),
-    ]).catch(() => {});
+    ]).catch(() => { });
 
     return { success: true, user, tokens };
   };
@@ -559,7 +561,7 @@ export function AppProvider({ children }) {
       setCurrentRole(authUser.role);
       try {
         localStorage.setItem('passflow_role', authUser.role);
-      } catch {}
+      } catch { }
     }
   }, [authUser?.role, currentRole]);
 
@@ -569,7 +571,7 @@ export function AppProvider({ children }) {
     if (typeof window !== 'undefined') {
       try {
         localStorage.setItem('passflow_role', newRole);
-      } catch {}
+      } catch { }
     }
     if (newRole === 'PUBLIC') {
       showToast('Switched to Visitor / Public view', 'info');
@@ -920,14 +922,14 @@ export function AppProvider({ children }) {
         prev.map((t) =>
           t.id === ticketId
             ? {
-                ...t,
-                status: 'TRANSFERRED',
-                transferTo: recipientEmail,
-                ownershipChain: [
-                  ...(t.ownershipChain || []),
-                  { type: 'TRANSFER', user: recipientEmail, action: 'Direct peer-to-peer transfer', date: 'Just now' }
-                ]
-              }
+              ...t,
+              status: 'TRANSFERRED',
+              transferTo: recipientEmail,
+              ownershipChain: [
+                ...(t.ownershipChain || []),
+                { type: 'TRANSFER', user: recipientEmail, action: 'Direct peer-to-peer transfer', date: 'Just now' }
+              ]
+            }
             : t
         )
       );
@@ -1090,12 +1092,12 @@ export function AppProvider({ children }) {
                 n.type === 'TRADE'
                   ? 'Order Fill Executed'
                   : n.type === 'ORDER'
-                  ? 'Secondary Order Placed'
-                  : n.type === 'TRANSFER'
-                  ? 'Wallet Credit & Escrow'
-                  : n.type === 'KYC'
-                  ? 'KYC Verification Status'
-                  : 'System Notification',
+                    ? 'Secondary Order Placed'
+                    : n.type === 'TRANSFER'
+                      ? 'Wallet Credit & Escrow'
+                      : n.type === 'KYC'
+                        ? 'KYC Verification Status'
+                        : 'System Notification',
               body: n.message || '',
               time: `${dateStr}, ${timeStr}`,
               unread: n.status === 'UNREAD',
