@@ -70,6 +70,7 @@ export default function Navbar() {
             <span>PassFlow</span>
           </div>
 
+
           {backendStatus && (
             <div
               className="backend-status-badge"
