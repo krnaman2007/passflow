@@ -375,9 +375,9 @@ export default function TicketsPage() {
                     }}
                   >
                     <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-                      Face Value:{' '}
-                      <strong className="font-mono" style={{ color: 'var(--text-main)' }}>
-                        ₹{Number(ticket.faceValue).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                      Purchase Price:{' '}
+                      <strong className="font-mono" style={{ color: 'var(--accent-emerald)', fontWeight: 700 }}>
+                        ₹{Number(ticket.currentPrice ?? ticket.purchasePrice ?? ticket.faceValue).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </strong>
                     </div>
 
@@ -507,8 +507,10 @@ export default function TicketsPage() {
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 13 }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Face Value:</span>
-                  <span className="font-mono">₹{Number(selectedTicket.faceValue).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                  <span style={{ color: 'var(--text-muted)' }}>Purchase Price:</span>
+                  <span className="font-mono" style={{ color: 'var(--accent-emerald)', fontWeight: 700 }}>
+                    ₹{Number(selectedTicket.currentPrice ?? selectedTicket.purchasePrice ?? selectedTicket.faceValue).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>

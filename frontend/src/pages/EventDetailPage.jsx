@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { api } from '../services/api';
 import { formatBackendEvent } from '../utils/eventAdapter';
@@ -57,11 +57,9 @@ export default function EventDetailPage() {
 
       if (fromContext && Array.isArray(fromContext.tiers) && fromContext.tiers.length > 0) {
         setLiveEvent(fromContext);
-        setLoading(false);
-        return;
+      } else {
+        setLoading(true);
       }
-
-      setLoading(true);
       setError(null);
 
       try {
@@ -128,14 +126,19 @@ export default function EventDetailPage() {
   tiers.forEach((tier) => {
     const qty = quantities[tier.id] || 0;
     if (qty > 0) {
-      const lineCost = tier.price * qty;
+      const livePrice = tier.activeAuction
+        ? (auctionPrices[tier.activeAuction.id] ?? tier.activeAuction.currentPrice ?? tier.activeAuction.startPrice)
+        : tier.price;
+      const lineCost = Math.round(Number(livePrice) * qty * 100) / 100;
       totalCost += lineCost;
       totalTickets += qty;
       summaryLines.push({
         id: tier.id,
-        name: tier.name,
+        name: tier.activeAuction ? `${tier.name} (Live Auction)` : tier.name,
         qty,
+        unitPrice: livePrice,
         cost: lineCost,
+        activeAuction: tier.activeAuction,
       });
     }
   });
@@ -163,27 +166,49 @@ export default function EventDetailPage() {
 
     setIsProcessing(true);
     try {
-      const success = await purchasePrimaryTickets(event.id, quantities);
-      if (success) {
-        setPurchaseSuccess({
-          totalTickets,
-          totalCost,
-          balanceBefore: walletBalance,
-          balanceAfter,
-          summary: summaryLines,
-        });
-        setQuantities({});
+      for (const line of summaryLines) {
+        if (line.activeAuction) {
+          await api.auctions.purchaseAuction(line.activeAuction.id, line.qty);
+        } else {
+          await purchasePrimaryTickets(event.id, { [line.id]: line.qty });
+        }
       }
+
+      if (typeof syncLiveWallet === 'function') await syncLiveWallet();
+      if (typeof fetchLiveOrders === 'function') await fetchLiveOrders();
+
+      setPurchaseSuccess({
+        totalTickets,
+        totalCost,
+        balanceBefore: walletBalance,
+        balanceAfter,
+        summary: summaryLines,
+      });
+      setQuantities({});
+      showToast(
+        `Successfully purchased ${totalTickets} ticket(s) for ₹${totalCost.toLocaleString('en-IN', { minimumFractionDigits: 2 })}!`,
+        'success'
+      );
     } catch (err) {
-      showToast(err.message || 'Purchase could not be completed.', 'error');
+      const msg = err?.data?.error?.message || err?.message || 'Purchase could not be completed.';
+      showToast(msg, 'error');
     } finally {
       setIsProcessing(false);
     }
   };
 
   // Poll live Dutch auction prices for any tier with an active auction
+  const activeAuctions = useMemo(() => {
+    return (Array.isArray(event?.tiers) ? event.tiers : [])
+      .map((t) => t.activeAuction)
+      .filter(Boolean);
+  }, [event]);
+
+  const activeAuctionIds = useMemo(() => {
+    return activeAuctions.map((a) => a.id).join(',');
+  }, [activeAuctions]);
+
   useEffect(() => {
-    const activeAuctions = tiers.map((t) => t.activeAuction).filter(Boolean);
     if (activeAuctions.length === 0) return;
 
     let isPolling = true;
@@ -211,7 +236,7 @@ export default function EventDetailPage() {
       isPolling = false;
       clearInterval(interval);
     };
-  }, [tiers]);
+  }, [activeAuctionIds]);
 
   const handleBuyAuction = async (auction, tier) => {
     if (currentRole === 'PUBLIC') {
@@ -472,22 +497,39 @@ export default function EventDetailPage() {
                       <div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                           <strong style={{ fontSize: 15 }}>{tier.name}</strong>
-                          <span className="badge badge-neutral font-mono">₹{tier.price}</span>
-                          {tier.activeAuction && (
-                            <span
-                              className="badge font-mono"
-                              style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: 4,
-                                background: 'rgba(236, 72, 153, 0.15)',
-                                color: '#ec4899',
-                                border: '1px solid rgba(236, 72, 153, 0.3)',
-                                fontSize: 11,
-                              }}
-                            >
-                              <Gavel size={11} /> Dutch Auction
-                            </span>
+                          {tier.activeAuction ? (
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                              <span
+                                className="badge font-mono"
+                                style={{
+                                  background: 'rgba(16, 185, 129, 0.15)',
+                                  color: 'var(--accent-emerald)',
+                                  border: '1px solid rgba(16, 185, 129, 0.35)',
+                                  fontSize: 13,
+                                  fontWeight: 700,
+                                  padding: '3px 8px',
+                                }}
+                              >
+                                ₹{auctionPrices[tier.activeAuction.id] ?? tier.activeAuction.currentPrice ?? tier.activeAuction.startPrice}
+                              </span>
+                              <span
+                                className="badge font-mono"
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  background: 'rgba(236, 72, 153, 0.15)',
+                                  color: '#ec4899',
+                                  border: '1px solid rgba(236, 72, 153, 0.3)',
+                                  fontSize: 11,
+                                }}
+                              >
+                                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', display: 'inline-block', boxShadow: '0 0 6px #10b981' }} />
+                                <Gavel size={11} /> Live Decaying Price
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="badge badge-neutral font-mono">₹{tier.price}</span>
                           )}
                         </div>
                         <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4 }}>

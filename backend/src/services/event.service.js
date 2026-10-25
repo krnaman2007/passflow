@@ -67,7 +67,14 @@ export const eventService = {
         orderBy: { dateTime: 'asc' },
         include: {
           categories: {
-            include: { inventory: true },
+            include: {
+              inventory: true,
+              dutchAuctions: {
+                where: { status: 'ACTIVE' },
+                orderBy: { createdAt: 'desc' },
+                take: 1,
+              },
+            },
           },
           organizer: {
             select: { id: true, organizationName: true },
