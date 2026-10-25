@@ -24,6 +24,19 @@ export const checkDatabaseConnections = async ({
         timeoutPromise,
       ]);
       logger.info('🐘 [Database] PostgreSQL (Prisma): Connected successfully');
+
+      if (redis && process.env.NODE_ENV !== 'test') {
+        try {
+          if (redis.status === 'wait') {
+            await redis.connect();
+          }
+          await redis.ping();
+          logger.info('🟥 [Database] Redis (Upstash): Connected successfully');
+        } catch (rErr) {
+          logger.warn(`⚠️ [Database] Redis connection notice: ${rErr.message}`);
+        }
+      }
+
       return true;
     } catch (err) {
       lastError = err;
