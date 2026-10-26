@@ -108,7 +108,7 @@ export default function AdminConsolePage() {
     try {
       if (typeof refreshAdminData === 'function') {
         await refreshAdminData();
-        showToast('Telemetry and database records refreshed from PostgreSQL', 'success');
+        showToast('Telemetry and database records refreshed', 'success');
       }
     } catch {
       showToast('Telemetry refresh failed', 'error');
@@ -370,7 +370,7 @@ export default function AdminConsolePage() {
             <span className="badge badge-green font-mono">LIVE BACKEND</span>
           </div>
           <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>
-            PostgreSQL ledger reconciliation, cluster health telemetry, and administrative moderation
+            Ledger reconciliation, cluster health telemetry, and administrative moderation
           </p>
         </div>
 
@@ -486,7 +486,7 @@ export default function AdminConsolePage() {
               </span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
                 <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981' }} />
-                <span>Database PostgreSQL ok ({adminData.health?.database?.latency || '3ms'})</span>
+                <span>Database ok ({adminData.health?.database?.latency || '3ms'})</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
                 <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981' }} />
@@ -516,7 +516,7 @@ export default function AdminConsolePage() {
                 <div>
                   <h3 style={{ fontSize: 16 }}>Daily Ledger Reconciliation</h3>
                   <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                    Compares in-memory matching fills against PostgreSQL ledger balances
+                    Compares in-memory matching fills against ledger balances
                   </p>
                 </div>
                 <button
@@ -583,7 +583,7 @@ export default function AdminConsolePage() {
                 <div>
                   <h3 style={{ fontSize: 16 }}>Administrative Audit Log</h3>
                   <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                    Immutable append-only administrative trace in PostgreSQL
+                                         Immutable append-only administrative trace
                   </p>
                 </div>
                 <span className="badge badge-neutral font-mono">APPEND-ONLY</span>
@@ -915,7 +915,7 @@ export default function AdminConsolePage() {
             <div>
               <h3 style={{ fontSize: 16 }}>Live User Accounts & KYC Moderation</h3>
               <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                Authoritative user registry from PostgreSQL ({filteredUsers.length} total)
+                Authoritative user registry ({filteredUsers.length} total)
               </p>
             </div>
             <div style={{ position: 'relative', width: 260 }}>
@@ -1100,7 +1100,7 @@ export default function AdminConsolePage() {
                       <CheckCircle2 size={32} color="#10b981" style={{ margin: '0 auto 8px auto', display: 'block' }} />
                       <strong style={{ color: 'var(--text-main)', fontSize: 14 }}>All Settlement Queues Clean</strong>
                       <div style={{ fontSize: 12, marginTop: 4 }}>
-                        Zero failed settlement executions. In-memory matching engine and PostgreSQL escrows are 100% balanced.
+                        Zero failed settlement executions. In-memory matching engine and escrows are 100% balanced.
                       </div>
                     </td>
                   </tr>
@@ -1166,7 +1166,7 @@ export default function AdminConsolePage() {
           {/* Health Lights Row */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, padding: 16, background: 'rgba(18, 21, 29, 0.4)', borderBottom: '1px solid var(--border-subtle)' }}>
             <div style={{ background: 'var(--bg-app)', padding: 12, borderRadius: 'var(--radius-sm)' }}>
-              <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase' }}>PostgreSQL Primary</div>
+              <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase' }}>Primary DB</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
                 <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981' }} />
                 <strong style={{ fontSize: 14 }}>{adminData.health?.database?.status || 'OK'}</strong>

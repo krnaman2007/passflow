@@ -1,6 +1,6 @@
 /**
  * PassFlow Event Adapter
- * Adapts PostgreSQL backend Event entities to UI component presentation formats.
+ * Adapts backend Event entities to UI component presentation formats.
  * Ensures zero mock data and zero hardcoded fallbacks are used.
  */
 
@@ -13,7 +13,7 @@ const THEMES = [
 ];
 
 /**
- * Format a raw backend event from PostgreSQL into the UI format
+ * Format a raw backend event into the UI format
  * @param {object} ev - Raw backend event
  * @param {number} index - Index for aesthetic color palette
  */

@@ -130,7 +130,7 @@ export default function EventsPage() {
               onClick={() => fetchLiveEvents(true)}
               disabled={loading || isRefreshing}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-              title="Refresh live events from PostgreSQL"
+              title="Refresh live events"
             >
               <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
               <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>

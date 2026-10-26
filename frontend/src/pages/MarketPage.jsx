@@ -484,7 +484,7 @@ export default function MarketPage() {
             className="btn-secondary"
             onClick={() => refetchMarket()}
             style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '6px 12px' }}
-            title="Refresh order book from PostgreSQL"
+            title="Refresh order book"
           >
             <RefreshCw size={13} />
             <span>Refresh</span>
@@ -1058,7 +1058,7 @@ export default function MarketPage() {
                 {book.trades.length === 0 ? (
                   <tr>
                     <td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-dim)', padding: 24 }}>
-                      No trade executions recorded yet in PostgreSQL database
+                      No trade executions recorded yet.
                     </td>
                   </tr>
                 ) : (

@@ -150,7 +150,7 @@ export default function OrdersHistoryPage() {
         console.warn('Trades fetch deferred:', err.message);
       }
 
-      // 3. Fetch live financial transaction history from PostgreSQL (/history/transactions)
+      // 3. Fetch live financial transaction history (/history/transactions)
       try {
         const txRes = await (api.history?.getTransactions ? api.history.getTransactions() : api.wallet.getTransactions());
         const rawTx = txRes?.data?.transactions || txRes?.transactions || [];
@@ -192,7 +192,7 @@ export default function OrdersHistoryPage() {
 
   const handleManualRefresh = async () => {
     await fetchHistoryData();
-    showToast('Orders, trades, and ledger refreshed from PostgreSQL', 'success');
+    showToast('Orders, trades, and ledger refreshed', 'success');
   };
 
   const handleCancelOrder = async (orderId) => {
@@ -306,7 +306,7 @@ export default function OrdersHistoryPage() {
             </span>
           </div>
           <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>
-            Authoritative ledger of open limit orders, matching engine fills, and escrow settlements from PostgreSQL
+            Live ledger of open limit orders, matching engine fills, and escrow settlements
           </p>
         </div>
 

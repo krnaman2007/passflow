@@ -1,5 +1,5 @@
 // PassFlow Zero-Mock Pure State Initializers
-// All authoritative data is dynamically fetched from the PostgreSQL backend.
+// All authoritative data is dynamically fetched from the backend.
 
 export const INITIAL_USERS = [];
 

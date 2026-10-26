@@ -73,7 +73,7 @@ export default function SolvencyVerifyPage() {
           backingAssets: 250000,
           notes: 'Authoritative Escrow Custody Attestation',
         });
-        showToast('Solvency Proof recalculated & published to PostgreSQL.', 'success');
+        showToast('Solvency proof regenerated and updated.', 'success');
       }
       await fetchSolvencyProof();
     } catch (err) {

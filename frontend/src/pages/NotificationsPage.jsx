@@ -98,7 +98,7 @@ export default function NotificationsPage() {
             Authentication Required
           </h2>
           <p style={{ color: 'var(--text-sub)', fontSize: 14, maxWidth: 440, margin: '0 auto 24px' }}>
-            Sign in to view your personalized PostgreSQL notifications, order fills, and escrow updates.
+            Sign in to view your personalized notifications, order fills, and escrow updates.
           </p>
 
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
