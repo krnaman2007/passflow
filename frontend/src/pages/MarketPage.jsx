@@ -36,7 +36,6 @@ export default function MarketPage() {
   const [selectedEventData, setSelectedEventData] = useState(null);
 
   // Determine current active event
-  const basePrice = Number(currentTier?.price) || 5000; // fallback for demo
   const currentEvent = useMemo(() => {
     if (selectedEventData) return selectedEventData;
 
