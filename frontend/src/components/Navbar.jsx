@@ -71,40 +71,9 @@ export default function Navbar() {
           </div>
 
 
-          {backendStatus && (
-            <div
-              className="backend-status-badge"
-              title={
-                backendStatus.connected
-                  ? `Backend connected (Port 5001, Latency: ${backendStatus.latencyMs}ms)`
-                  : `Connecting to Backend (${backendStatus.url || 'localhost:5001'})...`
-              }
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 5,
-                fontSize: '0.7rem',
-                fontWeight: 600,
-                padding: '2px 8px',
-                borderRadius: 999,
-                background: backendStatus.connected ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
-                color: backendStatus.connected ? '#10b981' : '#f87171',
-                border: `1px solid ${backendStatus.connected ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
-                cursor: 'default',
-              }}
-            >
-              <span
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  background: backendStatus.connected ? '#10b981' : '#f87171',
-                  boxShadow: backendStatus.connected ? '0 0 6px #10b981' : 'none',
-                }}
-              />
-              <span>{backendStatus.connected ? 'Backend Live' : 'Backend Offline'}</span>
-            </div>
-          )}
+
+            
+
         </div>
 
         <nav className="nav-links">
