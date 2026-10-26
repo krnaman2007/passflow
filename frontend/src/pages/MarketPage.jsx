@@ -50,46 +50,9 @@ export default function MarketPage() {
     return null;
   }, [events, routeParams.id, selectedEventData]);
 
-  // Hook for live market data (snapshot, orderbook, trades)
-  const {
-    liveSnapshot,
-    connectionStatus,
-    isResyncing,
-    loadingInitial,
-  } = useMarketStream(
-    currentEvent?.id || null,
-    activeCategoryId || null,
-  );
 
-  // Normalized book data for rendering; fallback to empty structure
-  const book = useMemo(() => {
-    if (!liveSnapshot) {
-      // Demo fallback when no live data – generate synthetic order book
-      const base = Number(basePrice) || 5000;
-      const generateSide = (isAsk) => Array.from({ length: 5 }, (_, i) => {
-        const price = (base * (1 + (isAsk ? 0.01 : -0.01) * (i + 1))).toFixed(2);
-        const qty = Math.floor(Math.random() * 10) + 1;
-        return {
-          price,
-          qty,
-          total: (price * qty).toFixed(2),
-          depth: (i + 1) * qty,
-        };
-      });
-      const asks = generateSide(true);
-      const bids = generateSide(false).reverse();
-      return {
-        asks,
-        bids,
-        bestAsk: asks[0].price,
-        bestBid: bids[0].price,
-        spread: (asks[0].price - bids[0].price).toFixed(2),
-        lastPrice: null,
-      };
-    }
-    const { asks = [], bids = [], bestAsk, bestBid, spread, lastPrice } = liveSnapshot;
-    return { asks, bids, bestAsk, bestBid, spread, lastPrice };
-  }, [liveSnapshot, basePrice]);
+
+
 
   // If events list is empty in context on direct load, query backend events
   useEffect(() => {
