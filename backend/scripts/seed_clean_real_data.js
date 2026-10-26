@@ -844,7 +844,7 @@ async function main() {
   console.log(' - User: ali@passflow.com / Password123! (Balance: ₹50,000)');
   console.log(' - Organizer: organizer@livenation.com / Password123!');
   console.log(' - Admin: admin@passflow.com / Password123!');
-  console.log('========================================================');
+  console.log('=======================================================');
 }
 
 main()
