@@ -121,9 +121,7 @@ export default function EventsPage() {
               Live Exchange Events.<br />
               <span style={{ color: 'var(--accent-orange)' }}>Direct from Backend Database.</span>
             </h1>
-            <p className="hero-sub">
-              Real-time ticket inventory and resale order books synced directly from PostgreSQL.
-            </p>
+            <p className="hero-sub">Live ticket inventory synced from PostgreSQL.</p>
           </div>
 
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
