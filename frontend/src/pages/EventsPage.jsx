@@ -119,9 +119,9 @@ export default function EventsPage() {
           <div>
             <h1 className="hero-title">
               Live Exchange Events.<br />
-              <span style={{ color: 'var(--accent-orange)' }}>Direct from Backend Database.</span>
+
             </h1>
-            <p className="hero-sub">Live ticket inventory synced from PostgreSQL.</p>
+            <p className="hero-sub">Explore live events and ticket options.</p>
           </div>
 
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -242,7 +242,7 @@ export default function EventsPage() {
             </button>
           ) : effectiveRole === 'ORGANIZER' || effectiveRole === 'ADMIN' ? (
             <button className="btn-primary" onClick={() => navigate('/organizer/create-event')}>
-              <span>Create Event in Backend</span>
+              <span>Create Event</span>
               <ArrowRight size={15} />
             </button>
           ) : (
