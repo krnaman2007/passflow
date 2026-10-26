@@ -71,20 +71,8 @@ function MainRouter() {
           background: 'rgba(13, 15, 20, 0.95)'
         }}
       >
-        <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ color: 'var(--accent-orange)' }}>◆</span>
-            <span style={{ fontWeight: 600, color: 'var(--text-sub)' }}>PassFlow Exchange</span>
-            <span>· High-Concurrence Ticket Market Engine</span>
-          </div>
-
-          <div style={{ display: 'flex', gap: 16 }}>
-            <span>Solvency: 103.9% Backed</span>
-            <span>·</span>
-            <span>Anti-Scalping Protected</span>
-            <span>·</span>
-            <span>In-Memory Matching</span>
-          </div>
+        <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+          <span>Powered by PassFlow Exchange</span>
         </div>
       </footer>
     </div>
