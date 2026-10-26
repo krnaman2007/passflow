@@ -291,9 +291,7 @@ export default function MarketPage() {
       <div className="content-wrap" style={{ padding: '60px 20px', textAlign: 'center' }}>
         <AlertCircle size={36} color="var(--accent-orange)" style={{ margin: '0 auto 12px' }} />
         <h2 style={{ fontSize: 20, marginBottom: 8 }}>No Live Markets Available</h2>
-        <p style={{ color: 'var(--text-muted)', fontSize: 14, maxWidth: 460, margin: '0 auto 20px' }}>
-          There are currently no events registered in the backend database. You can browse events or create a new one as an organizer.
-        </p>
+        <p style={{ color: 'var(--text-muted)', fontSize: 14, maxWidth: 460, margin: '0 auto 20px' }}>No live markets available. Browse events to explore.</p>
         <button className="btn-primary" onClick={() => navigate('/events')}>
           Browse Events
         </button>
@@ -437,9 +435,9 @@ export default function MarketPage() {
             )}
           </div>
 
-          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
-            Authoritative order matching engine synced with PostgreSQL & Socket.IO.
-          </p>
+
+
+
         </div>
 
         {/* Right Header Actions: Event Selector & Refresh */}

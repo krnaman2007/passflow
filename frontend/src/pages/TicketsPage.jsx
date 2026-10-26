@@ -52,7 +52,7 @@ export default function TicketsPage() {
         await fetchLiveTickets();
       }
       if (isManualRefresh) {
-        showToast('Ticket vault synced with database', 'info');
+        showToast('Tickets updated', 'info');
       }
     } catch (err) {
       console.warn('Could not sync tickets:', err.message);
