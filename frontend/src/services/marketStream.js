@@ -23,6 +23,7 @@
  */
 
 import { io } from 'socket.io-client';
+import { getAuthToken } from './api.js';
 
 export const CONNECTION_STATUS = {
   CONNECTING: 'CONNECTING',
@@ -58,7 +59,8 @@ export class MarketStreamClient {
     this.socketOptions = socketOptions;
     this.socketFactory = socketFactory;
     this.socket = null;
-    this.authToken = null;
+    // Load stored auth token (if any) on client creation
+    this.authToken = getAuthToken ? getAuthToken() : null;
     this.status = CONNECTION_STATUS.DISCONNECTED;
     this.statusListeners = new Set();
     this.fillListeners = new Set();
