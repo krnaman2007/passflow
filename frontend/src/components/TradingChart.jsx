@@ -30,19 +30,29 @@ export default function TradingChart({ eventId, categoryId, eventName, tierName,
           setSummary(data.summary);
         }
 
-        // Format candles for lightweight-charts
+        // Format candles for lightweight‑charts with robust field handling
         let formatted = [];
         if (candles.length > 0) {
-          formatted = candles.map((c) => {
-            const timeSec = Math.floor(new Date(c.timestamp || c.time).getTime() / 1000);
-            return {
-              time: timeSec,
-              open: Number(c.open) / (Number(c.open) > 1000 ? 100 : 1),
-              high: Number(c.high) / (Number(c.high) > 1000 ? 100 : 1),
-              low: Number(c.low) / (Number(c.low) > 1000 ? 100 : 1),
-              close: Number(c.close) / (Number(c.close) > 1000 ? 100 : 1),
-            };
-          }).sort((a, b) => a.time - b.time);
+          formatted = candles
+            .map((c) => {
+              const ts = c.timestamp ?? c.time ?? c.datetime ?? c.date;
+              if (!ts) return null;
+              const timeSec = Math.floor(new Date(ts).getTime() / 1000);
+              if (!Number.isFinite(timeSec) || timeSec <= 0) return null;
+              const divide = (v) => {
+                const num = Number(v);
+                return num > 1000 ? num / 100 : num;
+              };
+              return {
+                time: timeSec,
+                open: divide(c.open),
+                high: divide(c.high),
+                low: divide(c.low),
+                close: divide(c.close),
+              };
+            })
+            .filter(Boolean)
+            .sort((a, b) => a.time - b.time);
 
           // Deduplicate consecutive identical timestamps if any
           const deduped = [];
