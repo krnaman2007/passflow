@@ -156,7 +156,7 @@ export default function WalletPage() {
           </div>
           <h2 style={{ fontSize: 24, marginBottom: 8 }}>Authentication Required</h2>
           <p style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 24, lineHeight: 1.5 }}>
-            Sign in to access your atomic escrow trading wallet, view live PostgreSQL ledger balances, and deposit or withdraw funds.
+                        Sign in to access your escrow trading wallet, view your ledger balances, and manage deposits or withdrawals.
           </p>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
             <button
