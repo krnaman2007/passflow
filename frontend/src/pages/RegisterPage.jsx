@@ -142,7 +142,7 @@ export default function RegisterPage() {
         <div style={{ marginBottom: 20 }}>
           <h2 style={{ fontSize: 20, marginBottom: 4 }}>Create Account</h2>
           <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-            Your custodial escrow wallet and ledger will be created automatically in PostgreSQL
+            Your custodial escrow wallet and ledger will be set up automatically.
           </p>
         </div>
 

@@ -205,7 +205,7 @@ export default function WalletPage() {
             </span>
           </div>
           <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>
-            Authoritative double-entry ledger in PostgreSQL. Buyer bid funds are locked in escrow until matching or cancellation.
+            Secure escrow ledger that safely holds your funds during trades.
           </p>
         </div>
 

@@ -163,11 +163,11 @@ export default function NotificationsPage() {
               </span>
             )}
             <span className="badge badge-green font-mono" style={{ fontSize: 10 }}>
-              POSTGRESQL SYNC
+                              Live Sync
             </span>
           </div>
           <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>
-            Authoritative alerts for secondary matching engine order fills, cancellations, and settlement receipts
+            Alerts for order fills, cancellations, and settlement receipts
           </p>
         </div>
 
