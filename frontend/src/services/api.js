@@ -98,8 +98,20 @@ export async function apiRequest(endpoint, { method = 'GET', body, headers = {},
       connErr.status = 0;
       throw connErr;
     }
-    throw err;
+    // Centralized error transformation
+    const formatted = formatApiError(err);
+    throw formatted;
   }
+}
+
+// ==========================================
+// Centralized error formatting helper
+export function formatApiError(err) {
+  const friendlyMessage = err?.data?.error?.message || err?.data?.message || err?.message || 'An unexpected error occurred';
+  const formatted = new Error(friendlyMessage);
+  formatted.status = err?.status;
+  formatted.original = err;
+  return formatted;
 }
 
 // ==========================================
