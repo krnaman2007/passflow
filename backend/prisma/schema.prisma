@@ -399,6 +399,11 @@ enum TransactionType {
   PURCHASE
   REFUND
   FEE
+  WITHDRAW
+  HOLD
+  RELEASE
+  TRADE_DEBIT
+  TRADE_CREDIT
 }
 
 enum TransactionStatus {
