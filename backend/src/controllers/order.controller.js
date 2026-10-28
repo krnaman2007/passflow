@@ -1,5 +1,6 @@
 import { orderService as defaultOrderService } from '../services/order/index.js';
 import { marketStreamService } from '../services/market-stream/index.js';
+import { orderStreamService } from '../services/order-stream/index.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { successResponse } from '../utils/response.js';
 
@@ -136,8 +137,8 @@ export class OrderController {
 
       const rawIdempotencyKey =
         body.idempotencyKey ||
-        req.headers['idempotency-key'] ||
-        req.headers['x-idempotency-key'];
+        req.headers?.['idempotency-key'] ||
+        req.headers?.['x-idempotency-key'];
 
       if (!rawIdempotencyKey || typeof rawIdempotencyKey !== 'string' || !rawIdempotencyKey.trim()) {
         throw new AppError('idempotencyKey is required (in body or Idempotency-Key header)', 400, 'VALIDATION_ERROR');
@@ -154,6 +155,18 @@ export class OrderController {
         idempotencyKey,
         orderType,
       };
+
+      // High-Concurrency Stream Ingestion: Buffer to Redis Streams if stream mode enabled or requested
+      const useStream =
+        req.headers?.['x-ingestion-mode'] === 'stream' ||
+        req.query?.mode === 'stream' ||
+        process.env.ORDER_INGESTION_MODE === 'stream';
+
+      if (useStream && orderStreamService.isReady()) {
+        const queuedResult = await orderStreamService.enqueueOrder(placementInput);
+        return res.status(202).json(successResponse(queuedResult));
+      }
+
       const placementResult = orderType === 'MARKET'
         ? await this.orderService.placeMarketOrder(placementInput)
         : await this.orderService.placeLimitOrder(placementInput);

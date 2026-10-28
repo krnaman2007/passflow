@@ -11,6 +11,8 @@ import { orderService } from './src/services/order/index.js';
 import { marketStreamService } from './src/services/market-stream/index.js';
 import notificationService from './src/services/notification.service.js';
 import monitoringService from './src/services/monitoring.service.js';
+import { orderStreamService } from './src/services/order-stream/index.js';
+import redis from './src/db/redis.js';
 import corsOptions from './src/config/cors.js';
 import prisma from './src/db/prisma.js';
 import solvencyService from './src/services/solvency.service.js';
@@ -45,7 +47,13 @@ marketStreamService.setServer(io);
 orderService.setMarketStreamService(marketStreamService);
 tradeSettlementService.setMarketStreamService(marketStreamService);
 notificationService.setIo(io);
-monitoringService.setRuntime({ io, orderService });
+orderStreamService.setDependencies({ redis, orderService });
+if (process.env.NODE_ENV !== 'test') {
+  orderStreamService.startConsumer().catch((err) => {
+    logger.warn('OrderStream consumer startup deferred:', err.message);
+  });
+}
+monitoringService.setRuntime({ io, orderService, orderStreamService });
 
 io.on('connection', (socket) => {
   logger.info(`⚡ Socket client connected: ${socket.id}`);
@@ -197,6 +205,14 @@ export const gracefulShutdown = async (signal) => {
   isShuttingDown = true;
   appLifecycleState.setShuttingDown(true);
   logger.info(`Received ${signal}. Shutting down gracefully...`);
+
+  try {
+    if (orderStreamService?.isRunning) {
+      await orderStreamService.stopConsumer();
+    }
+  } catch (err) {
+    logger.warn('Error stopping order stream consumer during shutdown', err);
+  }
 
   try {
     if (settlementRecoveryWorker && settlementRecoveryWorker.isRunning) {

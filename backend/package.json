@@ -9,6 +9,7 @@
     "dev": "nodemon server.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --detectOpenHandles --forceExit",
     "test:load:ws": "node tests/load/socketio-1000-users.js",
+    "test:load:orders": "node tests/load/redis-streams-1000-orders.js",
     "test:load:k6": "k6 run --env PROFILE=scale_1000 tests/load/k6-trading-performance.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev"

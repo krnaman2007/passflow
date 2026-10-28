@@ -7,10 +7,12 @@ import redis from '../db/redis.js';
 export const monitoringService = {
   io: null,
   orderService: null,
+  orderStreamService: null,
 
-  setRuntime({ io = null, orderService = null } = {}) {
+  setRuntime({ io = null, orderService = null, orderStreamService = null } = {}) {
     this.io = io;
     this.orderService = orderService;
+    if (orderStreamService) this.orderStreamService = orderStreamService;
   },
   /**
    * Evaluates health status across DB, Redis, WebSocket, and Matching Engine.
@@ -116,16 +118,16 @@ export const monitoringService = {
     ]);
 
     const memoryUsage = process.memoryUsage();
+    const streamMetrics = this.orderStreamService ? await this.orderStreamService.getMetrics().catch(() => null) : null;
 
     return {
-      // No load-test instrumentation has reported a windowed measurement.
-      // Returning null is safer than presenting made-up benchmark numbers.
-      ordersPerSec: null,
-      avgLatency: null,
-      avgLatencyMs: null,
-      throughput: null,
-      errorRate: null,
+      ordersPerSec: streamMetrics?.ordersPerSec ?? null,
+      avgLatency: streamMetrics?.avgIngestionLatencyMs ?? null,
+      avgLatencyMs: streamMetrics?.avgIngestionLatencyMs ?? null,
+      throughput: streamMetrics?.ordersPerSec ?? null,
+      errorRate: streamMetrics?.totalFailed ? Math.round((streamMetrics.totalFailed / Math.max(1, streamMetrics.totalEnqueued)) * 1000) / 1000 : 0,
       uptime: Math.round(process.uptime()),
+      stream: streamMetrics,
       memory: {
         heapUsedMb: Math.round((memoryUsage.heapUsed / 1024 / 1024) * 100) / 100,
         heapTotalMb: Math.round((memoryUsage.heapTotal / 1024 / 1024) * 100) / 100,
@@ -133,7 +135,7 @@ export const monitoringService = {
       },
       orders: {
         total: totalOrders,
-        ordersPerSec: null,
+        ordersPerSec: streamMetrics?.ordersPerSec ?? null,
       },
       executions: {
         total: totalExecutions,

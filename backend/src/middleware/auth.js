@@ -3,6 +3,15 @@ import config from '../config/index.js';
 import prisma from '../db/prisma.js';
 import { AppError } from './errorHandler.js';
 
+// High-Concurrency In-Memory User Auth Cache (TTL: 60s) to prevent PostgreSQL connection pool exhaustion
+const userAuthCache = new Map();
+const USER_CACHE_TTL_MS = 60 * 1000;
+
+export const clearUserAuthCache = (userId) => {
+  if (userId) userAuthCache.delete(userId);
+  else userAuthCache.clear();
+};
+
 /**
  * Middleware to authenticate requests using JWT Bearer token.
  * Populates req.user with the database user and their organizer profile.
@@ -32,17 +41,29 @@ export const authenticateUser = async (req, res, next) => {
       throw new AppError('Invalid token type: access token required', 401, 'INVALID_TOKEN');
     }
 
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      include: {
-        organizer: true,
-        buyerSeller: true,
-        wallet: true,
-      },
-    });
+    let user;
+    const cached = userAuthCache.get(userId);
+    if (cached && Date.now() - cached.cachedAt < USER_CACHE_TTL_MS) {
+      user = cached.user;
+    } else {
+      user = await prisma.user.findUnique({
+        where: { id: userId },
+        include: {
+          organizer: true,
+          buyerSeller: true,
+          wallet: true,
+        },
+      });
 
-    if (!user) {
-      throw new AppError('User account not found', 401, 'USER_NOT_FOUND');
+      if (!user) {
+        throw new AppError('User account not found', 401, 'USER_NOT_FOUND');
+      }
+
+      userAuthCache.set(userId, { user, cachedAt: Date.now() });
+      if (userAuthCache.size > 5000) {
+        const oldestKey = userAuthCache.keys().next().value;
+        userAuthCache.delete(oldestKey);
+      }
     }
 
     req.user = user;

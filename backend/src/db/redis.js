@@ -1,7 +1,7 @@
 import Redis from 'ioredis';
 import logger from '../errorlogging/logger.js';
 
-let REDIS_URL = process.env.REDIS_URL;
+let REDIS_URL = process.env.LOCAL_REDIS_URL || process.env.REDIS_URL;
 
 // URL Sanitizer: handles cases where CLI commands were copied or TLS scheme was missing
 if (REDIS_URL && typeof REDIS_URL === 'string') {
