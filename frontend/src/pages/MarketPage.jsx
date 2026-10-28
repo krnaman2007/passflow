@@ -591,13 +591,17 @@ export default function MarketPage() {
       <div style={{ marginBottom: 8, fontSize: 12, color: connectionStatus === 'RECONNECTING' ? 'var(--accent-rose)' : 'var(--text-sub)' }}>
         Connection: {connectionStatus}
       </div>
-      {/* Real OHLC Candlestick Chart */}
+      {/* Real-Time Price Action Chart */}
       <TradingChart
         eventId={activeEventId}
         categoryId={activeCategoryId}
         eventName={currentEvent?.title || currentEvent?.name}
         tierName={currentTier?.name}
         basePrice={currentTier?.price}
+        bestBid={book.bestBid}
+        bestAsk={book.bestAsk}
+        spread={book.spread}
+        trades={book.trades}
       />
 
       {/* Main 2-column Grid: Orderbook on Left, Order Form on Right */}
