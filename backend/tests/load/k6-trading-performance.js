@@ -46,6 +46,31 @@ export const orderCounter = new Counter('orders_placed_total');
 
 // Build scenario configurations based on active profile
 function getScenarioConfig(profile) {
+  if (profile === 'scale_1000' || profile === 'scale-1000') {
+    return {
+      read_traffic: {
+        executor: 'ramping-vus',
+        startVUs: 10,
+        stages: [
+          { duration: '30s', target: 700 },
+          { duration: DURATION, target: 700 },
+          { duration: '30s', target: 0 },
+        ],
+        exec: 'readTrafficScenario',
+      },
+      trading_traffic: {
+        executor: 'ramping-vus',
+        startVUs: 5,
+        stages: [
+          { duration: '30s', target: 300 },
+          { duration: DURATION, target: 300 },
+          { duration: '30s', target: 0 },
+        ],
+        exec: 'tradingTrafficScenario',
+      },
+    };
+  }
+
   if (profile === 'stress') {
     return {
       read_traffic: {
