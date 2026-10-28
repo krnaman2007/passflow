@@ -17,6 +17,50 @@ const THEMES = [
  * @param {object} ev - Raw backend event
  * @param {number} index - Index for aesthetic color palette
  */
+/**
+ * Resolve high-resolution cinematic cover photography for an event
+ * @param {object} ev 
+ */
+export function getEventImage(ev) {
+  if (ev?.imageUrl) return ev.imageUrl;
+  if (ev?.bannerUrl) return ev.bannerUrl;
+  if (ev?.image) return ev.image;
+
+  const text = `${ev?.name || ev?.title || ''} ${ev?.category || ''} ${ev?.description || ''}`.toLowerCase();
+
+  // Arijit Singh / Live Symphony / Orchestral
+  if (text.includes('arijit') || text.includes('symphony') || text.includes('orchestra') || text.includes('classical')) {
+    return 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?auto=format&fit=crop&w=1200&q=80';
+  }
+  // Zakir Khan / Tathastu / Standup Comedy
+  if (text.includes('zakir') || text.includes('comedy') || text.includes('standup') || text.includes('laughter') || text.includes('tathastu')) {
+    return 'https://images.unsplash.com/photo-1585699324551-f6c309eedeca?auto=format&fit=crop&w=1200&q=80';
+  }
+  // Coldplay / Music of the Spheres
+  if (text.includes('coldplay') || text.includes('spheres')) {
+    return 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?auto=format&fit=crop&w=1200&q=80';
+  }
+  // Diljit Dosanjh / Dil-Luminati
+  if (text.includes('diljit') || text.includes('illuminati') || text.includes('dil-luminati')) {
+    return 'https://images.unsplash.com/photo-1501386761578-eac5c94b800a?auto=format&fit=crop&w=1200&q=80';
+  }
+  // Cricket / ICC / BCCI / T20 / Stadium
+  if (text.includes('cricket') || text.includes('t20') || text.includes('icc') || text.includes('stadium') || text.includes('bcci') || text.includes('australia') || text.includes('ipl')) {
+    return 'https://images.unsplash.com/photo-1540747913346-19e32dc3e97e?auto=format&fit=crop&w=1200&q=80';
+  }
+  // Sunburn Goa / EDM / Music Festival / DJ
+  if (text.includes('sunburn') || text.includes('edm') || text.includes('festival') || text.includes('dj') || text.includes('rave')) {
+    return 'https://images.unsplash.com/photo-1492684223066-81342ee5ff30?auto=format&fit=crop&w=1200&q=80';
+  }
+  // General Concert / Tour / Music
+  if (text.includes('concert') || text.includes('tour') || text.includes('live') || text.includes('music') || text.includes('band')) {
+    return 'https://images.unsplash.com/photo-1465847899084-d164df4dedc6?auto=format&fit=crop&w=1200&q=80';
+  }
+
+  // High-end ambient stage lights default
+  return 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?auto=format&fit=crop&w=1200&q=80';
+}
+
 export function formatBackendEvent(ev, index = 0) {
   if (!ev) return null;
 
@@ -115,6 +159,7 @@ export function formatBackendEvent(ev, index = 0) {
     status: ev.status || 'PUBLISHED',
     gradient: theme.gradient,
     accentColor: theme.accentColor,
+    imageUrl: getEventImage(ev),
     primaryFrom,
     totalAvailable,
     isSoldOut,

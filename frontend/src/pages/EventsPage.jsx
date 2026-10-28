@@ -470,34 +470,45 @@ export default function EventsPage() {
 
             return (
               <div key={ev.id} className="event-card">
-                {/* Card Banner */}
+                {/* Card Banner with Real Thematic Event Photo */}
                 <div
                   className="event-card-banner"
                   style={{
-                    background: `linear-gradient(135deg, rgba(18, 23, 36, 0.94), rgba(12, 16, 26, 0.88)), linear-gradient(45deg, ${ev.accentColor || '#f97316'}33, transparent 70%)`,
+                    backgroundImage: `linear-gradient(180deg, rgba(8, 11, 20, 0.38) 0%, rgba(8, 12, 22, 0.94) 100%), url(${ev.imageUrl})`,
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center',
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <span className="badge badge-neutral" style={{ background: 'rgba(8, 11, 18, 0.7)', backdropFilter: 'blur(8px)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', position: 'relative', zIndex: 2 }}>
+                    <span
+                      className="badge badge-neutral"
+                      style={{
+                        background: 'rgba(8, 11, 18, 0.78)',
+                        backdropFilter: 'blur(8px)',
+                        border: '1px solid rgba(255, 255, 255, 0.16)',
+                        color: '#f8fafc',
+                        fontWeight: 600,
+                      }}
+                    >
                       {ev.category}
                     </span>
                     {ev.status === 'DRAFT' && (
-                      <span className="badge badge-orange">DRAFT</span>
+                      <span className="badge badge-orange font-mono">DRAFT</span>
                     )}
                     {ev.isSoldOut ? (
-                      <span className="badge badge-red">SOLD OUT · RESALE LIVE</span>
+                      <span className="badge badge-red font-mono">SOLD OUT · RESALE LIVE</span>
                     ) : (
-                      <span className="badge badge-green">PRIMARY AVAILABLE</span>
+                      <span className="badge badge-green font-mono">PRIMARY AVAILABLE</span>
                     )}
                   </div>
 
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: '#fff', fontSize: 13, fontWeight: 600 }}>
+                  <div style={{ position: 'relative', zIndex: 2 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: '#ffffff', fontSize: 13, fontWeight: 600, textShadow: '0 2px 4px rgba(0,0,0,0.85)' }}>
                       <Calendar size={14} color="var(--accent-orange)" />
                       <span>{ev.fullDate}</span>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)', fontSize: 12, marginTop: 3 }}>
-                      <MapPin size={12} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'rgba(255, 255, 255, 0.85)', fontSize: 12, marginTop: 3, textShadow: '0 1px 3px rgba(0,0,0,0.9)' }}>
+                      <MapPin size={12} color="var(--accent-orange)" />
                       <span>{ev.venue}</span>
                     </div>
                   </div>

@@ -633,14 +633,20 @@
 }
 
 .event-card-banner {
-  height: 156px;
+  height: 172px;
   position: relative;
   padding: 18px 20px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   background-size: cover;
-  border-bottom: 1px solid var(--border-subtle);
+  background-position: center;
+  border-bottom: 1px solid var(--border-glass-bright);
+  overflow: hidden;
+  transition: filter 0.3s ease;
+}
+.event-card:hover .event-card-banner {
+  filter: brightness(1.08) contrast(1.04);
 }
 .event-card-body {
   padding: 24px;
