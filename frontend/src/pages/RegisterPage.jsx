@@ -129,7 +129,7 @@ export default function RegisterPage() {
               className="btn-secondary"
               disabled={loading}
               style={{ fontSize: 12, padding: '7px 12px', borderColor: 'var(--accent-emerald-border)' }}
-              onClick={() => handleQuickLogin('admin@passflow.com', 'Password123!', '/admin')}
+              onClick={() => navigate('/login', { adminMode: true })}
             >
               <span>Admin: Platform Admin</span>
             </button>
@@ -139,11 +139,34 @@ export default function RegisterPage() {
 
       {/* Create Account Card */}
       <div className="card stat-card-glow card-accent-top" style={{ padding: 32 }}>
-        <div style={{ marginBottom: 20 }}>
-          <h2 style={{ fontSize: 20, marginBottom: 4 }}>Create Account</h2>
-          <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-            Your custodial escrow wallet and ledger will be set up automatically.
-          </p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12, marginBottom: 20 }}>
+          <div>
+            <h2 style={{ fontSize: 20, marginBottom: 4 }}>Create Account</h2>
+            <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+              Your custodial escrow wallet and ledger will be set up automatically.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{
+              padding: '6px 14px',
+              fontSize: 12,
+              fontWeight: 600,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              borderRadius: 'var(--radius-full)',
+              borderColor: 'var(--accent-orange-border)',
+              color: '#a5b4fc',
+              background: 'rgba(99, 102, 241, 0.12)'
+            }}
+            onClick={() => navigate('/login', { adminMode: true })}
+            title="Authenticate as Platform Administrator"
+          >
+            <ShieldCheck size={14} color="#818cf8" />
+            <span>Login as Admin</span>
+          </button>
         </div>
 
         {error && (
@@ -262,7 +285,7 @@ export default function RegisterPage() {
                     justifyContent: 'center'
                   }}
                 >
-                  <User size={16} color={selectedRole === 'USER' ? '#f97316' : 'var(--text-dim)'} />
+                  <User size={16} color={selectedRole === 'USER' ? 'var(--accent-orange)' : 'var(--text-dim)'} />
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -310,7 +333,7 @@ export default function RegisterPage() {
                     justifyContent: 'center'
                   }}
                 >
-                  <Building size={16} color={selectedRole === 'ORGANIZER' ? '#f97316' : 'var(--text-dim)'} />
+                  <Building size={16} color={selectedRole === 'ORGANIZER' ? 'var(--accent-orange)' : 'var(--text-dim)'} />
                 </div>
                 <div style={{ flex: 1 }}>
                   <strong style={{ fontSize: 13, color: selectedRole === 'ORGANIZER' ? 'var(--text-main)' : 'var(--text-sub)' }}>
@@ -328,50 +351,7 @@ export default function RegisterPage() {
                 />
               </div>
 
-              {/* Role 3: Admin */}
-              <div
-                onClick={() => setSelectedRole('ADMIN')}
-                style={{
-                  background: selectedRole === 'ADMIN' ? 'var(--bg-card)' : 'var(--bg-app)',
-                  border: '1px solid',
-                  borderColor: selectedRole === 'ADMIN' ? 'var(--accent-emerald)' : 'var(--border-subtle)',
-                  borderRadius: 'var(--radius-md)',
-                  padding: 12,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  cursor: 'pointer',
-                  transition: 'all 0.15s ease'
-                }}
-              >
-                <div
-                  style={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: '50%',
-                    background: selectedRole === 'ADMIN' ? 'var(--accent-emerald-subtle)' : 'var(--bg-card)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center'
-                  }}
-                >
-                  <ShieldCheck size={16} color={selectedRole === 'ADMIN' ? '#10b981' : 'var(--text-dim)'} />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <strong style={{ fontSize: 13, color: selectedRole === 'ADMIN' ? 'var(--text-main)' : 'var(--text-sub)' }}>
-                    Platform Administrator
-                  </strong>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                    System telemetry, reconciliation engine, anti-scalping caps & settlement recovery
-                  </div>
-                </div>
-                <input
-                  type="radio"
-                  name="userRole"
-                  checked={selectedRole === 'ADMIN'}
-                  onChange={() => setSelectedRole('ADMIN')}
-                />
-              </div>
+
             </div>
           </div>
 
