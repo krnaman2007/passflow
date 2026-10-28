@@ -41,3 +41,5 @@ desktop.ini
 # Temporary / Scratch files
 tmp/
 temp/
+*.rdb
+dump.rdb
