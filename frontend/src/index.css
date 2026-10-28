@@ -54,7 +54,7 @@
   --transition-normal: 0.22s ease;
   --transition-spring: 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   --transition-smooth: 0.24s cubic-bezier(0.16, 1, 0.3, 1);
-  --transition-page: 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-page: 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 *, *::before, *::after {
@@ -198,7 +198,7 @@ input:focus, select:focus, textarea:focus {
 .page-transition-wrapper {
   flex: 1;
   width: 100%;
-  animation: pageEnter 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: pageEnter 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
   will-change: opacity, transform;
 }
 
