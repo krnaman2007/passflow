@@ -331,7 +331,7 @@ class LoadTestService {
 
         const req = http.request(
           {
-            hostname: 'localhost',
+            hostname: '127.0.0.1',
             port,
             path: '/api/v1/orders',
             method: 'POST',

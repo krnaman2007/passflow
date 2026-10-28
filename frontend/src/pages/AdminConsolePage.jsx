@@ -301,8 +301,9 @@ export default function AdminConsolePage() {
     let data = null;
     const token = getAuthToken();
 
-    // Only attempt backend invocation if authenticated with a real backend session
-    if (token && typeof window !== 'undefined' && !window.location.hostname.includes('vercel.app')) {
+    // Only attempt backend invocation if running on localhost with a live admin token
+    const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    if (token && isLocal) {
       try {
         const response = await api.admin.runLoadTest(testType, options);
         if (response && response.data && response.data.metrics) {
@@ -331,14 +332,14 @@ export default function AdminConsolePage() {
 
     const types = ['redis_streams', 'matching_engine', 'http_orders', 'websocket'];
     const token = getAuthToken();
-    const isVercel = typeof window !== 'undefined' && window.location.hostname.includes('vercel.app');
+    const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
     for (const t of types) {
       setActiveTestLogTab(t);
       await new Promise((r) => setTimeout(r, 350));
 
       let d = null;
-      if (token && !isVercel) {
+      if (token && isLocal) {
         try {
           const res = await api.admin.runLoadTest(t);
           if (res?.data?.metrics) d = res.data;
