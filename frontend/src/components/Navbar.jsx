@@ -367,6 +367,19 @@ export default function Navbar() {
                       {currentUser?.email}
                     </div>
                   </div>
+                  <button
+                    type="button"
+                    title="Log out"
+                    className="btn-danger-outline"
+                    style={{ padding: '6px 12px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 5, borderRadius: 'var(--radius-sm)' }}
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      logout();
+                    }}
+                  >
+                    <LogOut size={13} />
+                    <span>Logout</span>
+                  </button>
                 </div>
                 <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                   <span className="badge badge-orange">{currentUser?.role || effectiveRole}</span>
@@ -484,20 +497,56 @@ export default function Navbar() {
                 <Layers size={16} />
                 <span>Proof of Solvency</span>
               </button>
+
+              {effectiveRole !== 'PUBLIC' && (
+                <button
+                  type="button"
+                  className="mobile-drawer-link"
+                  style={{
+                    color: '#f87171',
+                    background: 'rgba(239, 68, 68, 0.08)',
+                    border: '1px solid rgba(239, 68, 68, 0.25)',
+                    marginTop: 6,
+                    fontWeight: 600,
+                  }}
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    logout();
+                  }}
+                >
+                  <LogOut size={16} color="#ef4444" />
+                  <span>Log out of account</span>
+                </button>
+              )}
             </div>
 
             {/* Auth Actions in Drawer */}
             <div className="mobile-drawer-footer">
               {effectiveRole !== 'PUBLIC' ? (
                 <button
+                  type="button"
                   className="btn-danger-outline"
-                  style={{ width: '100%', padding: '10px', fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                  style={{
+                    width: '100%',
+                    padding: '12px 16px',
+                    fontSize: 14,
+                    fontWeight: 600,
+                    borderRadius: 'var(--radius-md)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 8,
+                    background: 'rgba(239, 68, 68, 0.08)',
+                    borderColor: 'rgba(239, 68, 68, 0.35)',
+                    color: '#f87171',
+                    cursor: 'pointer'
+                  }}
                   onClick={() => {
                     setMobileMenuOpen(false);
                     logout();
                   }}
                 >
-                  <LogOut size={15} />
+                  <LogOut size={16} />
                   <span>Log out of account</span>
                 </button>
               ) : (
