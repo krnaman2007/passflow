@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import {
   X,
@@ -21,18 +21,24 @@ export default function Modals() {
     listTicketForSale,
     transferTicket,
     retrySettlement,
-    adminData
+    adminData,
+    showToast
   } = useApp();
 
-  const [askPrice, setAskPrice] = useState(
-    activeModal?.data?.resaleFrom || activeModal?.data?.pricePaid || '52.00'
-  );
+  const [askPrice, setAskPrice] = useState('');
   const [recipient, setRecipient] = useState('ravi@example.com');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (activeModal?.type === 'SELL_TICKET') {
+      setAskPrice('');
+    }
+  }, [activeModal]);
 
   if (!activeModal) return null;
 
   const { type, data } = activeModal;
+  const maxCap = data?.resaleCap || (Number(data?.faceValue || data?.pricePaid || 0) * 2);
 
   const handleClose = () => setActiveModal(null);
 
@@ -97,7 +103,7 @@ export default function Modals() {
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 13 }}>
                 <span style={{ color: 'var(--text-muted)' }}>Fair-price anti-scalping cap:</span>
                 <span className="font-mono" style={{ color: 'var(--accent-orange)', fontWeight: 600 }}>
-                  ₹{Number(data.resaleCap || (Number(data.faceValue || data.pricePaid || 0) * 2)).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  ₹{Number(maxCap || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                 </span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
@@ -115,14 +121,18 @@ export default function Modals() {
               <input
                 type="number"
                 step="1"
-                max={data.resaleCap || ((data.faceValue || data.pricePaid || 0) * 2)}
+                min="1"
+                placeholder="Enter price"
+                max={maxCap || undefined}
                 value={askPrice}
                 onChange={(e) => setAskPrice(e.target.value)}
                 style={{ width: '100%', fontSize: 16, fontWeight: 600 }}
               />
-              <p style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 6 }}>
-                Anti-scalping rule: Cannot exceed ₹{data.resaleCap || ((data.faceValue || data.pricePaid || 0) * 2)} for {data.tier}.
-              </p>
+              {maxCap && Number(maxCap) > 0 ? (
+                <p style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 6 }}>
+                  Cannot exceed ₹{Number(maxCap).toLocaleString('en-IN')}
+                </p>
+              ) : null}
             </div>
 
             <div style={{ display: 'flex', gap: 10 }}>
@@ -131,12 +141,31 @@ export default function Modals() {
               </button>
               <button
                 className="btn-primary"
-                style={{ flex: 2 }}
-                onClick={() => {
-                  listTicketForSale(data.id, parseFloat(askPrice));
+                style={{
+                  flex: 2,
+                  opacity: (!askPrice || parseFloat(askPrice) <= 0 || isSubmitting) ? 0.6 : 1,
+                  cursor: (!askPrice || parseFloat(askPrice) <= 0 || isSubmitting) ? 'not-allowed' : 'pointer'
+                }}
+                disabled={isSubmitting}
+                onClick={async () => {
+                  const num = parseFloat(askPrice);
+                  if (!askPrice || isNaN(num) || num <= 0) {
+                    showToast('Please enter a valid ask price', 'error');
+                    return;
+                  }
+                  if (maxCap && num > maxCap) {
+                    showToast(`Ask price cannot exceed the ₹${Number(maxCap).toLocaleString('en-IN')} resale cap.`, 'error');
+                    return;
+                  }
+                  setIsSubmitting(true);
+                  try {
+                    await listTicketForSale(data.id, num);
+                  } finally {
+                    setIsSubmitting(false);
+                  }
                 }}
               >
-                List for Resale
+                {isSubmitting ? 'Listing...' : 'List for Resale'}
               </button>
             </div>
           </div>

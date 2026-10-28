@@ -481,22 +481,13 @@ export default function MarketPage() {
         {/* Right Header Actions: Event Selector & Refresh */}
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           {/* Event Dropdown Switcher if multiple events exist */}
-          {Array.isArray(events) && events.length > 1 && (
-            <div style={{ position: 'relative' }}>
+          {Array.isArray(events) && events.length > 0 && (
+            <div className="market-event-selector-wrap">
               <select
-                className="select-input"
-                style={{
-                  padding: '6px 28px 6px 12px',
-                  fontSize: 12,
-                  background: 'var(--bg-card)',
-                  color: 'var(--text-main)',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: 'var(--radius-sm)',
-                  cursor: 'pointer',
-                  appearance: 'none',
-                }}
+                className="market-event-select"
                 value={activeEventId}
                 onChange={(e) => handleSelectEvent(e.target.value)}
+                aria-label="Select Event Market"
               >
                 {events.map((ev) => (
                   <option key={ev.id} value={ev.id}>
@@ -506,14 +497,7 @@ export default function MarketPage() {
               </select>
               <ChevronDown
                 size={14}
-                style={{
-                  position: 'absolute',
-                  right: 8,
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  pointerEvents: 'none',
-                  color: 'var(--text-muted)',
-                }}
+                className="market-event-chevron"
               />
             </div>
           )}
