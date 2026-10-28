@@ -431,8 +431,7 @@
 .hero-spotlight-card {
   position: relative;
   border-radius: var(--radius-xl);
-  background: linear-gradient(135deg, rgba(22, 29, 46, 0.85) 0%, rgba(13, 17, 27, 0.95) 100%);
-  border: 1px solid var(--border-glass-bright);
+  background: rgba(14, 18, 30, 0.95);
   box-shadow: var(--inner-highlight), 0 20px 48px -8px rgba(0, 0, 0, 0.7);
   overflow: hidden;
   margin-bottom: 34px;
@@ -441,15 +440,62 @@
   grid-template-columns: 1.4fr 1fr;
   gap: 32px;
   align-items: center;
+  transition: box-shadow var(--transition-normal);
 }
+
+.hero-spotlight-card:hover {
+  box-shadow: var(--inner-highlight), 0 24px 60px -10px rgba(0, 0, 0, 0.85), 0 0 35px rgba(249, 115, 22, 0.16);
+}
+
+/* Moving laser border beam */
 .hero-spotlight-card::before {
   content: '';
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: linear-gradient(90deg, transparent 0%, var(--accent-orange) 40%, var(--accent-purple) 70%, transparent 100%);
+  top: 50%;
+  left: 50%;
+  width: 280%;
+  height: 280%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    transparent 260deg,
+    rgba(168, 85, 247, 0.35) 290deg,
+    rgba(249, 115, 22, 0.85) 325deg,
+    #ffffff 352deg,
+    rgba(249, 115, 22, 0.95) 360deg
+  );
+  transform: translate(-50%, -50%) rotate(0deg);
+  animation: rotateBorderBeam 6s linear infinite;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* Inner card body surface that reveals the moving 1.5px border */
+.hero-spotlight-card::after {
+  content: '';
+  position: absolute;
+  inset: 1.5px;
+  border-radius: calc(var(--radius-xl) - 1.5px);
+  background: linear-gradient(135deg, rgba(20, 26, 42, 0.96) 0%, rgba(11, 15, 25, 0.98) 100%);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  z-index: 1;
+  pointer-events: none;
+  box-shadow: var(--inner-highlight);
+}
+
+.hero-spotlight-card > * {
+  position: relative;
+  z-index: 2;
+}
+
+@keyframes rotateBorderBeam {
+  0% {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  100% {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
 }
 
 @media (max-width: 900px) {
