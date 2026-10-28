@@ -1337,7 +1337,7 @@ export function AppProvider({ children }) {
         city: backendEvent.location.includes(',') ? backendEvent.location.split(',')[1].trim() : 'Metropolis',
         category: 'Concert',
         gradient: 'from-amber-600/20 via-orange-700/30 to-purple-900/40',
-        accentColor: '#f97316',
+        accentColor: '#6366f1',
         primaryFrom: parseFloat(backendEvent.originalPrice) || parseFloat(originalPrice) || 50,
         resaleFrom: 0,
         bestBid: 0,

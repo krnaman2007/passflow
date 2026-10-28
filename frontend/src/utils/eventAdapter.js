@@ -5,11 +5,11 @@
  */
 
 const THEMES = [
-  { accentColor: '#f97316', gradient: 'from-amber-500/20 via-orange-600/30 to-rose-900/40' },
-  { accentColor: '#8b5cf6', gradient: 'from-indigo-500/20 via-purple-600/30 to-pink-900/40' },
-  { accentColor: '#10b981', gradient: 'from-emerald-500/20 via-teal-600/30 to-cyan-900/40' },
+  { accentColor: '#6366f1', gradient: 'from-indigo-500/20 via-purple-600/30 to-slate-900/40' },
+  { accentColor: '#8b5cf6', gradient: 'from-purple-500/20 via-indigo-600/30 to-pink-900/40' },
+  { accentColor: '#06b6d4', gradient: 'from-cyan-500/20 via-teal-600/30 to-slate-900/40' },
   { accentColor: '#3b82f6', gradient: 'from-blue-500/20 via-cyan-600/30 to-indigo-900/40' },
-  { accentColor: '#ec4899', gradient: 'from-pink-500/20 via-rose-600/30 to-amber-900/40' },
+  { accentColor: '#10b981', gradient: 'from-emerald-500/20 via-teal-600/30 to-cyan-900/40' },
 ];
 
 /**

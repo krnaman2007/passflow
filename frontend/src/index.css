@@ -18,7 +18,7 @@
   --bg-glass-elevated: rgba(22, 29, 46, 0.82);
   --bg-glass-modal: rgba(14, 18, 30, 0.94);
   --border-glass: rgba(255, 255, 255, 0.08);
-  --border-glass-hover: rgba(249, 115, 22, 0.35);
+  --border-glass-hover: rgba(99, 102, 241, 0.4);
   --border-glass-bright: rgba(255, 255, 255, 0.16);
   --inner-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.09);
   --inner-highlight-subtle: inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
@@ -29,16 +29,16 @@
   --border-subtle: rgba(255, 255, 255, 0.07);
   --border-medium: rgba(255, 255, 255, 0.12);
   --border-strong: rgba(255, 255, 255, 0.22);
-  --border-focus: #f97316;
+  --border-focus: #6366f1;
 
   /* Radiant Color Tokens */
-  --accent-orange: #f97316;
-  --accent-orange-hover: #ea580c;
-  --accent-orange-subtle: rgba(249, 115, 22, 0.12);
-  --accent-orange-border: rgba(249, 115, 22, 0.35);
-  --accent-orange-glow: rgba(249, 115, 22, 0.28);
-  --accent-orange-gradient: linear-gradient(135deg, #ff7a1a 0%, #ea580c 100%);
-  --accent-orange-radial: radial-gradient(circle, rgba(249, 115, 22, 0.25) 0%, transparent 70%);
+  --accent-orange: #6366f1;
+  --accent-orange-hover: #4f46e5;
+  --accent-orange-subtle: rgba(99, 102, 241, 0.14);
+  --accent-orange-border: rgba(99, 102, 241, 0.35);
+  --accent-orange-glow: rgba(99, 102, 241, 0.32);
+  --accent-orange-gradient: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  --accent-orange-radial: radial-gradient(circle, rgba(99, 102, 241, 0.25) 0%, transparent 70%);
 
   --accent-emerald: #10b981;
   --accent-emerald-hover: #059669;
@@ -86,7 +86,7 @@
   --shadow-md: 0 8px 24px -4px rgba(0, 0, 0, 0.55);
   --shadow-lg: 0 20px 48px -12px rgba(0, 0, 0, 0.7);
   --shadow-glass: 0 12px 36px 0 rgba(0, 0, 0, 0.45);
-  --shadow-glow: 0 0 24px rgba(249, 115, 22, 0.25);
+  --shadow-glow: 0 0 24px rgba(99, 102, 241, 0.32);
   --shadow-glow-emerald: 0 0 24px rgba(16, 185, 129, 0.25);
 
   /* Transitions */
@@ -130,10 +130,10 @@ body::before {
   pointer-events: none;
   z-index: -1;
   background:
-    radial-gradient(ellipse 90% 50% at 50% -12%, rgba(249, 115, 22, 0.08) 0%, transparent 60%),
-    radial-gradient(ellipse 70% 40% at 90% 85%, rgba(99, 102, 241, 0.05) 0%, transparent 65%),
-    radial-gradient(ellipse 60% 40% at 10% 45%, rgba(16, 185, 129, 0.04) 0%, transparent 60%),
-    radial-gradient(circle at 50% 120%, rgba(249, 115, 22, 0.05) 0%, transparent 50%);
+    radial-gradient(ellipse 90% 50% at 50% -12%, rgba(99, 102, 241, 0.12) 0%, transparent 60%),
+    radial-gradient(ellipse 70% 40% at 90% 85%, rgba(139, 92, 246, 0.08) 0%, transparent 65%),
+    radial-gradient(ellipse 60% 40% at 10% 45%, rgba(6, 182, 212, 0.06) 0%, transparent 60%),
+    radial-gradient(circle at 50% 120%, rgba(99, 102, 241, 0.07) 0%, transparent 50%);
 }
 
 /* Custom Scrollbar */
@@ -170,7 +170,7 @@ body::before {
 }
 
 .text-gradient-orange {
-  background: linear-gradient(135deg, #ff8c38 0%, #ea580c 100%);
+  background: linear-gradient(135deg, #a5b4fc 0%, #818cf8 50%, #6366f1 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
@@ -324,7 +324,7 @@ input::placeholder, textarea::placeholder {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 4px 16px rgba(249, 115, 22, 0.38);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 4px 18px rgba(99, 102, 241, 0.42);
   border: 1px solid rgba(255, 255, 255, 0.18);
   transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
               box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1),
@@ -335,11 +335,11 @@ input::placeholder, textarea::placeholder {
 .btn-primary:hover:not(:disabled) {
   filter: brightness(1.1);
   transform: translateY(-1.5px);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38), 0 8px 26px rgba(249, 115, 22, 0.52);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38), 0 8px 28px rgba(99, 102, 241, 0.58);
 }
 .btn-primary:active:not(:disabled) {
   transform: translateY(1px) scale(0.97) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15), 0 2px 6px rgba(249, 115, 22, 0.3);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15), 0 2px 6px rgba(99, 102, 241, 0.35);
   filter: brightness(0.95);
 }
 .btn-primary:disabled {
