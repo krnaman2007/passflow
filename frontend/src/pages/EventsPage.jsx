@@ -426,14 +426,25 @@ export default function EventsPage() {
           <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(255, 255, 255, 0.04)', border: '1px solid var(--border-subtle)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
             <Ticket size={28} color="var(--text-dim)" />
           </div>
-          <h3 style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: 8 }}>
-            No live events match your criteria
+          <h3
+            style={{
+              fontSize: '1.25rem',
+              fontWeight: 700,
+              color: 'var(--text-main)',
+              marginBottom: !searchTerm && activeFilter === 'Sold out' ? 20 : 8,
+            }}
+          >
+            No live events found
           </h3>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.92rem', maxWidth: 460, margin: '0 auto 24px', lineHeight: 1.5 }}>
-            {searchTerm
-              ? `No events matched "${searchTerm}". Try resetting search or checking another category.`
-              : 'There are currently no events registered in the database. Organizers can launch new events via the Organizer Console.'}
-          </p>
+          {searchTerm ? (
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.92rem', maxWidth: 460, margin: '0 auto 24px', lineHeight: 1.5 }}>
+              {`No backend events matched "${searchTerm}". Try a different search term or clear filters.`}
+            </p>
+          ) : activeFilter !== 'Sold out' && backendEvents.length === 0 ? (
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.92rem', maxWidth: 460, margin: '0 auto 24px', lineHeight: 1.5 }}>
+              There are currently no events registered in the database. Organizers can publish events using the Organizer Console.
+            </p>
+          ) : null}
           {searchTerm ? (
             <button className="btn-secondary" onClick={() => setSearchTerm('')}>
               Clear Search Query

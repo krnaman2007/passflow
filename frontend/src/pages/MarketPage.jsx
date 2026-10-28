@@ -1052,7 +1052,6 @@ export default function MarketPage() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Order #</th>
                   <th>Side</th>
                   <th>Tier</th>
                   <th>Qty</th>
@@ -1065,14 +1064,13 @@ export default function MarketPage() {
               <tbody>
                 {!Array.isArray(userOrders) || userOrders.length === 0 ? (
                   <tr>
-                    <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-dim)', padding: 24 }}>
+                    <td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-dim)', padding: 24 }}>
                       No active orders found in this session
                     </td>
                   </tr>
                 ) : (
                   userOrders.map((ord) => (
                     <tr key={ord.id}>
-                      <td className="font-mono" style={{ fontSize: 11, color: 'var(--text-dim)' }}>#{ord.id ? (ord.id.slice ? ord.id.slice(0, 8) : ord.id) : 'ORD'}</td>
                       <td>
                         <span
                           className={`badge ${ord.side === 'BUY' ? 'badge-green' : 'badge-red'}`}

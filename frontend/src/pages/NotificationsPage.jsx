@@ -32,9 +32,12 @@ export default function NotificationsPage() {
   const [activeTab, setActiveTab] = useState('ALL'); // 'ALL' | 'UNREAD' | 'TRADE' | 'ORDER'
   const [refreshing, setRefreshing] = useState(false);
 
+  const [loading, setLoading] = useState(false);
+
   useEffect(() => {
     if ((currentUser || currentRole !== 'PUBLIC') && typeof fetchLiveNotifications === 'function') {
-      fetchLiveNotifications();
+      setLoading(true);
+      fetchLiveNotifications().finally(() => setLoading(false));
     }
   }, [currentUser, currentRole]);
 
@@ -53,11 +56,13 @@ export default function NotificationsPage() {
   };
 
   const unreadCount = (notifications || []).filter((n) => n.unread).length;
+  const fillsCount = (notifications || []).filter((n) => n.type === 'TRADE' || n.type?.includes('TRADE') || n.type?.includes('FILL')).length;
+  const ordersCount = (notifications || []).filter((n) => n.type === 'ORDER' || n.type?.includes('ORDER') || n.type?.includes('BID') || n.type?.includes('ASK')).length;
 
   const filteredNotifications = (notifications || []).filter((notif) => {
     if (activeTab === 'UNREAD') return notif.unread;
-    if (activeTab === 'TRADE') return notif.type === 'TRADE';
-    if (activeTab === 'ORDER') return notif.type === 'ORDER';
+    if (activeTab === 'TRADE') return notif.type === 'TRADE' || notif.type?.includes('TRADE') || notif.type?.includes('FILL');
+    if (activeTab === 'ORDER') return notif.type === 'ORDER' || notif.type?.includes('ORDER') || notif.type?.includes('BID') || notif.type?.includes('ASK');
     return true;
   });
 
@@ -200,8 +205,8 @@ export default function NotificationsPage() {
         {[
           { id: 'ALL', label: `All Alerts (${(notifications || []).length})` },
           { id: 'UNREAD', label: `Unread (${unreadCount})` },
-          { id: 'TRADE', label: 'Order Fills' },
-          { id: 'ORDER', label: 'Bids & Asks' }
+          { id: 'TRADE', label: `Order Fills (${fillsCount})` },
+          { id: 'ORDER', label: `Bids & Asks (${ordersCount})` }
         ].map((t) => (
           <button
             key={t.id}
@@ -226,7 +231,21 @@ export default function NotificationsPage() {
 
       {/* Notifications List */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {filteredNotifications.length === 0 ? (
+        {loading && (!notifications || notifications.length === 0) ? (
+          <div
+            className="card"
+            style={{
+              textAlign: 'center',
+              padding: '48px 20px',
+              color: 'var(--text-muted)'
+            }}
+          >
+            <RefreshCw size={28} className="spin" style={{ margin: '0 auto 12px auto', display: 'block', color: 'var(--accent-orange)' }} />
+            <strong style={{ fontSize: 14, color: 'var(--text-main)', display: 'block', marginBottom: 4 }}>
+              Loading notifications...
+            </strong>
+          </div>
+        ) : filteredNotifications.length === 0 ? (
           <div
             className="card"
             style={{
@@ -237,7 +256,13 @@ export default function NotificationsPage() {
           >
             <Inbox size={36} color="var(--text-dim)" style={{ margin: '0 auto 12px auto', display: 'block' }} />
             <strong style={{ fontSize: 15, color: 'var(--text-main)', display: 'block', marginBottom: 4 }}>
-              No notifications in this view
+              {activeTab === 'UNREAD'
+                ? 'No unread notifications'
+                : activeTab === 'TRADE'
+                ? 'No order fills recorded yet'
+                : activeTab === 'ORDER'
+                ? 'No bid or ask notifications yet'
+                : 'No notifications in this view'}
             </strong>
             <p style={{ fontSize: 12, maxWidth: 420, margin: '0 auto', color: 'var(--text-dim)' }}>
               Real-time alerts for secondary order book fills, custodial wallet transactions, and KYC status will appear here automatically.

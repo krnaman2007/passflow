@@ -2,6 +2,7 @@ import prisma from '../db/prisma.js';
 import logger from '../errorlogging/logger.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { orderService } from './order/index.js';
+import notificationService from './notification.service.js';
 
 /**
  * Service handling Primary Ticket Purchases, User Ticket Portfolio,
@@ -314,6 +315,17 @@ export const ticketService = {
           quantity: qty,
           ticketsCount: result.tickets.length,
         });
+
+        if (notificationService) {
+          try {
+            await notificationService.send(userId, {
+              type: 'ORDER',
+              message: `Purchased ${qty} ticket(s) for ${category.name} at ₹${(Number(totalPaise) / 100).toFixed(2)}.`,
+            });
+          } catch {
+            // Non-blocking notification delivery
+          }
+        }
 
         return result;
       } catch (err) {
@@ -770,6 +782,21 @@ export const ticketService = {
       toUserId: recipient.id,
       transferId: transferResult.transfer.id,
     });
+
+    if (notificationService) {
+      try {
+        await notificationService.send(fromUserId, {
+          type: 'TRANSFER',
+          message: `Transferred ticket #${ticketId.slice(0, 8)} to ${recipient.email}.`,
+        });
+        await notificationService.send(recipient.id, {
+          type: 'TRANSFER',
+          message: `Received ticket #${ticketId.slice(0, 8)} via direct transfer.`,
+        });
+      } catch {
+        // Non-blocking notification delivery
+      }
+    }
 
     return {
       message: 'Ticket transferred successfully',
