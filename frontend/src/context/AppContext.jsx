@@ -654,6 +654,7 @@ export function AppProvider({ children }) {
       fetchLiveOrders();
       syncLiveWallet();
       fetchLiveTickets();
+      fetchLiveNotifications();
       if (fillPayload?.tradeId) {
         showToast(`Trade match executed (#${String(fillPayload.tradeId).slice(0, 8)})`, 'info');
       }
@@ -697,6 +698,7 @@ export function AppProvider({ children }) {
       await fetchLiveTickets();
       await syncLiveWallet();
       await fetchLiveWalletTransactions();
+      await fetchLiveNotifications();
 
       showToast(`✓ Successfully purchased ${totalPurchased} ticket(s) from primary issuer!`, 'success');
       return true;
@@ -738,6 +740,7 @@ export function AppProvider({ children }) {
       await syncLiveWallet();
       await fetchLiveWalletTransactions();
       await fetchLiveTickets();
+      await fetchLiveNotifications();
 
       showToast(`✓ ${side} limit order placed on matching engine for ₹${numPrice.toLocaleString('en-IN')}`, 'success');
       return res?.data || res;
@@ -797,10 +800,12 @@ export function AppProvider({ children }) {
       // Sync fresh wallet and orders from backend
       syncLiveWallet();
       fetchLiveOrders();
+      fetchLiveNotifications();
     } catch (err) {
       showToast(err.message || 'Order cancellation processed', 'info');
       syncLiveWallet();
       fetchLiveOrders();
+      fetchLiveNotifications();
     }
   };
 
@@ -884,6 +889,7 @@ export function AppProvider({ children }) {
       setActiveModal(null);
       fetchLiveTickets();
       fetchLiveOrders();
+      fetchLiveNotifications();
       return true;
     } catch (err) {
       console.error('Failed to list ticket:', err);
@@ -1103,12 +1109,12 @@ export function AppProvider({ children }) {
             return {
               id: n.id,
               title:
-                n.type === 'TRADE'
+                n.type === 'TRADE' || n.type?.includes('TRADE') || n.type?.includes('FILL')
                   ? 'Order Fill Executed'
-                  : n.type === 'ORDER'
-                    ? 'Secondary Order Placed'
-                    : n.type === 'TRANSFER'
-                      ? 'Wallet Credit & Escrow'
+                  : n.type === 'ORDER' || n.type?.includes('ORDER') || n.type?.includes('BID') || n.type?.includes('ASK')
+                    ? 'Order Update'
+                    : n.type === 'TRANSFER' || n.type?.includes('TRANSFER') || n.type?.includes('SETTLE')
+                      ? 'Transfer & Settlement'
                       : n.type === 'KYC'
                         ? 'KYC Verification Status'
                         : 'System Notification',

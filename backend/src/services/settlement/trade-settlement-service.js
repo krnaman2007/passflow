@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
 import { prisma as defaultPrisma } from '../../db/prisma.js';
 import { MAX_PAISE } from '../wallet/wallet-service.js';
 import logger from '../../errorlogging/logger.js';
+import defaultNotificationService from '../notification.service.js';
 
 export const DEFAULT_MAX_AUTO_RETRIES = 5;
 export const DEFAULT_BASE_BACKOFF_MS = 1000;
@@ -183,10 +184,15 @@ export class TradeSettlementService {
     this.jitter = Boolean(jitter);
     this.logger = loggerInstance;
     this.marketStreamService = null;
+    this.notificationService = defaultNotificationService;
   }
 
   setMarketStreamService(service) {
     this.marketStreamService = service;
+  }
+
+  setNotificationService(service) {
+    this.notificationService = service;
   }
 
   async settleExecution({ executionId, maxAttempts = 5 } = {}) {
@@ -221,6 +227,24 @@ export class TradeSettlementService {
             }
           } catch {
             // Non-blocking WebSocket delivery
+          }
+        }
+        if (result && !result.isIdempotentReplay && this.notificationService) {
+          try {
+            if (result.buyerUserId) {
+              await this.notificationService.send(result.buyerUserId, {
+                type: 'TRANSFER',
+                message: 'Trade settlement completed: tickets delivered to your portfolio.',
+              });
+            }
+            if (result.sellerUserId) {
+              await this.notificationService.send(result.sellerUserId, {
+                type: 'TRANSFER',
+                message: 'Trade settlement completed: proceeds credited to your wallet balance.',
+              });
+            }
+          } catch {
+            // Non-blocking notification delivery
           }
         }
         return result;

@@ -51,6 +51,7 @@ import {
 } from '../wallet/wallet-errors.js';
 import defaultHistoryService, { HistoryService } from '../history.service.js';
 import defaultRulesService from '../rules.service.js';
+import defaultNotificationService from '../notification.service.js';
 
 /**
  * Error thrown when a seller does not possess sufficient available inventory to list an order.
@@ -121,6 +122,7 @@ export class OrderService {
     marketStreamService = null,
     historyService = null,
     rulesService = defaultRulesService,
+    notificationService = defaultNotificationService,
   } = {}) {
     this.prisma = prismaClient;
     this.walletService = walletService;
@@ -130,6 +132,7 @@ export class OrderService {
     this.marketStreamService = marketStreamService;
     this.historyService = historyService || new HistoryService({ prismaClient });
     this.rulesService = rulesService;
+    this.notificationService = notificationService;
   }
 
   /**
@@ -138,6 +141,10 @@ export class OrderService {
    */
   setMarketStreamService(service) {
     this.marketStreamService = service;
+  }
+
+  setNotificationService(service) {
+    this.notificationService = service;
   }
 
   /**
@@ -772,6 +779,25 @@ export class OrderService {
       await this._publishPlacementEvents(submissionResult, { eventId, ticketCategoryId });
     }
 
+    // Persist notification for placed order
+    if (
+      this.notificationService &&
+      !submissionResult.isDuplicate &&
+      !submissionResult.isAmbiguousCommitResolved &&
+      submissionResult.remainingQuantity > 0
+    ) {
+      try {
+        const sideLabel = side === 'BID' ? 'Buy' : 'Sell';
+        const priceStr = (input.price / 100).toFixed(2);
+        await this.notificationService.send(submissionResult.userId, {
+          type: 'ORDER',
+          message: `${sideLabel} order placed for ${submissionResult.remainingQuantity} ticket(s) at ₹${priceStr}.`,
+        });
+      } catch {
+        // Non-blocking notification delivery
+      }
+    }
+
     return {
       ...submissionResult,
       holdId: holdRecord ? holdRecord.id : null,
@@ -1064,6 +1090,17 @@ export class OrderService {
         await this._publishOrderBookUpdate(order.eventId, order.ticketCategoryId, 'ORDER_CANCEL');
       } catch (broadcastErr) {
         console.error('Failed to broadcast market stream events after order cancellation:', broadcastErr);
+      }
+    }
+
+    if (this.notificationService && !cancelResult.isDuplicate) {
+      try {
+        await this.notificationService.send(userId, {
+          type: 'ORDER',
+          message: `Order #${order.id.slice(0, 8)} was cancelled. Reserved funds/inventory released.`,
+        });
+      } catch {
+        // Non-blocking notification delivery
       }
     }
 
@@ -1533,6 +1570,26 @@ export class OrderService {
             }
           } catch {
             // Non-blocking wallet sync
+          }
+
+          if (this.notificationService) {
+            try {
+              const execPriceStr = (exec.price / 100).toFixed(2);
+              if (submissionResult.userId) {
+                await this.notificationService.send(submissionResult.userId, {
+                  type: 'TRADE',
+                  message: `Order #${submissionResult.orderId.slice(0, 8)} filled: ${exec.quantity} ticket(s) @ ₹${execPriceStr}.`,
+                });
+              }
+              if (resting && resting.userId) {
+                await this.notificationService.send(resting.userId, {
+                  type: 'TRADE',
+                  message: `Order #${resting.id.slice(0, 8)} filled: ${exec.quantity} ticket(s) @ ₹${execPriceStr}.`,
+                });
+              }
+            } catch {
+              // Non-blocking notification delivery
+            }
           }
         }
       }
