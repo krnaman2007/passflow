@@ -116,19 +116,19 @@ The matching engine follows **price-time priority**:
 
 Let:
 
-- $P$ = number of distinct active price levels on the order-book side.
-- $N$ = total number of resting orders in the book.
-- $n_p$ = number of resting orders at a specific price level.
+- $P$ = number of distinct price levels in the order book.
+- $N$ = total number of orders in the book.
 - $k$ = number of resting orders matched by an incoming order.
+- $n_p$ = number of orders at a given price level.
 
 | Operation | Time Complexity | Explanation |
-| ------------------------------------------ | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Best-price lookup | $O(1)$ | Direct read of `_prices[0]` at the top of the sorted price array. |
-| Order insertion | $O(1)$ (existing level)<br>$O(P)$ (new level) | $O(1)$ hash map lookup and FIFO queue append when the price level exists. When creating a new price level, binary search takes $O(\log P)$ and array insertion (`splice`) takes $O(P)$ (no balanced tree is used). |
-| Matching one resting order | $O(1)$ pure match<br>$O(n_p + P)$ with updates | $O(1)$ for price comparison and quantity deduction. In-place reduction is $O(1)$; full fill requires unlinking from the FIFO queue ($O(1)$ at queue head, $O(n_p)$ if scanned) and $O(P)$ array splice if the price level is emptied. Excludes database settlement. |
-| Matching $k$ resting orders | $O(k)$ typical<br>$O(k \cdot (n_p + P))$ worst-case | $O(k)$ for pure matching plan simulation. Sequential book application is $O(k)$ when matching at queue heads without depleting price levels, up to $O(k \cdot (n_p + P))$ if depleted price levels require array eviction. Excludes database settlement. |
-| Order cancellation | $O(n_p)$ (active level)<br>$O(n_p + P)$ (emptied level) | $O(1)$ order ID lookup in map, followed by an $O(n_p)$ linear scan to unlink from the FIFO doubly linked queue. If the price level becomes empty, binary search ($O(\log P)$) and array splice ($O(P)$) evict the level. |
-| Space complexity | $O(N + P)$ | Stores $N$ orders across doubly linked lists and hash maps, plus $P$ active price levels in the level map and sorted price array. |
+| ------------------------------------------ | --------------- | -------------------------------------------------------------------------------------------------- |
+| Best-price lookup | $O(1)$ | Direct access to the best price at the top of the sorted price array. |
+| Order insertion | $O(1)$ | Appends the order to the queue at an existing price level ($O(P)$ if inserting a new price level). |
+| Matching one resting order | $O(1)$ | Compares price and updates order quantity in memory, excluding database settlement. |
+| Matching $k$ resting orders | $O(k)$ | Matches each of the $k$ resting orders sequentially in memory, excluding database settlement. |
+| Order cancellation | $O(n_p)$ | Locates the order via hash map and unlinks it from the price level's queue. |
+| Space complexity | $O(N + P)$ | Stores all $N$ orders and $P$ price levels in memory. |
 
 ### 3. Concurrency Architecture
 
