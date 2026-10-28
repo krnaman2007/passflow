@@ -2,7 +2,7 @@
 
 ### A Real-Time Secondary Ticket Marketplace & Trading Exchange
 
-PassFlow is a full-stack ticket marketplace that enables users to discover events, purchase tickets at their original prices, and safely trade eligible tickets through a real-time secondary market. It combines an in-memory order-matching engine, price-time priority, live market data, wallet accounting, and transactional trade settlement to create a transparent and reliable ticket-trading experience.
+PassFlow is a ticket marketplace that enables users to discover events, purchase tickets at their original prices, and safely trade eligible tickets through a real-time secondary market. It combines an in-memory order-matching engine, price-time priority, live market data, wallet accounting, and transactional trade settlement to create a transparent and reliable ticket-trading experience.
 
 ## 🎯 What Problem Does PassFlow Solve?
 
@@ -188,19 +188,22 @@ flowchart TD
 
 ## 🧰 Tech Stack
 
-\<table>
-\<tr>\<th>Layer\</th>\<th>Technologies\</th>\</tr>
-\<tr>\<td>Frontend\</td>\<td>React 19, Vite, JavaScript, Zustand, CSS\</td>\</tr>
-\<tr>\<td>Charts & UI\</td>\<td>TradingView Lightweight Charts, Lucide React\</td>\</tr>
-\<tr>\<td>Backend\</td>\<td>Node.js, Express 5, ES Modules\</td>\</tr>
-\<tr>\<td>Database & ORM\</td>\<td>PostgreSQL, Prisma ORM, SQL migrations\</td>\</tr>
-\<tr>\<td>Real-Time Communication\</td>\<td>Socket.IO / WebSockets\</td>\</tr>
-\<tr>\<td>Authentication & Validation\</td>\<td>JWT, bcryptjs, Zod\</td>\</tr>
-\<tr>\<td>Financial Precision\</td>\<td>Decimal.js, transactional ledger operations\</td>\</tr>
-\<tr>\<td>Performance & Coordination\</td>\<td>In-memory order books, matching strategies, Redis client integration\</td>\</tr>
-\<tr>\<td>Testing\</td>\<td>Jest, Supertest, Node.js test runner, k6\</td>\</tr>
-\<tr>\<td>Development Tools\</td>\<td>Git, GitHub, npm, Prisma CLI\</td>\</tr>
-\</table>
+## 🧰 Tech Stack
+
+| Layer | Technologies |
+|---|---|
+| **Frontend** | React 19, Vite, JavaScript, Zustand, CSS |
+| **Charts & UI** | TradingView Lightweight Charts, Lucide React |
+| **Backend** | Node.js, Express 5, ES Modules |
+| **Database & ORM** | PostgreSQL, Prisma ORM, SQL migrations |
+| **Real-Time Communication** | Socket.IO, WebSockets |
+| **Authentication & Validation** | JWT, bcryptjs, Zod |
+| **Financial Precision** | Decimal.js, transactional ledger operations |
+| **Performance & Coordination** | In-memory order books, matching strategies, Redis client integration |
+| **Testing** | Jest, Supertest, Node.js test runner, k6 |
+| **Development Tools** | Git, GitHub, npm, Prisma CLI |
+
+## 📂 Project Structure
 
 ## 📂 Project Structure
 
