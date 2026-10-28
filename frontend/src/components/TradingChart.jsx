@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   createChart,
   ColorType,
@@ -18,8 +18,11 @@ import {
  * Sanitizes series data:
  * - Ensures strictly increasing timestamps (no duplicate times)
  * - Filters out invalid, null, or negative prices
+ * - Dynamic color variation:
+ *   - Upward price ticks -> Vibrant Green (#10b981)
+ *   - Downward price ticks -> Vibrant Red (#ef4444)
  */
-function sanitizeSeriesData(data) {
+function sanitizeSeriesData(data, theme = 'dynamic') {
   if (!Array.isArray(data) || data.length === 0) return [];
   const valid = data
     .filter((d) => d && Number.isFinite(d.time) && d.time > 0 && Number.isFinite(d.value) && d.value > 0)
@@ -27,13 +30,47 @@ function sanitizeSeriesData(data) {
 
   const deduped = [];
   for (let i = 0; i < valid.length; i++) {
-    const item = valid[i];
+    const raw = valid[i];
+    const item = { time: raw.time, value: raw.value };
+
     if (deduped.length === 0) {
+      if (theme === 'sell') {
+        item.lineColor = '#ef4444';
+        item.topColor = 'rgba(239, 68, 68, 0.35)';
+        item.bottomColor = 'rgba(239, 68, 68, 0.01)';
+      } else if (theme === 'buy') {
+        item.lineColor = '#10b981';
+        item.topColor = 'rgba(16, 185, 129, 0.35)';
+        item.bottomColor = 'rgba(16, 185, 129, 0.01)';
+      } else {
+        item.lineColor = '#10b981';
+        item.topColor = 'rgba(16, 185, 129, 0.35)';
+        item.bottomColor = 'rgba(16, 185, 129, 0.01)';
+      }
       deduped.push(item);
     } else {
       const prev = deduped[deduped.length - 1];
+      const isUp = item.value >= prev.value;
+
+      if (theme === 'sell') {
+        // Red theme with brightness variation: rises are light red (#f87171), drops are deep crimson (#dc2626)
+        item.lineColor = isUp ? '#f87171' : '#dc2626';
+        item.topColor = isUp ? 'rgba(248, 113, 113, 0.38)' : 'rgba(220, 38, 38, 0.28)';
+        item.bottomColor = 'rgba(220, 38, 38, 0.01)';
+      } else if (theme === 'buy') {
+        // Green theme with brightness variation: rises are bright emerald (#10b981), drops are forest green (#059669)
+        item.lineColor = isUp ? '#10b981' : '#059669';
+        item.topColor = isUp ? 'rgba(16, 185, 129, 0.38)' : 'rgba(5, 150, 105, 0.28)';
+        item.bottomColor = 'rgba(16, 185, 129, 0.01)';
+      } else {
+        // Dynamic dual variation: Up moves are GREEN (#10b981), Down moves are RED (#ef4444)
+        item.lineColor = isUp ? '#10b981' : '#ef4444';
+        item.topColor = isUp ? 'rgba(16, 185, 129, 0.38)' : 'rgba(239, 68, 68, 0.38)';
+        item.bottomColor = isUp ? 'rgba(16, 185, 129, 0.01)' : 'rgba(239, 68, 68, 0.01)';
+      }
+
       if (item.time === prev.time) {
-        // Replace with the latest value for the same timestamp
+        // Same timestamp: overwrite with latest
         deduped[deduped.length - 1] = item;
       } else if (item.time > prev.time) {
         deduped.push(item);
@@ -67,7 +104,8 @@ export default function TradingChart({
   // Series instances
   const sellSeriesRef = useRef(null);
   const buySeriesRef = useRef(null);
-  const singleSeriesRef = useRef(null);
+  const singleSellSeriesRef = useRef(null); // Sell (Red) series on Single chart
+  const singleBuySeriesRef = useRef(null);  // Buy (Green) series on Single chart
 
   // Price lines
   const sellPriceLineRef = useRef(null);
@@ -83,7 +121,7 @@ export default function TradingChart({
   const [viewMode, setViewMode] = useState('split'); // 'split' or 'single'
   const [candleData, setCandleData] = useState([]);
   const [summary, setSummary] = useState(null);
-  const [isChartReady, setIsChartReady] = useState(0); // increment to trigger data sync
+  const [isChartReady, setIsChartReady] = useState(0);
 
   // 1. Fetch historical price data
   useEffect(() => {
@@ -159,7 +197,6 @@ export default function TradingChart({
 
   // 2. Initialize Charts whenever viewMode changes
   useEffect(() => {
-    // Helper options
     const commonChartOptions = {
       layout: {
         background: { type: ColorType.Solid, color: 'rgba(15, 23, 42, 0.7)' },
@@ -201,7 +238,8 @@ export default function TradingChart({
     if (singleChartRef.current) {
       try { singleChartRef.current.remove(); } catch {}
       singleChartRef.current = null;
-      singleSeriesRef.current = null;
+      singleSellSeriesRef.current = null;
+      singleBuySeriesRef.current = null;
       singlePriceLineAskRef.current = null;
       singlePriceLineBidRef.current = null;
     }
@@ -233,7 +271,7 @@ export default function TradingChart({
         });
 
         const sellSeries = sellChart.addSeries(AreaSeries, {
-          lineColor: '#ef4444', // Red Line for SELL
+          lineColor: '#ef4444',
           topColor: 'rgba(239, 68, 68, 0.35)',
           bottomColor: 'rgba(239, 68, 68, 0.01)',
           lineWidth: 2,
@@ -254,7 +292,7 @@ export default function TradingChart({
         });
 
         const buySeries = buyChart.addSeries(AreaSeries, {
-          lineColor: '#10b981', // Green Line for BUY
+          lineColor: '#10b981',
           topColor: 'rgba(16, 185, 129, 0.35)',
           bottomColor: 'rgba(16, 185, 129, 0.01)',
           lineWidth: 2,
@@ -289,7 +327,7 @@ export default function TradingChart({
         });
       }
     } else {
-      // SINGLE COMBINED CHART
+      // SINGLE COMBINED CHART: Dual Red (Sell) & Green (Buy) lines with color variation
       if (singleContainerRef.current) {
         const initialWidth = singleContainerRef.current.clientWidth || 720;
         const singleChart = createChart(singleContainerRef.current, {
@@ -298,21 +336,31 @@ export default function TradingChart({
           height: 240,
         });
 
-        const singleSeries = singleChart.addSeries(AreaSeries, {
-          lineColor: '#10b981',
-          topColor: 'rgba(16, 185, 129, 0.30)',
+        // 1. SELL (Asks) Curve in RED
+        const singleSellSeries = singleChart.addSeries(AreaSeries, {
+          lineColor: '#ef4444', // Red for Sell/Ask
+          topColor: 'rgba(239, 68, 68, 0.22)',
+          bottomColor: 'rgba(239, 68, 68, 0.01)',
+          lineWidth: 2,
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        });
+
+        // 2. BUY (Bids) Curve in GREEN
+        const singleBuySeries = singleChart.addSeries(AreaSeries, {
+          lineColor: '#10b981', // Green for Buy/Bid
+          topColor: 'rgba(16, 185, 129, 0.22)',
           bottomColor: 'rgba(16, 185, 129, 0.01)',
           lineWidth: 2,
           priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
         });
 
         singleChartRef.current = singleChart;
-        singleSeriesRef.current = singleSeries;
+        singleSellSeriesRef.current = singleSellSeries;
+        singleBuySeriesRef.current = singleBuySeries;
         resizeObserver.observe(singleContainerRef.current);
       }
     }
 
-    // Trigger data population
     setIsChartReady((prev) => prev + 1);
 
     return () => {
@@ -330,12 +378,13 @@ export default function TradingChart({
       if (singleChartRef.current) {
         try { singleChartRef.current.remove(); } catch {}
         singleChartRef.current = null;
-        singleSeriesRef.current = null;
+        singleSellSeriesRef.current = null;
+        singleBuySeriesRef.current = null;
       }
     };
   }, [viewMode]);
 
-  // 3. Populate Series Data & Update Price Lines
+  // 3. Populate Series Data & Update Price Lines with Color Variation
   useEffect(() => {
     if (!candleData || candleData.length === 0) return;
 
@@ -343,17 +392,19 @@ export default function TradingChart({
     const numBid = parseFloat(bestBid);
     const nowSec = Math.floor(Date.now() / 1000);
 
-    // Build base series data from historical candles
+    // Build sell points (Asks action: tracking highest ask level and real-time bestAsk)
     const rawSellPoints = candleData.map((c) => ({
       time: c.time,
       value: c.high || c.close,
     }));
+
+    // Build buy points (Bids action: tracking lowest bid level and real-time bestBid)
     const rawBuyPoints = candleData.map((c) => ({
       time: c.time,
       value: c.low || c.close,
     }));
 
-    // If live bestAsk is available, add/update current real-time point
+    // Append / update real-time bestAsk to sell curve
     if (Number.isFinite(numAsk) && numAsk > 0) {
       const lastPoint = rawSellPoints[rawSellPoints.length - 1];
       if (lastPoint && nowSec > lastPoint.time) {
@@ -363,7 +414,7 @@ export default function TradingChart({
       }
     }
 
-    // If live bestBid is available, add/update current real-time point
+    // Append / update real-time bestBid to buy curve
     if (Number.isFinite(numBid) && numBid > 0) {
       const lastPoint = rawBuyPoints[rawBuyPoints.length - 1];
       if (lastPoint && nowSec > lastPoint.time) {
@@ -373,8 +424,12 @@ export default function TradingChart({
       }
     }
 
-    const cleanSellData = sanitizeSeriesData(rawSellPoints);
-    const cleanBuyData = sanitizeSeriesData(rawBuyPoints);
+    // Sanitize with distinct theme variations
+    const cleanSellData = sanitizeSeriesData(rawSellPoints, 'sell');
+    const cleanBuyData = sanitizeSeriesData(rawBuyPoints, 'buy');
+    // Dynamic data: green on upward ticks, red on downward ticks
+    const cleanDynamicSell = sanitizeSeriesData(rawSellPoints, 'sell');
+    const cleanDynamicBuy = sanitizeSeriesData(rawBuyPoints, 'buy');
 
     // Apply to Left: Sell Series (Red)
     if (sellSeriesRef.current && cleanSellData.length > 0) {
@@ -400,15 +455,22 @@ export default function TradingChart({
       }
     }
 
-    // Apply to Single Chart
-    if (singleSeriesRef.current && cleanBuyData.length > 0) {
+    // Apply to Single Chart: Both Sell (Red) and Buy (Green) series
+    if (singleSellSeriesRef.current && cleanDynamicSell.length > 0) {
       try {
-        singleSeriesRef.current.setData(cleanBuyData);
+        singleSellSeriesRef.current.setData(cleanDynamicSell);
+      } catch (err) {
+        console.warn('Error applying single sell series data:', err);
+      }
+    }
+    if (singleBuySeriesRef.current && cleanDynamicBuy.length > 0) {
+      try {
+        singleBuySeriesRef.current.setData(cleanDynamicBuy);
         if (singleChartRef.current) {
           singleChartRef.current.timeScale().fitContent();
         }
       } catch (err) {
-        console.warn('Error applying single series data:', err);
+        console.warn('Error applying single buy series data:', err);
       }
     }
 
@@ -452,19 +514,15 @@ export default function TradingChart({
       }
     }
 
-    // Update Single Chart Price Lines
-    if (singleSeriesRef.current && typeof singleSeriesRef.current.createPriceLine === 'function') {
+    // Update Price Lines on Single Chart
+    if (singleSellSeriesRef.current && typeof singleSellSeriesRef.current.createPriceLine === 'function') {
       if (singlePriceLineAskRef.current) {
-        try { singleSeriesRef.current.removePriceLine(singlePriceLineAskRef.current); } catch {}
+        try { singleSellSeriesRef.current.removePriceLine(singlePriceLineAskRef.current); } catch {}
         singlePriceLineAskRef.current = null;
-      }
-      if (singlePriceLineBidRef.current) {
-        try { singleSeriesRef.current.removePriceLine(singlePriceLineBidRef.current); } catch {}
-        singlePriceLineBidRef.current = null;
       }
       if (Number.isFinite(numAsk) && numAsk > 0) {
         try {
-          singlePriceLineAskRef.current = singleSeriesRef.current.createPriceLine({
+          singlePriceLineAskRef.current = singleSellSeriesRef.current.createPriceLine({
             price: numAsk,
             color: '#ef4444',
             lineWidth: 2,
@@ -474,9 +532,16 @@ export default function TradingChart({
           });
         } catch {}
       }
+    }
+
+    if (singleBuySeriesRef.current && typeof singleBuySeriesRef.current.createPriceLine === 'function') {
+      if (singlePriceLineBidRef.current) {
+        try { singleBuySeriesRef.current.removePriceLine(singlePriceLineBidRef.current); } catch {}
+        singlePriceLineBidRef.current = null;
+      }
       if (Number.isFinite(numBid) && numBid > 0) {
         try {
-          singlePriceLineBidRef.current = singleSeriesRef.current.createPriceLine({
+          singlePriceLineBidRef.current = singleBuySeriesRef.current.createPriceLine({
             price: numBid,
             color: '#10b981',
             lineWidth: 2,
@@ -610,8 +675,8 @@ export default function TradingChart({
               )}
             </div>
             <p style={{ margin: '2px 0 0', fontSize: 11, color: 'var(--text-dim)' }}>
-              Dual Visualizer: Left = <span style={{ color: '#ef4444', fontWeight: 600 }}>● Sell (Asks)</span> | Right ={' '}
-              <span style={{ color: '#10b981', fontWeight: 600 }}>● Buy (Bids)</span>
+              Dual Visualizer: <span style={{ color: '#ef4444', fontWeight: 600 }}>● Sell (Asks) in Red</span> |{' '}
+              <span style={{ color: '#10b981', fontWeight: 600 }}>● Buy (Bids) in Green</span>
             </p>
           </div>
         </div>
@@ -819,8 +884,81 @@ export default function TradingChart({
           </div>
         </div>
       ) : (
-        /* Single Full-Width Chart Mode */
-        <div style={{ width: '100%', height: '240px' }} ref={singleContainerRef} />
+        /* Single Full-Width Chart Mode with Dual Red & Green Curves */
+        <div
+          style={{
+            background: 'rgba(255, 255, 255, 0.02)',
+            borderRadius: 'var(--radius-md, 8px)',
+            padding: '12px 14px',
+            border: '1px solid var(--border-subtle)',
+            position: 'relative',
+          }}
+        >
+          {/* Sub-header with Legend */}
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: 8,
+              flexWrap: 'wrap',
+              gap: 8,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: '#ef4444',
+                }}
+              >
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: '50%',
+                    background: '#ef4444',
+                    boxShadow: '0 0 8px rgba(239, 68, 68, 0.6)',
+                  }}
+                />
+                SELL CURVE (ASKS): ₹{bestAsk || '--'}
+              </span>
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: '#10b981',
+                }}
+              >
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: '50%',
+                    background: '#10b981',
+                    boxShadow: '0 0 8px rgba(16, 185, 129, 0.6)',
+                  }}
+                />
+                BUY CURVE (BIDS): ₹{bestBid || '--'}
+              </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--text-dim)' }}>
+              <span>
+                Movements: <span style={{ color: '#10b981', fontWeight: 600 }}>▲ Rise (Green)</span> /{' '}
+                <span style={{ color: '#ef4444', fontWeight: 600 }}>▼ Dip (Red)</span>
+              </span>
+            </div>
+          </div>
+
+          <div style={{ width: '100%', height: '240px' }} ref={singleContainerRef} />
+        </div>
       )}
     </div>
   );
