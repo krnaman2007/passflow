@@ -858,7 +858,26 @@ tr {
   background: var(--bg-primary);
 }
 
-/* ------------------- TABLET & MOBILE MEDIA QUERIES ------------------- */
+/* ------------------- TABLET & MOBILE RESPONSIVE SYSTEM ------------------- */
+
+/* Medium Desktops & Small Laptops (961px to 1150px): Compact Nav */
+@media (min-width: 961px) and (max-width: 1150px) {
+  .nav-left {
+    gap: 14px !important;
+  }
+  .nav-item {
+    padding: 6px 10px !important;
+    font-size: 12px !important;
+    gap: 5px !important;
+  }
+  .avatar-btn span {
+    display: none;
+  }
+  .role-chip {
+    padding: 3px 8px !important;
+    font-size: 10px !important;
+  }
+}
 
 /* Tablets & Small Desktops (769px to 1024px) */
 @media (min-width: 769px) and (max-width: 1024px) {
@@ -881,11 +900,34 @@ tr {
   }
 }
 
+/* Tablet Portrait & Handheld Devices (<= 960px) */
+@media (max-width: 960px) {
+  .navbar {
+    padding: 0 16px !important;
+    height: 60px !important;
+  }
+  .nav-left {
+    gap: 10px !important;
+  }
+  .nav-links {
+    display: none !important;
+  }
+  .mobile-menu-toggle {
+    display: inline-flex !important;
+  }
+  .avatar-btn span {
+    display: none;
+  }
+  .trading-desk-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
 /* Mobile & Small Tablets (<= 768px) */
 @media (max-width: 768px) {
   /* Navbar */
   .navbar {
-    padding: 0 14px !important;
+    padding: 0 12px !important;
     height: 56px !important;
   }
   .nav-left {
@@ -896,6 +938,8 @@ tr {
   }
   .mobile-menu-toggle {
     display: inline-flex !important;
+    min-width: 40px;
+    min-height: 40px;
   }
   .brand-badge {
     font-size: 15px !important;
@@ -943,6 +987,7 @@ tr {
     font-size: 10px;
     font-weight: 500;
     padding: 6px 0;
+    min-height: 44px;
     background: transparent;
     transition: color 0.16s ease, transform 0.12s ease;
     user-select: none;
@@ -955,6 +1000,18 @@ tr {
   .mobile-nav-btn.active svg {
     color: var(--accent-orange);
     filter: drop-shadow(0 0 6px rgba(249, 115, 22, 0.6));
+  }
+
+  /* Mobile Drawer Handle */
+  .mobile-drawer-content::before {
+    content: '';
+    display: block;
+    width: 40px;
+    height: 4px;
+    border-radius: var(--radius-full);
+    background: var(--border-medium);
+    margin: 8px auto 0;
+    flex-shrink: 0;
   }
 
   /* Content wrap padding on mobile (leaves room for bottom nav) */
@@ -1032,6 +1089,16 @@ tr {
   .grid-2, .grid-3, .grid-4 {
     grid-template-columns: 1fr !important;
     gap: 12px !important;
+  }
+
+  /* Wallet Detail Grid: Put Deposit/Withdraw action box first on mobile */
+  .wallet-detail-grid {
+    display: flex !important;
+    flex-direction: column !important;
+  }
+  .wallet-detail-grid > div:last-child {
+    order: -1 !important;
+    margin-bottom: 16px !important;
   }
 
   /* Event Card on Mobile */
@@ -1124,9 +1191,16 @@ tr {
     font-size: 12px !important;
   }
 
+  /* Trading Chart Split View on Mobile */
+  .trading-chart-split-grid {
+    grid-template-columns: 1fr !important;
+    gap: 12px !important;
+  }
+
   /* Tables: Touch Horizontal Scroll */
   .data-table-wrap {
     width: 100% !important;
+    max-inline-size: 100% !important;
     overflow-x: auto !important;
     -webkit-overflow-scrolling: touch !important;
   }
@@ -1146,13 +1220,23 @@ tr {
   }
   .modal-box,
   .modal-card {
-    padding: 20px 16px calc(24px + env(safe-area-inset-bottom, 0px)) !important;
-    max-height: 86vh !important;
+    padding: 14px 16px calc(24px + env(safe-area-inset-bottom, 0px)) !important;
+    max-height: 88dvh !important;
     border-radius: 20px 20px 0 0 !important;
     width: 100% !important;
     max-width: 100% !important;
     border-bottom: none !important;
     animation: slideUpDrawer 0.24s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  }
+  .modal-box::before,
+  .modal-card::before {
+    content: '';
+    display: block;
+    width: 36px;
+    height: 4px;
+    border-radius: var(--radius-full);
+    background: var(--border-medium);
+    margin: 0 auto 12px;
   }
 }
 
@@ -1181,6 +1265,74 @@ tr {
   .content-wrap {
     padding: 10px 8px calc(76px + env(safe-area-inset-bottom, 0px)) !important;
   }
+  .market-ticker-bar {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 6px !important;
+    padding: 8px 10px !important;
+  }
+  .ticker-tile .label {
+    font-size: 10px !important;
+  }
+  .ticker-tile .val {
+    font-size: 13px !important;
+  }
 }
+
+/* Ultra-Compact Phones (<= 360px, e.g. iPhone SE 1st gen, small Androids) */
+@media (max-width: 360px) {
+  .brand-badge {
+    font-size: 13px !important;
+  }
+  .brand-diamond {
+    font-size: 15px !important;
+  }
+  .wallet-pill {
+    padding: 4px 8px !important;
+    font-size: 11px !important;
+  }
+  .card {
+    padding: 10px 8px !important;
+  }
+  h1 {
+    font-size: 19px !important;
+  }
+  h2 {
+    font-size: 16px !important;
+  }
+  h3 {
+    font-size: 14px !important;
+  }
+}
+
+/* Modal Tier Edit & Add Responsive Grids */
+.modal-tier-edit-grid,
+.modal-tier-add-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+@media (max-width: 580px) {
+  .modal-tier-edit-grid,
+  .modal-tier-add-grid {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
+  }
+  .modal-tier-edit-grid > div:first-child,
+  .modal-tier-add-grid > input:first-child {
+    grid-column: span 2;
+  }
+  .modal-tier-edit-grid > div:last-child,
+  .modal-tier-add-grid > button:last-child {
+    grid-column: span 2;
+    padding-top: 0 !important;
+  }
+  .modal-tier-edit-grid > div:last-child button,
+  .modal-tier-add-grid > button:last-child {
+    width: 100% !important;
+  }
+}
+
 
 

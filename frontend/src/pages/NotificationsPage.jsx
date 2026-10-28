@@ -196,7 +196,7 @@ export default function NotificationsPage() {
       </div>
 
       {/* Filter Tabs */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, borderBottom: '1px solid var(--border-subtle)', paddingBottom: 10 }}>
+      <div className="scrollable-tabs-bar" style={{ gap: 8, marginBottom: 16, borderBottom: '1px solid var(--border-subtle)', paddingBottom: 10 }}>
         {[
           { id: 'ALL', label: `All Alerts (${(notifications || []).length})` },
           { id: 'UNREAD', label: `Unread (${unreadCount})` },

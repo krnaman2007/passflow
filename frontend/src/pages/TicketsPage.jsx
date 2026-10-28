@@ -242,7 +242,7 @@ export default function TicketsPage() {
       </div>
 
       {/* Filter Tabs */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 20, overflowX: 'auto', paddingBottom: 4 }}>
+      <div className="scrollable-tabs-bar" style={{ marginBottom: 20 }}>
         {[
           { id: 'ALL', label: `All Tickets (${userTickets.length})` },
           { id: 'OWNED', label: `Owned (${userTickets.filter((t) => t.status === 'OWNED').length})` },

@@ -273,7 +273,7 @@ export class MarketStreamService {
         socket.data.subscriptions.clear();
       }
       if (socket.data) {
-        socket.data.subscriptions = new Set();
+        socket.data.subscriptions = null;
         socket.data.user = null;
         socket.data.requestTimestamps = [];
       }

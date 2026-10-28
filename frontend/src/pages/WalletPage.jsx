@@ -269,7 +269,7 @@ export default function WalletPage() {
       </div>
 
       {/* 2-Column Grid: Transactions Table on Left, Actions on Right */}
-      <div className="detail-grid">
+      <div className="detail-grid wallet-detail-grid">
         {/* Left: Transactions History Table */}
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
           <div
@@ -291,7 +291,7 @@ export default function WalletPage() {
             </div>
 
             {/* Filter pills */}
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <div className="scrollable-tabs-bar" style={{ gap: 6 }}>
               {['ALL', 'DEPOSIT', 'PURCHASE', 'HOLD', 'TRADE_CREDIT', 'WITHDRAW'].map((type) => (
                 <button
                   key={type}

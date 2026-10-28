@@ -323,7 +323,7 @@ export default function OrdersHistoryPage() {
       </div>
 
       {/* Tabs */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+      <div className="scrollable-tabs-bar" style={{ marginBottom: 20 }}>
         {[
           { id: 'ORDERS', label: `Active & Past Orders (${(userOrders || []).length})` },
           { id: 'TRADES', label: `Executed Trades (${trades.length})` },

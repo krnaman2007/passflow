@@ -1708,15 +1708,13 @@ export default function OrganizerDashboardPage() {
                       return (
                         <div
                           key={tier.id}
+                          className="modal-tier-edit-grid"
                           style={{
                             background: 'var(--bg-app)',
                             padding: '10px 12px',
                             borderRadius: 'var(--radius-sm)',
                             border: '1px solid var(--border-subtle)',
-                            display: 'grid',
-                            gridTemplateColumns: '1.4fr 1fr 1fr auto',
-                            gap: 10,
-                            alignItems: 'center'
+                            marginBottom: 8
                           }}
                         >
                           <div>
@@ -1810,7 +1808,7 @@ export default function OrganizerDashboardPage() {
                   <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-sub)', display: 'block', marginBottom: 6 }}>
                     + Add New Category Tier & Price
                   </span>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr 1fr auto', gap: 8, alignItems: 'center' }}>
+                  <div className="modal-tier-add-grid">
                     <input
                       type="text"
                       placeholder="Name (e.g. VIP Pass)"

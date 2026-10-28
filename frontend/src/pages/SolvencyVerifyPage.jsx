@@ -260,7 +260,7 @@ export default function SolvencyVerifyPage() {
             PassFlow Exchange enforces strict full-reserve solvency. Every rupee deposited by buyers and sellers is matched 1:1 with segregated bank escrow reserves. No algorithmic re-hypothecation, fractional lending, or unbacked liquidity injection is permitted on the platform.
           </p>
 
-          <div style={{ display: 'flex', gap: 20, marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: 12 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: 12 }}>
             <div>
               <span style={{ color: 'var(--text-muted)' }}>Net Reserve Surplus: </span>
               <strong style={{ color: 'var(--accent-emerald)', fontFamily: 'monospace' }}>

@@ -492,29 +492,23 @@ export class MarketStreamClient {
       updateSeq = null;
     }
 
-    // Apply the orderbook update if it's a level update, cancel, or trade match at or ahead of current sequence
-    if (
-      updateSeqStr === '0' ||
-      update.action !== 'TRADE_MATCH' ||
-      sub.currentSequence === null ||
-      (updateSeq !== null && updateSeq >= sub.currentSequence)
-    ) {
-      if (updateSeq !== null && (sub.currentSequence === null || updateSeq > sub.currentSequence)) {
-        sub.currentSequence = updateSeq;
+    // Verify sequence monotonicity using BigInt exact comparison
+    if (sub.currentSequence !== null && updateSeq !== null && updateSeqStr !== '0') {
+      if (updateSeq <= sub.currentSequence) {
+        // Stale or duplicate update already represented in or behind current sequence
+        return;
       }
-      if (typeof sub.callbacks.onOrderBook === 'function') {
-        sub.callbacks.onOrderBook(update);
+      if (updateSeq > sub.currentSequence + 1n) {
+        // Sequence gap detected: trigger snapshot resync to heal missed order book levels
+        this.requestSnapshotResync(sub.eventId, sub.ticketCategoryId);
       }
-      return;
+      sub.currentSequence = updateSeq;
+    } else if (updateSeq !== null && updateSeqStr !== '0') {
+      sub.currentSequence = updateSeq;
     }
 
-    // If there is an unexpected sequence gap on a trade match, trigger resync but still apply update
-    if (updateSeq !== null && sub.currentSequence !== null && updateSeq > sub.currentSequence + 1n) {
-      sub.currentSequence = updateSeq;
-      if (typeof sub.callbacks.onOrderBook === 'function') {
-        sub.callbacks.onOrderBook(update);
-      }
-      this.requestSnapshotResync(sub.eventId, sub.ticketCategoryId);
+    if (typeof sub.callbacks.onOrderBook === 'function') {
+      sub.callbacks.onOrderBook(update);
     }
   }
 

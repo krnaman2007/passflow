@@ -775,9 +775,10 @@ export default function TradingChart({
       {/* Graphs Layout */}
       {viewMode === 'split' ? (
         <div
+          className="trading-chart-split-grid"
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))',
             gap: 16,
           }}
         >

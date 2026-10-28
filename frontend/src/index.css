@@ -72,7 +72,10 @@ html, body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
+  min-height: 100dvh;
   overflow-x: hidden;
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
 }
 
 /* Custom Scrollbar */
@@ -101,6 +104,21 @@ h1, h2, h3, h4, h5 {
   color: var(--text-main);
   font-weight: 600;
   letter-spacing: -0.02em;
+}
+
+h1 {
+  font-size: clamp(1.4rem, 1.1rem + 1.5vw, 2.1rem);
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: clamp(1.2rem, 0.95rem + 1.1vw, 1.65rem);
+  line-height: 1.3;
+}
+
+h3 {
+  font-size: clamp(1.05rem, 0.9rem + 0.6vw, 1.3rem);
+  line-height: 1.35;
 }
 
 a {
@@ -165,6 +183,7 @@ input:focus, select:focus, textarea:focus {
 /* Containers */
 .app-container {
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
 }
@@ -198,7 +217,7 @@ input:focus, select:focus, textarea:focus {
   width: 100%;
   max-width: 1240px;
   margin: 0 auto;
-  padding: 24px 20px 80px;
+  padding: clamp(16px, 2.5vw, 28px) clamp(12px, 2.5vw, 24px) calc(76px + env(safe-area-inset-bottom, 0px));
   flex: 1;
 }
 
@@ -469,35 +488,70 @@ input:focus, select:focus, textarea:focus {
   border: 1px solid var(--border-subtle);
 }
 
-/* Table Design */
+/* Table Design — Modern Responsive Data Tables */
 .data-table-wrap {
   width: 100%;
+  max-inline-size: 100%;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  position: relative;
+  container-type: inline-size;
+  border-radius: var(--radius-sm);
 }
+
 .data-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   text-align: left;
   font-size: 13px;
+  min-width: 520px;
 }
+
 .data-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   padding: 12px 14px;
   color: var(--text-muted);
-  font-weight: 500;
+  font-weight: 600;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   border-bottom: 1px solid var(--border-subtle);
-  background: rgba(18, 21, 29, 0.4);
+  background: var(--bg-surface);
+  white-space: nowrap;
 }
+
 .data-table td {
-  padding: 14px;
+  padding: 13px 14px;
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text-sub);
   vertical-align: middle;
 }
+
 .data-table tr:hover td {
   background: rgba(255, 255, 255, 0.02);
+}
+
+/* Scrollable Horizontal Tabs Strip (Native Mobile Track) */
+.scrollable-tabs-bar {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  padding-bottom: 4px;
+  max-width: 100%;
+}
+.scrollable-tabs-bar::-webkit-scrollbar {
+  display: none;
+}
+.scrollable-tabs-bar > * {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 /* Grid Utilities */
@@ -517,9 +571,37 @@ input:focus, select:focus, textarea:focus {
   gap: 16px;
 }
 
-@media (max-width: 900px) {
+@media (min-width: 769px) and (max-width: 1024px) {
+  .grid-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .grid-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
   .grid-2, .grid-3, .grid-4 {
     grid-template-columns: 1fr;
+    gap: 14px;
+  }
+}
+
+/* Touch Accessibility for Handheld Devices */
+@media (pointer: coarse) {
+  button,
+  [role="button"],
+  .btn-primary,
+  .btn-secondary,
+  .btn-success,
+  .nav-item,
+  .filter-chip,
+  .mobile-drawer-link {
+    min-height: 40px;
+  }
+  .qty-btn {
+    min-width: 36px;
+    min-height: 36px;
   }
 }
 

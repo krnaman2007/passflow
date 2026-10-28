@@ -387,7 +387,7 @@ export default function AdminConsolePage() {
           </button>
 
           {/* Admin Navigation Sub-Tabs */}
-          <div style={{ display: 'flex', gap: 6, background: 'var(--bg-surface)', padding: 4, borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', flexWrap: 'wrap' }}>
+          <div className="scrollable-tabs-bar" style={{ gap: 6, background: 'var(--bg-surface)', padding: 4, borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
             {[
               { id: 'CONSOLE', label: 'Console & Telemetry' },
               { id: 'EVENTS', label: `Events & Approvals (${displayedEvents.length})` },
@@ -467,13 +467,15 @@ export default function AdminConsolePage() {
 
           {/* 4 System Health Lights (Click to open Logs Modal) */}
           <div
-            className="card"
+            className="card admin-health-bar"
             style={{
               padding: '12px 20px',
               marginBottom: 24,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: 12,
               cursor: 'pointer',
               background: 'rgba(18, 21, 29, 0.6)'
             }}
