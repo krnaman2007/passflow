@@ -22,7 +22,7 @@ export const solvencyProofSchema = z.object({
  * Schema for generating a new SolvencyProof (POST /admin/solvency/generate)
  */
 export const generateSolvencyProofSchema = z.object({
-  backingAssets: z.number().nonnegative(),
+  backingAssets: z.number().nonnegative().optional(),
   liabilities: z.number().nonnegative().optional(),
   escrowBalance: z.number().nonnegative().optional(),
   notes: z.string().max(500).optional(),

@@ -13,6 +13,7 @@ import notificationService from './src/services/notification.service.js';
 import monitoringService from './src/services/monitoring.service.js';
 import corsOptions from './src/config/cors.js';
 import prisma from './src/db/prisma.js';
+import solvencyService from './src/services/solvency.service.js';
 
 const server = http.createServer(app);
 
@@ -122,6 +123,13 @@ export const startServer = async () => {
       }
     } catch (warmupErr) {
       logger.warn(`Market warmup notice: ${warmupErr.message}`);
+    }
+
+    // 3.5. Ensure authoritative cryptographic proof of solvency is initialized
+    try {
+      await solvencyService.verify();
+    } catch (solvencyErr) {
+      logger.warn(`Solvency initialization notice: ${solvencyErr.message}`);
     }
 
     // 4. Start settlement recovery worker only after prerequisites succeed
