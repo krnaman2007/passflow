@@ -19,8 +19,13 @@
  */
 
 import { io } from 'socket.io-client';
+import dotenv from 'dotenv';
 
-const TARGET_URL = process.env.TARGET_URL || 'http://localhost:5001';
+// Automatically load backend .env so the target port matches the running server
+dotenv.config();
+
+const DEFAULT_PORT = process.env.PORT || '3001';
+const TARGET_URL = process.env.TARGET_URL || `http://localhost:${DEFAULT_PORT}`;
 const TOTAL_CLIENTS = parseInt(process.env.TOTAL_CLIENTS || '1000', 10);
 const RAMP_UP_SEC = parseInt(process.env.RAMP_UP_SEC || '20', 10);
 const HOLD_SEC = parseInt(process.env.HOLD_SEC || '30', 10);
@@ -40,6 +45,7 @@ console.log('='.repeat(70));
 const sockets = [];
 const metrics = {
   connected: 0,
+  peakConnected: 0,
   connecting: 0,
   disconnected: 0,
   errors: 0,
@@ -79,6 +85,7 @@ function connectClient(index) {
   socket.on('connect', () => {
     metrics.connecting--;
     metrics.connected++;
+    metrics.peakConnected = Math.max(metrics.peakConnected, metrics.connected);
     const handshakeDuration = Date.now() - startTime;
     metrics.handshakeTimes.push(handshakeDuration);
 
@@ -94,8 +101,11 @@ function connectClient(index) {
     metrics.disconnected++;
   });
 
-  socket.on('connect_error', () => {
+  socket.on('connect_error', (err) => {
     metrics.errors++;
+    if (metrics.errors <= 3) {
+      console.warn(`[Warning] Socket connection error (${TARGET_URL}):`, err?.message || err);
+    }
   });
 
   // Track broadcast messages from backend market stream
@@ -184,13 +194,14 @@ async function run() {
   // Final summary
   const hs = calculatePercentiles(metrics.handshakeTimes);
   const pings = calculatePercentiles(metrics.pingRtts);
-  const successRate = ((metrics.connected / TOTAL_CLIENTS) * 100).toFixed(1);
+  const peak = metrics.peakConnected;
+  const successRate = ((peak / TOTAL_CLIENTS) * 100).toFixed(1);
 
   console.log('\n' + '='.repeat(70));
   console.log('📊 FINAL TEST RESULTS SUMMARY');
   console.log('='.repeat(70));
   console.log(`Total Attempted:         ${TOTAL_CLIENTS}`);
-  console.log(`Peak Concurrent Sockets: ${metrics.connected}`);
+  console.log(`Peak Concurrent Sockets: ${peak}`);
   console.log(`Success Rate:            ${successRate}%`);
   console.log(`Total Connection Errors: ${metrics.errors}`);
   console.log(`Total Broadcasts Caught: ${metrics.broadcastsReceived}`);

@@ -64,8 +64,15 @@ export async function apiRequest(endpoint, { method = 'GET', body, headers = {},
     options.body = typeof body === 'string' ? body : JSON.stringify(body);
   }
 
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), 8000) : null;
+  if (controller && !options.signal) {
+    options.signal = controller.signal;
+  }
+
   try {
     const response = await fetch(url, options);
+    if (timeoutId) clearTimeout(timeoutId);
     const contentType = response.headers.get('content-type') || '';
     const isJson = contentType.includes('application/json');
 
@@ -93,6 +100,12 @@ export async function apiRequest(endpoint, { method = 'GET', body, headers = {},
 
     return data;
   } catch (err) {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      const timeoutErr = new Error(`Request timed out after 8000ms`);
+      timeoutErr.status = 408;
+      throw timeoutErr;
+    }
     if (err.name === 'TypeError' && err.message.includes('Failed to fetch')) {
       const connErr = new Error(`Cannot connect to PassFlow backend at ${BACKEND_URL}. Ensure backend is running.`);
       connErr.status = 0;
