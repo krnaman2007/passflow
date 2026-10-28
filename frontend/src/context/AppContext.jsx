@@ -899,7 +899,7 @@ export function AppProvider({ children }) {
     if (!ticket) return;
 
     try {
-      // 1. Call dedicated ticket cancel listing endpoint
+      // 1.Call dedicated ticket cancel listing endpoint
       try {
         await api.tickets.cancelListing(ticketId);
       } catch (directErr) {
