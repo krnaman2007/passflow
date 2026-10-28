@@ -65,21 +65,9 @@ export default function Navbar() {
     <header className="navbar">
       {/* Left: Brand & Navigation Links */}
       <div className="nav-left">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div className="brand-badge" onClick={() => navigate('/events')}>
-            <span className="brand-diamond">◆</span>
-            <span>PassFlow</span>
-            <span className="brand-exchange-tag">EXCHANGE</span>
-          </div>
-          <div className="exchange-status-pill" title="PassFlow Matching Engine is live and responsive">
-            <span className="pulse-radar-dot"></span>
-            <span>LIVE ENGINE</span>
-          </div>
-
-
-
-            
-
+        <div className="brand-badge" onClick={() => navigate('/events')}>
+          <span className="brand-diamond">◆</span>
+          <span>PassFlow</span>
         </div>
 
         <nav className="nav-links">
