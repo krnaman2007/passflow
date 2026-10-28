@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { marketStream, CONNECTION_STATUS } from '../services/marketStream.js';
 import { api } from '../services/api.js';
 import { formatTradeTime } from '../utils/formatters.js';
+import { useAppStore } from '../store/useStore.js';
 
 /**
  * Transforms raw price levels from backend (paise) into depth table rows.
@@ -47,19 +48,33 @@ export function transformDepthLevels(levels = [], isAsk = false) {
  * @returns {Object} Live market state, depth book, trades, and connection status
  */
 export function useMarketStream(eventId, ticketCategoryId) {
+  const currentKey = eventId && ticketCategoryId ? `${eventId}:${ticketCategoryId}` : null;
+  const cachedSnapshot = currentKey ? useAppStore.getState().marketSnapshots[currentKey] : null;
+  const cachedTrades = currentKey ? useAppStore.getState().marketTrades[currentKey] : [];
+
   const [connectionStatus, setConnectionStatus] = useState(marketStream.status);
-  const [liveSnapshot, setLiveSnapshot] = useState(null);
-  const [liveTrades, setLiveTrades] = useState([]);
+  const [liveSnapshot, setLiveSnapshot] = useState(cachedSnapshot || null);
+  const [liveTrades, setLiveTrades] = useState(cachedTrades || []);
   const [isResyncing, setIsResyncing] = useState(false);
   const [streamError, setStreamError] = useState(null);
-  const [loadingInitial, setLoadingInitial] = useState(true);
+  const [loadingInitial, setLoadingInitial] = useState(!cachedSnapshot);
 
   // Track active market to reject any stale cross-market callbacks
-  const activeMarketRef = useRef(`${eventId}:${ticketCategoryId}`);
+  const activeMarketRef = useRef(currentKey);
 
   // Authoritative fetch from backend REST endpoints
-  const fetchAuthoritativeMarketData = useCallback(async (targetEventId, targetCategoryId) => {
+  const fetchAuthoritativeMarketData = useCallback(async (targetEventId, targetCategoryId, force = false) => {
     if (!targetEventId || !targetCategoryId) return;
+    const marketKey = `${targetEventId}:${targetCategoryId}`;
+
+    // Cache freshness: If snapshot was fetched within the last 30 seconds and not forced, skip redundant REST calls
+    if (!force) {
+      const cached = useAppStore.getState().marketSnapshots[marketKey];
+      if (cached && cached.lastFetchedAt && Date.now() - cached.lastFetchedAt < 30000) {
+        setLoadingInitial(false);
+        return;
+      }
+    }
 
     try {
       const [depthRes, tradesRes, marketRes] = await Promise.allSettled([
@@ -68,8 +83,7 @@ export function useMarketStream(eventId, ticketCategoryId) {
         api.market.getMarketData(targetEventId, targetCategoryId),
       ]);
 
-      const currentKey = `${targetEventId}:${targetCategoryId}`;
-      if (activeMarketRef.current !== currentKey) return;
+      if (activeMarketRef.current !== marketKey) return;
 
       let depthData = depthRes.status === 'fulfilled' ? depthRes.value?.data || depthRes.value : null;
       if (!depthData || (!depthData.bids && !depthData.asks)) {
@@ -92,17 +106,41 @@ export function useMarketStream(eventId, ticketCategoryId) {
       const summaryData = marketRes.status === 'fulfilled' ? marketRes.value?.data || marketRes.value : null;
 
       if (depthData) {
-        setLiveSnapshot((prev) => ({
-          ...depthData,
-          bids: depthData.bids || [],
-          asks: depthData.asks || [],
-          bestBid: summaryData?.bestBid != null ? summaryData.bestBid : depthData.bestBid,
-          bestAsk: summaryData?.bestAsk != null ? summaryData.bestAsk : depthData.bestAsk,
-          lastPrice: summaryData?.lastPrice != null ? summaryData.lastPrice : depthData.lastPrice,
-          spread: summaryData?.spread != null ? summaryData.spread : depthData.spread,
-          volume: summaryData?.volume || 0,
-          ...prev, // WebSocket live updates take precedence over initial snapshot
-        }));
+        setLiveSnapshot((prev) => {
+          let safeBids = depthData.bids || [];
+          let safeAsks = depthData.asks || [];
+          let safeSeq = depthData.sequenceNumber || '0';
+
+          // Prevent stale REST response from overwriting newer WebSocket state
+          if (prev?.sequenceNumber && depthData.sequenceNumber) {
+            try {
+              if (BigInt(prev.sequenceNumber) >= BigInt(depthData.sequenceNumber)) {
+                safeBids = prev.bids || safeBids;
+                safeAsks = prev.asks || safeAsks;
+                safeSeq = prev.sequenceNumber;
+              }
+            } catch {
+              // fallback
+            }
+          }
+
+          const merged = {
+            ...depthData,
+            bids: safeBids,
+            asks: safeAsks,
+            sequenceNumber: safeSeq,
+            bestBid: summaryData?.bestBid != null ? summaryData.bestBid : (prev?.bestBid ?? depthData.bestBid),
+            bestAsk: summaryData?.bestAsk != null ? summaryData.bestAsk : (prev?.bestAsk ?? depthData.bestAsk),
+            lastPrice: summaryData?.lastPrice != null ? summaryData.lastPrice : (prev?.lastPrice ?? depthData.lastPrice),
+            spread: summaryData?.spread != null ? summaryData.spread : (prev?.spread ?? depthData.spread),
+            volume: summaryData?.volume || prev?.volume || depthData.volume || 0,
+            lastFetchedAt: Date.now(),
+          };
+
+          // Store in shared Zustand store
+          useAppStore.getState().setMarketSnapshot(marketKey, merged);
+          return merged;
+        });
       }
 
       if (Array.isArray(tradesData) && tradesData.length > 0) {
@@ -114,7 +152,11 @@ export function useMarketStream(eventId, ticketCategoryId) {
           side: t.side?.toLowerCase() === 'ask' ? 'sell' : 'buy',
           sequenceNumber: t.sequenceNumber || '0',
         }));
-        setLiveTrades((prev) => (prev.length > 0 ? prev : formatted));
+        setLiveTrades((prev) => {
+          const result = prev.length > 0 ? prev : formatted;
+          useAppStore.getState().setMarketTrades(marketKey, result);
+          return result;
+        });
       }
     } catch (err) {
       console.warn('Initial REST market depth fetch failed:', err);
@@ -124,47 +166,61 @@ export function useMarketStream(eventId, ticketCategoryId) {
   }, []);
 
   useEffect(() => {
-    activeMarketRef.current = `${eventId}:${ticketCategoryId}`;
+    const targetEventId = eventId;
+    const targetCategoryId = ticketCategoryId;
+    const marketKey = `${targetEventId}:${targetCategoryId}`;
+    activeMarketRef.current = marketKey;
 
     // 1. Connection status listener
     const unsubStatus = marketStream.onStatusChange((status) => {
       setConnectionStatus(status);
     });
 
-    // Reset market state on parameter change
-    setLiveSnapshot(null);
-    setLiveTrades([]);
+    // Check store for existing snapshot/trades
+    const cachedSnap = targetEventId && targetCategoryId ? useAppStore.getState().marketSnapshots[marketKey] : null;
+    const cachedTr = targetEventId && targetCategoryId ? useAppStore.getState().marketTrades[marketKey] : [];
+
+    if (cachedSnap) {
+      setLiveSnapshot(cachedSnap);
+      setLiveTrades(cachedTr || []);
+      setLoadingInitial(false);
+    } else {
+      setLiveSnapshot(null);
+      setLiveTrades([]);
+      setLoadingInitial(true);
+    }
+
     setIsResyncing(false);
     setStreamError(null);
-    setLoadingInitial(true);
 
-    const targetEventId = eventId;
-    const targetCategoryId = ticketCategoryId;
-    const currentKey = `${targetEventId}:${targetCategoryId}`;
-
-    // Fetch REST authoritative state first
-    fetchAuthoritativeMarketData(targetEventId, targetCategoryId);
+    // Fetch REST authoritative state (will skip redundant request if cached within 30s)
+    fetchAuthoritativeMarketData(targetEventId, targetCategoryId, false);
 
     // 2. Subscribe to WebSocket real-time updates
     const unsubscribe = marketStream.subscribeMarket({
       eventId: targetEventId,
       ticketCategoryId: targetCategoryId,
       onSnapshot: (snapshot) => {
-        if (activeMarketRef.current !== currentKey) return;
+        if (activeMarketRef.current !== marketKey) return;
         setStreamError(null);
         setIsResyncing(false);
-        setLiveSnapshot((prev) => ({
-          ...prev,
-          ...snapshot,
-          bids: snapshot.bids || [],
-          asks: snapshot.asks || [],
-        }));
+        setLiveSnapshot((prev) => {
+          const next = {
+            ...prev,
+            ...snapshot,
+            bids: snapshot.bids || [],
+            asks: snapshot.asks || [],
+            lastFetchedAt: Date.now(),
+          };
+          useAppStore.getState().setMarketSnapshot(marketKey, next);
+          return next;
+        });
       },
       onOrderBook: (update) => {
-        if (activeMarketRef.current !== currentKey) return;
+        if (activeMarketRef.current !== marketKey) return;
         setLiveSnapshot((prev) => {
           const base = prev || {};
-          return {
+          const next = {
             ...base,
             sequenceNumber: update.sequenceNumber || base.sequenceNumber || '0',
             bids: update.bids !== undefined ? update.bids : base.bids || [],
@@ -174,11 +230,14 @@ export function useMarketStream(eventId, ticketCategoryId) {
             lastPrice: update.lastPrice !== undefined ? update.lastPrice : base.lastPrice,
             spread: update.spread !== undefined ? update.spread : base.spread,
             timestamp: update.timestamp || new Date().toISOString(),
+            lastFetchedAt: Date.now(),
           };
+          useAppStore.getState().setMarketSnapshot(marketKey, next);
+          return next;
         });
       },
       onTrade: (trade) => {
-        if (activeMarketRef.current !== currentKey) return;
+        if (activeMarketRef.current !== marketKey) return;
         const majorPrice =
           trade.price != null
             ? (Number(trade.price) >= 100 ? Number(trade.price) / 100 : Number(trade.price)).toFixed(2)
@@ -193,24 +252,30 @@ export function useMarketStream(eventId, ticketCategoryId) {
           sequenceNumber: trade.sequenceNumber,
         };
 
-        setLiveTrades((prev) => [formattedTrade, ...prev.slice(0, 99)]);
+        setLiveTrades((prev) => {
+          const next = [formattedTrade, ...prev.filter((t) => t.id !== formattedTrade.id).slice(0, 99)];
+          useAppStore.getState().setMarketTrades(marketKey, next);
+          return next;
+        });
 
         // Update lastPrice on liveSnapshot
         setLiveSnapshot((prev) => {
           if (!prev) return prev;
-          return {
+          const next = {
             ...prev,
             lastPrice: trade.price != null ? trade.price : prev.lastPrice,
           };
+          useAppStore.getState().setMarketSnapshot(marketKey, next);
+          return next;
         });
       },
       onError: (err) => {
-        if (activeMarketRef.current !== currentKey) return;
+        if (activeMarketRef.current !== marketKey) return;
         setStreamError(err.friendlyMessage || err.message || 'Market stream error');
         setIsResyncing(false);
       },
       onResyncing: (resyncing) => {
-        if (activeMarketRef.current !== currentKey) return;
+        if (activeMarketRef.current !== marketKey) return;
         setIsResyncing(Boolean(resyncing));
       },
     });
@@ -284,7 +349,7 @@ export function useMarketStream(eventId, ticketCategoryId) {
       lastPrice,
       trades: liveTrades,
     },
-    refetch: () => fetchAuthoritativeMarketData(eventId, ticketCategoryId),
+    refetch: () => fetchAuthoritativeMarketData(eventId, ticketCategoryId, true),
   };
 }
 

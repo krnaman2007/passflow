@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import { api } from '../services/api';
 import { formatBackendEvent } from '../utils/eventAdapter';
 import { useMarketStream } from '../hooks/useMarketStream.js';
+import { useAppStore } from '../store/useStore.js';
 import {
   TrendingUp,
   Lock,
@@ -43,6 +44,12 @@ export default function MarketPage() {
       if (routeParams.id) {
         const found = events.find((e) => e.id === routeParams.id);
         if (found) return found;
+      }
+      // If no routeParam.id, restore previously selected market from store
+      const saved = useAppStore.getState().selectedMarket;
+      if (saved?.eventId) {
+        const foundSaved = events.find((e) => e.id === saved.eventId);
+        if (foundSaved) return foundSaved;
       }
       return events[0];
     }
@@ -119,16 +126,26 @@ export default function MarketPage() {
   const tiers = Array.isArray(currentEvent?.tiers) ? currentEvent.tiers : [];
 
   // Market Summary: Real-Time Top Events by Volume & Price Movement (GET /market/summary)
-  const [marketSummary, setMarketSummary] = useState([]);
+  const initialSummary = useAppStore.getState().marketSummary || [];
+  const [marketSummary, setMarketSummary] = useState(initialSummary);
 
   useEffect(() => {
     let isMounted = true;
     async function loadSummary() {
+      // Check cache freshness (< 30 seconds)
+      const fetchedAt = useAppStore.getState().marketSummaryFetchedAt;
+      const cached = useAppStore.getState().marketSummary;
+      if (cached && cached.length > 0 && fetchedAt && Date.now() - fetchedAt < 30000) {
+        if (isMounted) setMarketSummary(cached);
+        return;
+      }
+
       try {
         const res = await api.market.getMarketSummary({ limit: 6, sortBy: 'volume' });
         const list = res?.data?.summary || res?.summary || [];
         if (isMounted && Array.isArray(list)) {
           setMarketSummary(list);
+          useAppStore.getState().setMarketSummaryData(list);
         }
       } catch (err) {
         console.warn('Market summary fetch deferred:', err.message);
@@ -151,8 +168,25 @@ export default function MarketPage() {
       );
       if (match) return match.id;
     }
+    const saved = useAppStore.getState().selectedMarket;
+    if (saved?.categoryId && (!saved.eventId || saved.eventId === activeEventId)) {
+      const matchSaved = tiers.find(
+        (t) => t.id.toLowerCase() === saved.categoryId.toLowerCase()
+      );
+      if (matchSaved) return matchSaved.id;
+    }
     return tiers[0].id;
-  }, [tiers, routeParams.categoryId]);
+  }, [tiers, routeParams.categoryId, activeEventId]);
+
+  // Keep selected market in shared store for navigation persistence
+  useEffect(() => {
+    if (activeEventId && activeCategoryId) {
+      useAppStore.getState().setSelectedMarket({
+        eventId: activeEventId,
+        categoryId: activeCategoryId,
+      });
+    }
+  }, [activeEventId, activeCategoryId]);
 
   const currentTier = useMemo(() => {
     if (!tiers || tiers.length === 0) {

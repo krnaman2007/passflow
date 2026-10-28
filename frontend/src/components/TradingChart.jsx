@@ -8,6 +8,7 @@ import {
   createSeriesMarkers,
 } from 'lightweight-charts';
 import { api } from '../services/api';
+import { useAppStore } from '../store/useStore.js';
 import {
   BarChart3,
   Columns,
@@ -117,18 +118,41 @@ export default function TradingChart({
   const sellMarkersPluginRef = useRef(null);
   const buyMarkersPluginRef = useRef(null);
 
-  // Component state
-  const [viewMode, setViewMode] = useState('split'); // 'split' or 'single'
-  const [candleData, setCandleData] = useState([]);
-  const [summary, setSummary] = useState(null);
+  // Persistent chart slice key in Zustand store
+  const chartKey = `${eventId}:${categoryId || 'all'}:1h`;
+  const cachedData = useAppStore.getState().marketCandles[chartKey];
+  const storedViewMode = useAppStore.getState().chartViewMode || 'split';
+
+  // Component state initialized from store cache for instantaneous zero-latency rendering
+  const [viewMode, setViewMode] = useState(storedViewMode);
+  const [candleData, setCandleData] = useState(cachedData?.candles || []);
+  const [summary, setSummary] = useState(cachedData?.summary || null);
   const [isChartReady, setIsChartReady] = useState(0);
 
-  // 1. Fetch historical price data
+  const changeViewMode = (mode) => {
+    setViewMode(mode);
+    useAppStore.getState().setChartViewMode(mode);
+  };
+
+  // 1. Fetch historical price data with smart caching
   useEffect(() => {
     let isMounted = true;
 
     async function loadCandles() {
       if (!eventId) return;
+
+      // Immediately render cached candles if available
+      const cached = useAppStore.getState().marketCandles[chartKey];
+      if (cached && Array.isArray(cached.candles) && cached.candles.length > 0) {
+        if (isMounted) {
+          setCandleData(cached.candles);
+          if (cached.summary) setSummary(cached.summary);
+        }
+        // Cache freshness: If fetched within the last 60 seconds, skip redundant REST request
+        if (cached.lastFetchedAt && Date.now() - cached.lastFetchedAt < 60000) {
+          return;
+        }
+      }
 
       try {
         const res = await api.events.getPriceHistory(eventId, {
@@ -182,6 +206,8 @@ export default function TradingChart({
 
         if (isMounted) {
           setCandleData(formatted);
+          if (data?.summary) setSummary(data.summary);
+          useAppStore.getState().setMarketCandles(chartKey, formatted, data?.summary || null);
         }
       } catch (err) {
         console.warn('Could not load chart price history:', err.message);
@@ -193,7 +219,7 @@ export default function TradingChart({
     return () => {
       isMounted = false;
     };
-  }, [eventId, categoryId, basePrice]);
+  }, [eventId, categoryId, basePrice, chartKey]);
 
   // 2. Initialize Charts whenever viewMode changes
   useEffect(() => {
@@ -729,7 +755,7 @@ export default function TradingChart({
             }}
           >
             <button
-              onClick={() => setViewMode('split')}
+              onClick={() => changeViewMode('split')}
               style={{
                 padding: '4px 10px',
                 fontSize: 11,
@@ -749,7 +775,7 @@ export default function TradingChart({
               Split (Sell / Buy)
             </button>
             <button
-              onClick={() => setViewMode('single')}
+              onClick={() => changeViewMode('single')}
               style={{
                 padding: '4px 10px',
                 fontSize: 11,
