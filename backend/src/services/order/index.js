@@ -16,5 +16,6 @@ export {
 } from '../wallet/wallet-errors.js';
 
 import { OrderService } from './order-service.js';
-export const orderService = new OrderService();
+import { marketStreamService } from '../market-stream/index.js';
+export const orderService = new OrderService({ marketStreamService });
 export default orderService;

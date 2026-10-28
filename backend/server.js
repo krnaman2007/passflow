@@ -110,6 +110,9 @@ export const startServer = async () => {
             eventId: cat.eventId,
             ticketCategoryId: cat.id,
           });
+          if (typeof orderService.uncrossMarket === 'function') {
+            await orderService.uncrossMarket(cat.eventId, cat.id);
+          }
         } catch (mErr) {
           logger.warn(`Deferred market warmup for ${cat.eventId}:${cat.id}: ${mErr.message}`);
         }

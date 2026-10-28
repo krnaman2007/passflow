@@ -129,9 +129,12 @@ export function AppProvider({ children }) {
     const handlePopState = () => {
       const path = normalizePath(window.location.pathname);
       if (typeof document !== 'undefined' && document.startViewTransition) {
-        document.startViewTransition(() => {
+        const transition = document.startViewTransition(() => {
           updateRouteState(path);
         });
+        if (transition?.finished) {
+          transition.finished.catch(() => {});
+        }
       } else {
         updateRouteState(path);
       }
@@ -290,9 +293,12 @@ export function AppProvider({ children }) {
     }
 
     if (typeof document !== 'undefined' && document.startViewTransition) {
-      document.startViewTransition(() => {
+      const transition = document.startViewTransition(() => {
         updateRouteState(cleanPath, params);
       });
+      if (transition?.finished) {
+        transition.finished.catch(() => {});
+      }
     } else {
       updateRouteState(cleanPath, params);
     }

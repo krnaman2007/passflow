@@ -388,6 +388,7 @@ export class OrderService {
         await this.matchingService.initializeAndSynchronizeMarket(marketKey);
       }
     }
+    await this.uncrossMarket(eventId, ticketCategoryId);
 
     // 2. Check for existing order by (userId, idempotencyKey)
     const existingOrder = await this.orderRepository.findByIdempotencyKey(userId, idempotencyKey);
@@ -533,7 +534,6 @@ export class OrderService {
       inventoryReserved = true;
     }
 
-    // 4. Submit to Persistent Matching Engine under MarketExecutionQueue
     let submissionResult;
     try {
       submissionResult = await this.matchingService.submitLimitOrder({
@@ -548,6 +548,26 @@ export class OrderService {
         idempotencyKey,
       });
     } catch (err) {
+      if (err?.code === 'MARKET_STATE_DIVERGENCE' && typeof this.matchingService?.reconcileMarket === 'function') {
+        try {
+          await this.matchingService.reconcileMarket(marketKey);
+          submissionResult = await this.matchingService.submitLimitOrder({
+            id: orderId,
+            userId,
+            eventId,
+            ticketCategoryId,
+            side,
+            orderType,
+            price,
+            quantity,
+            idempotencyKey,
+          });
+        } catch (retryErr) {
+          err = retryErr;
+        }
+      }
+
+      if (!submissionResult) {
       // 5. Handle matching engine outcome — NEVER blindly compensate!
 
       // Case A: Post-Commit Mutation Error
@@ -701,7 +721,8 @@ export class OrderService {
         }
       }
 
-      throw err;
+        throw err;
+      }
     }
 
     // 6. If BUY order, update hold record with persisted order ID if needed
@@ -740,6 +761,7 @@ export class OrderService {
     }
 
     await this._settleExecutions(submissionResult.executions);
+    await this.uncrossMarket(eventId, ticketCategoryId);
 
     // Step 9.16: Real-time WebSocket streaming (post-commit broadcast)
     if (
@@ -1466,6 +1488,15 @@ export class OrderService {
               },
             });
           }
+
+          try {
+            if (typeof this.marketStreamService.syncAndPublishWallet === 'function') {
+              if (submissionResult.userId) await this.marketStreamService.syncAndPublishWallet(submissionResult.userId);
+              if (resting && resting.userId) await this.marketStreamService.syncAndPublishWallet(resting.userId);
+            }
+          } catch {
+            // Non-blocking wallet sync
+          }
         }
       }
 
@@ -1502,9 +1533,157 @@ export class OrderService {
         action,
         bids: snapshot.bids,
         asks: snapshot.asks,
+        bestBid: snapshot.bestBid,
+        bestAsk: snapshot.bestAsk,
+        lastPrice: snapshot.lastPrice,
+        spread: snapshot.spread,
       });
     } catch (err) {
       console.error('Failed to publish orderbook update:', err);
+    }
+  }
+
+  /**
+   * Resolves any crossed or locked market conditions (bestBid >= bestAsk)
+   * by matching and executing crossed resting orders sequentially in price-time priority.
+   *
+   * @param {string} eventId
+   * @param {string} ticketCategoryId
+   */
+  async uncrossMarket(eventId, ticketCategoryId) {
+    try {
+      const marketKey = formatMarketKey(eventId, ticketCategoryId);
+      const book = this.matchingService?.getMarketBook(marketKey);
+      if (!book) return;
+
+      let matchedAny = false;
+      let spread = book.getSpread();
+
+      while (spread !== null && spread <= 0) {
+        const bestBids = book.getOrders('BID');
+        const bestAsks = book.getOrders('ASK');
+        if (bestBids.length === 0 || bestAsks.length === 0) break;
+
+        const bestBid = bestBids[0];
+        const bestAsk = bestAsks[0];
+
+        if (bestBid.price < bestAsk.price) break;
+
+        // Self-trade prevention
+        if (bestBid.userId && bestAsk.userId && bestBid.userId === bestAsk.userId) {
+          break;
+        }
+
+        const matchQty = Math.min(bestBid.remainingQuantity, bestAsk.remainingQuantity);
+        if (matchQty <= 0) break;
+
+        const bidSeq = bestBid.sequenceNumber != null ? BigInt(bestBid.sequenceNumber) : 0n;
+        const askSeq = bestAsk.sequenceNumber != null ? BigInt(bestAsk.sequenceNumber) : 0n;
+        const execPrice = bidSeq < askSeq ? bestBid.price : bestAsk.price;
+        const restingOrder = bidSeq < askSeq ? bestBid : bestAsk;
+        const incomingOrder = bidSeq < askSeq ? bestAsk : bestBid;
+
+        const executionId = crypto.randomUUID();
+        const bidRemaining = bestBid.remainingQuantity - matchQty;
+        const askRemaining = bestAsk.remainingQuantity - matchQty;
+
+        await this.prisma.$transaction(async (tx) => {
+          await tx.order.update({
+            where: { id: bestBid.id },
+            data: {
+              remainingQuantity: bidRemaining,
+              status: bidRemaining === 0 ? 'FILLED' : 'PARTIALLY_FILLED',
+              stoppedReason: bidRemaining === 0 ? 'FILLED' : 'PARTIALLY_FILLED',
+            },
+          });
+          await tx.order.update({
+            where: { id: bestAsk.id },
+            data: {
+              remainingQuantity: askRemaining,
+              status: askRemaining === 0 ? 'FILLED' : 'PARTIALLY_FILLED',
+              stoppedReason: askRemaining === 0 ? 'FILLED' : 'PARTIALLY_FILLED',
+            },
+          });
+          await tx.execution.create({
+            data: {
+              id: executionId,
+              incomingOrderId: incomingOrder.id,
+              restingOrderId: restingOrder.id,
+              price: execPrice,
+              quantity: matchQty,
+            },
+          });
+        });
+
+        book.reduceOrderQuantity(bestBid.id, matchQty);
+        book.reduceOrderQuantity(bestAsk.id, matchQty);
+        matchedAny = true;
+
+        if (this.settlementService) {
+          try {
+            await this.settlementService.settleExecution({ executionId });
+          } catch (settleErr) {
+            console.error('Failed to settle uncrossed execution:', settleErr);
+          }
+        }
+
+        if (this.marketStreamService) {
+          this.marketStreamService.publishMarketTrade({
+            eventId,
+            ticketCategoryId,
+            tradeId: executionId,
+            price: execPrice,
+            quantity: matchQty,
+          });
+
+          this.marketStreamService.publishOrderFill({
+            userId: bestBid.userId,
+            fill: {
+              orderId: bestBid.id,
+              eventId,
+              ticketCategoryId,
+              side: 'BID',
+              status: bidRemaining === 0 ? 'FILLED' : 'PARTIALLY_FILLED',
+              fillPrice: execPrice,
+              fillQuantity: matchQty,
+              remainingQuantity: bidRemaining,
+              tradeId: executionId,
+            },
+          });
+
+          this.marketStreamService.publishOrderFill({
+            userId: bestAsk.userId,
+            fill: {
+              orderId: bestAsk.id,
+              eventId,
+              ticketCategoryId,
+              side: 'ASK',
+              status: askRemaining === 0 ? 'FILLED' : 'PARTIALLY_FILLED',
+              fillPrice: execPrice,
+              fillQuantity: matchQty,
+              remainingQuantity: askRemaining,
+              tradeId: executionId,
+            },
+          });
+
+          try {
+            if (typeof this.marketStreamService.syncAndPublishWallet === 'function') {
+              if (bestBid.userId) await this.marketStreamService.syncAndPublishWallet(bestBid.userId);
+              if (bestAsk.userId) await this.marketStreamService.syncAndPublishWallet(bestAsk.userId);
+            }
+          } catch {
+            // Non-blocking wallet sync
+          }
+        }
+
+        spread = book.getSpread();
+      }
+
+      if (matchedAny && this.marketStreamService) {
+        await this._publishOrderBookUpdate(eventId, ticketCategoryId, 'TRADE_MATCH');
+      }
+    } catch (uncrossErr) {
+      console.warn('uncrossMarket non-blocking check error:', uncrossErr?.message || uncrossErr);
     }
   }
 

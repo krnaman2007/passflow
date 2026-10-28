@@ -163,12 +163,16 @@ export function useMarketStream(eventId, ticketCategoryId) {
       onOrderBook: (update) => {
         if (activeMarketRef.current !== currentKey) return;
         setLiveSnapshot((prev) => {
-          if (!prev) return prev;
+          const base = prev || {};
           return {
-            ...prev,
-            sequenceNumber: update.sequenceNumber || prev.sequenceNumber,
-            bids: update.bids || prev.bids || [],
-            asks: update.asks || prev.asks || [],
+            ...base,
+            sequenceNumber: update.sequenceNumber || base.sequenceNumber || '0',
+            bids: update.bids !== undefined ? update.bids : base.bids || [],
+            asks: update.asks !== undefined ? update.asks : base.asks || [],
+            bestBid: update.bestBid !== undefined ? update.bestBid : base.bestBid,
+            bestAsk: update.bestAsk !== undefined ? update.bestAsk : base.bestAsk,
+            lastPrice: update.lastPrice !== undefined ? update.lastPrice : base.lastPrice,
+            spread: update.spread !== undefined ? update.spread : base.spread,
             timestamp: update.timestamp || new Date().toISOString(),
           };
         });
@@ -243,13 +247,13 @@ export function useMarketStream(eventId, ticketCategoryId) {
       : null);
 
   const spread =
-    liveSnapshot?.spread != null
+    bestBid && bestAsk
+      ? Math.max(0, Number(bestAsk) - Number(bestBid)).toFixed(2)
+      : liveSnapshot?.spread != null
       ? (Number(liveSnapshot.spread) >= 100
           ? Number(liveSnapshot.spread) / 100
           : Number(liveSnapshot.spread)
         ).toFixed(2)
-      : bestBid && bestAsk
-      ? Math.max(0, Number(bestAsk) - Number(bestBid)).toFixed(2)
       : null;
 
   const lastPrice =

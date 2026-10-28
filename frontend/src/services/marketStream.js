@@ -485,44 +485,37 @@ export class MarketStreamClient {
     if (!sub) return; // Strict market isolation: discard updates from different markets
 
     const updateSeqStr = update.sequenceNumber != null ? String(update.sequenceNumber) : '0';
+    let updateSeq = null;
+    try {
+      updateSeq = BigInt(updateSeqStr);
+    } catch {
+      updateSeq = null;
+    }
 
-    // In Step 9.16 backend, ORDER_CANCEL carries sequenceNumber '0'.
-    // Non-execution level updates do not advance execution sequence.
-    if (updateSeqStr === '0') {
+    // Apply the orderbook update if it's a level update, cancel, or trade match at or ahead of current sequence
+    if (
+      updateSeqStr === '0' ||
+      update.action !== 'TRADE_MATCH' ||
+      sub.currentSequence === null ||
+      (updateSeq !== null && updateSeq >= sub.currentSequence)
+    ) {
+      if (updateSeq !== null && (sub.currentSequence === null || updateSeq > sub.currentSequence)) {
+        sub.currentSequence = updateSeq;
+      }
       if (typeof sub.callbacks.onOrderBook === 'function') {
         sub.callbacks.onOrderBook(update);
       }
       return;
     }
 
-    let updateSeq;
-    try {
-      updateSeq = BigInt(updateSeqStr);
-    } catch {
-      return;
-    }
-
-    // If sequence is not initialized yet (waiting for snapshot), discard intermediate update
-    if (sub.currentSequence === null) {
-      return;
-    }
-
-    // 1. Stale or duplicate update
-    if (updateSeq <= sub.currentSequence) {
-      return;
-    }
-
-    // 2. Next expected sequential update
-    if (updateSeq === sub.currentSequence + 1n) {
+    // If there is an unexpected sequence gap on a trade match, trigger resync but still apply update
+    if (updateSeq !== null && sub.currentSequence !== null && updateSeq > sub.currentSequence + 1n) {
       sub.currentSequence = updateSeq;
       if (typeof sub.callbacks.onOrderBook === 'function') {
         sub.callbacks.onOrderBook(update);
       }
-      return;
+      this.requestSnapshotResync(sub.eventId, sub.ticketCategoryId);
     }
-
-    // 3. Sequence gap detected (updateSeq > currentSequence + 1n)
-    this.requestSnapshotResync(sub.eventId, sub.ticketCategoryId);
   }
 
   /**

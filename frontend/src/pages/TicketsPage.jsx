@@ -109,9 +109,12 @@ export default function TicketsPage() {
 
   const handleSelectTicket = (id) => {
     if (typeof document !== 'undefined' && document.startViewTransition) {
-      document.startViewTransition(() => {
+      const transition = document.startViewTransition(() => {
         setSelectedTicketId(id);
       });
+      if (transition?.finished) {
+        transition.finished.catch(() => {});
+      }
     } else {
       setSelectedTicketId(id);
     }

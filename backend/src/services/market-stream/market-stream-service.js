@@ -269,12 +269,14 @@ export class MarketStreamService {
 
     // 6. Cleanup on disconnect
     socket.on('disconnect', () => {
-      if (socket.data.subscriptions) {
+      if (socket.data?.subscriptions) {
         socket.data.subscriptions.clear();
-        socket.data.subscriptions = null;
       }
-      socket.data.user = null;
-      socket.data.requestTimestamps = null;
+      if (socket.data) {
+        socket.data.subscriptions = new Set();
+        socket.data.user = null;
+        socket.data.requestTimestamps = [];
+      }
     });
   }
 
@@ -388,6 +390,13 @@ export class MarketStreamService {
 
     const marketKey = `${eventId}:${ticketCategoryId}`;
 
+    if (!socket.data) {
+      socket.data = {};
+    }
+    if (!socket.data.subscriptions) {
+      socket.data.subscriptions = new Set();
+    }
+
     // 2. Subscription limit enforcement
     if (
       !socket.data.subscriptions.has(marketKey) &&
@@ -439,6 +448,17 @@ export class MarketStreamService {
         callback({ error: 'Internal server error', code: 'INTERNAL_ERROR' });
       }
       return;
+    }
+
+    // Guard against socket disconnect during the async DB query
+    if (!socket.connected) {
+      return;
+    }
+    if (!socket.data) {
+      socket.data = {};
+    }
+    if (!socket.data.subscriptions) {
+      socket.data.subscriptions = new Set();
     }
 
     // 4. Safe subscription sequencing:
@@ -673,6 +693,10 @@ export class MarketStreamService {
     action = 'LEVEL_UPDATE',
     bids = [],
     asks = [],
+    bestBid = null,
+    bestAsk = null,
+    lastPrice = null,
+    spread = null,
     timestamp,
   }) {
     if (!this.io) return;
@@ -686,6 +710,10 @@ export class MarketStreamService {
       action,
       bids,
       asks,
+      bestBid,
+      bestAsk,
+      lastPrice,
+      spread,
       timestamp: timestamp ? new Date(timestamp).toISOString() : new Date().toISOString(),
     };
 
