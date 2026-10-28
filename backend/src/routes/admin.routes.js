@@ -180,4 +180,11 @@ router.post(
   adminController.generateSolvencyProof
 );
 
+/**
+ * @route   POST /admin/tests/run
+ * @desc    Execute real-time concurrency, Redis Streams, and matching engine benchmarks.
+ * @access  Admin
+ */
+router.post('/tests/run', adminController.runLoadTest);
+
 export default router;

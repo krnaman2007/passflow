@@ -7,6 +7,7 @@ import rulesService from '../services/rules.service.js';
 import reconciliationService from '../services/reconciliation.service.js';
 import monitoringService from '../services/monitoring.service.js';
 import solvencyService from '../services/solvency.service.js';
+import { loadTestService } from '../services/load-test.service.js';
 
 /**
  * GET /admin/users
@@ -770,6 +771,33 @@ export const generateSolvencyProof = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /admin/tests/run
+ * Admin / Judges: Executes real-time load, concurrency, and engine benchmarks.
+ */
+export const runLoadTest = async (req, res, next) => {
+  try {
+    const { testType = 'redis_streams', options = {} } = req.body || {};
+    let result;
+
+    if (testType === 'redis_streams') {
+      result = await loadTestService.runRedisStreamsBenchmark(options);
+    } else if (testType === 'websocket') {
+      result = await loadTestService.runWebSocketConcurrencyTest(options);
+    } else if (testType === 'http_orders') {
+      result = await loadTestService.runHttpStreamOrdersTest(options);
+    } else if (testType === 'matching_engine') {
+      result = await loadTestService.runMatchingEngineStressTest(options);
+    } else {
+      throw new AppError(`Unknown test type: ${testType}`, 400);
+    }
+
+    res.status(200).json(successResponse(result));
+  } catch (err) {
+    next(err);
+  }
+};
+
 export default {
   getUsers,
   manageUser,
@@ -789,4 +817,5 @@ export default {
   getMonitoringLogs,
   getMetrics,
   generateSolvencyProof,
+  runLoadTest,
 };
