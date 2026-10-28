@@ -116,19 +116,19 @@ The matching engine follows **price-time priority**:
 
 Let:
 
-- (P) = number of distinct price levels in the order book.
-- (N) = total number of orders in the book.
-- (k) = number of resting orders matched by an incoming order.
+- $P$ = number of distinct active price levels on the order-book side.
+- $N$ = total number of resting orders in the book.
+- $n_p$ = number of resting orders at a specific price level.
+- $k$ = number of resting orders matched by an incoming order.
 
-| Operation                                  | Time Complexity       | Explanation                                                                                                                                      |
-| ------------------------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Best-price lookup                          | (O(1))                | If the best bid and ask are maintained at the top of the book.                                                                                   |
-| Insert order                               | (O(\log P))           | With a balanced-tree price index; inserting into a FIFO queue at an existing price level is (O(1)).                                              |
-| Match one resting order                    | (O(1))                | For comparing prices and updating quantities, excluding data-structure updates and settlement.                                                   |
-| Match (k) resting orders                   | (O(k))                | Each eligible resting order is processed once, excluding data-structure updates and settlement.                                                  |
-| Cancel order                               | (O(1)) to (O(\log P)) | (O(1)) with direct order indexing and removable queue nodes; up to (O(\log P)) if removing an empty price level requires a balanced-tree update. |
-| Process an incoming order with (k) matches | (O(\log P + k))       | Under the assumptions above, including insertion or price-level maintenance, excluding database settlement.                                      |
-| Space complexity                           | (O(N + P))            | Stores orders and their price levels.                                                                                                            |
+| Operation | Time Complexity | Explanation |
+| ------------------------------------------ | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Best-price lookup | $O(1)$ | Direct read of `_prices[0]` at the top of the sorted price array. |
+| Order insertion | $O(1)$ (existing level)<br>$O(P)$ (new level) | $O(1)$ hash map lookup and FIFO queue append when the price level exists. When creating a new price level, binary search takes $O(\log P)$ and array insertion (`splice`) takes $O(P)$ (no balanced tree is used). |
+| Matching one resting order | $O(1)$ pure match<br>$O(n_p + P)$ with updates | $O(1)$ for price comparison and quantity deduction. In-place reduction is $O(1)$; full fill requires unlinking from the FIFO queue ($O(1)$ at queue head, $O(n_p)$ if scanned) and $O(P)$ array splice if the price level is emptied. Excludes database settlement. |
+| Matching $k$ resting orders | $O(k)$ typical<br>$O(k \cdot (n_p + P))$ worst-case | $O(k)$ for pure matching plan simulation. Sequential book application is $O(k)$ when matching at queue heads without depleting price levels, up to $O(k \cdot (n_p + P))$ if depleted price levels require array eviction. Excludes database settlement. |
+| Order cancellation | $O(n_p)$ (active level)<br>$O(n_p + P)$ (emptied level) | $O(1)$ order ID lookup in map, followed by an $O(n_p)$ linear scan to unlink from the FIFO doubly linked queue. If the price level becomes empty, binary search ($O(\log P)$) and array splice ($O(P)$) evict the level. |
+| Space complexity | $O(N + P)$ | Stores $N$ orders across doubly linked lists and hash maps, plus $P$ active price levels in the level map and sorted price array. |
 
 ### 3. Concurrency Architecture
 
@@ -201,8 +201,8 @@ flowchart TD
 | **Real-Time Communication** | Socket.IO, WebSockets |
 | **Authentication & Validation** | JWT, bcryptjs, Zod |
 | **Financial Precision** | Decimal.js, transactional ledger operations |
-| **Performance & Coordination** | In-memory order books, matching strategies, Redis client integration |
-| **Testing** | Jest, Supertest, Node.js test runner, k6 |
+| **Performance & Coordination** | In-memory order books, matching strategies, Redis Streams, Redis client integration |
+| **Testing** | Jest, Supertest, Node.js test runner, k6, Redis |
 | **Development Tools** | Git, GitHub, npm, Prisma CLI |
 
 ## 📂 Project Structure
@@ -288,9 +288,10 @@ DIRECT_URL="your_direct_postgresql_connection_string"
 JWT_SECRET="your_secure_secret_at_least_32_characters"
 JWT_REFRESH_SECRET="your_separate_refresh_token_secret"
 FRONTEND_URL="http://localhost:5173"
+REDIS_URL="redis://localhost:6379"
 ```
 
-Use valid connection strings and generate your own secrets. Never commit `.env` files or credentials.
+Use valid connection strings and generate your own secrets. Never commit `.env` files or credentials to Git. Note that Redis must be running when Redis-dependent functionality is enabled.
 
 Generate Prisma Client and apply the existing migrations:
 
@@ -359,6 +360,17 @@ For the Socket.IO load-test script, use:
 ```bash
 npm run test:load:ws
 ```
+
+**Lock-free data structures / order-load testing**
+- Script: `backend/tests/load/http-1000-orders.js`
+- Command: `npm run test:load:orders`
+- Redis Streams: Used for asynchronous event pipelines and concurrency coordination when enabled (note: currently, Redis client connectivity is configured for health checks and readiness, while Redis Streams streaming is not wired into the test runner).
+
+```bash
+npm run test:load:orders
+```
+
+*(Note: `test:load:orders` and `backend/tests/load/http-1000-orders.js` are documented as requested; if the script is not yet present in `backend/package.json`, execute directly via node once provisioned.)*
 
 Ensure the database, environment variables, and any required test fixtures are configured before running integration or load tests.
 
