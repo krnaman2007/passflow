@@ -14,7 +14,19 @@ import crypto from 'crypto';
 import http from 'http';
 import jwt from 'jsonwebtoken';
 import Redis from 'ioredis';
-import { io as ioClient } from 'socket.io-client';
+// Lazy-loaded socket.io-client to guarantee server boot on any deployment environment
+let _ioClient = null;
+async function getIoClient() {
+  if (_ioClient) return _ioClient;
+  try {
+    const mod = await import('socket.io-client');
+    _ioClient = mod.io || mod.default?.io || mod.default;
+    return _ioClient;
+  } catch (err) {
+    console.warn('[LoadTestService] socket.io-client could not be loaded:', err.message);
+    return null;
+  }
+}
 import config from '../config/index.js';
 import prisma from '../db/prisma.js';
 import { OrderBook } from './matching/order-book.js';
@@ -178,10 +190,15 @@ class LoadTestService {
 
     log(`Ramping up ${totalClients} WebSocket connections...`);
 
+    const io = await getIoClient();
+    if (!io) {
+      throw new Error('socket.io-client package is unavailable in this environment.');
+    }
+
     const spawnClient = (i) => {
       return new Promise((resolve) => {
         const t0 = Date.now();
-        const socket = ioClient(targetUrl, {
+        const socket = io(targetUrl, {
           transports: ['websocket'],
           reconnection: false,
           timeout: 4000,
