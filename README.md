@@ -2,7 +2,7 @@
 
 ### A Real-Time Secondary Ticket Marketplace & Trading Exchange
 
-PassFlow is a full-stack ticket marketplace that enables users to discover events, purchase tickets at their original prices, and safely trade eligible tickets through a real-time secondary market. It combines an in-memory order-matching engine, price-time priority, live market data, wallet accounting, and transactional trade settlement to create a transparent and reliable ticket-trading experience.
+PassFlow is a ticket marketplace that enables users to discover events, purchase tickets at their original prices, and safely trade eligible tickets through a real-time secondary market. It combines an in-memory order-matching engine, price-time priority, live market data, wallet accounting, and transactional trade settlement to create a transparent and reliable ticket-trading experience.
 
 ## 🎯 What Problem Does PassFlow Solve?
 
@@ -112,19 +112,23 @@ The matching engine follows **price-time priority**:
 - **Cancellation:** Eligible pending orders can be cancelled, with their remaining reserved funds or ticket quantities released through the appropriate lifecycle.
 - **Market isolation:** Orders are matched only within their corresponding event and ticket category.
 
-### 2. Matching Algorithm & Complexity
+### 2. Matching Algorithm Time Complexity
 
-For each incoming order, the engine validates the order, identifies the best opposing order, and repeatedly matches eligible orders until no further match is possible or the incoming quantity is filled.
+Let:
 
-| Operation                | Complexity                                                                  |
-| ------------------------ | --------------------------------------------------------------------------- |
-| Best-price lookup        | Depends on the underlying order-book data structure                         |
-| Insert order             | Depends on the underlying order-book data structure                         |
-| Match one resting order  | (O(1)) execution work, excluding data-structure updates and settlement      |
-| Match (k) resting orders | (O(k)) matching iterations, excluding data-structure updates and settlement |
-| Cancel order             | Depends on order indexing and queue implementation                          |
+- (P) = number of distinct price levels in the order book.
+- (N) = total number of orders in the book.
+- (k) = number of resting orders matched by an incoming order.
 
-**Complexity note:** Total complexity depends on the actual data structures used for price levels, FIFO queues, and order lookup. For example, a balanced-tree price index typically gives (O(\log P)) price-level updates, where (P) is the number of price levels. These are data-structure-based bounds, not benchmark measurements.
+| Operation                                  | Time Complexity       | Explanation                                                                                                                                      |
+| ------------------------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Best-price lookup                          | (O(1))                | If the best bid and ask are maintained at the top of the book.                                                                                   |
+| Insert order                               | (O(\log P))           | With a balanced-tree price index; inserting into a FIFO queue at an existing price level is (O(1)).                                              |
+| Match one resting order                    | (O(1))                | For comparing prices and updating quantities, excluding data-structure updates and settlement.                                                   |
+| Match (k) resting orders                   | (O(k))                | Each eligible resting order is processed once, excluding data-structure updates and settlement.                                                  |
+| Cancel order                               | (O(1)) to (O(\log P)) | (O(1)) with direct order indexing and removable queue nodes; up to (O(\log P)) if removing an empty price level requires a balanced-tree update. |
+| Process an incoming order with (k) matches | (O(\log P + k))       | Under the assumptions above, including insertion or price-level maintenance, excluding database settlement.                                      |
+| Space complexity                           | (O(N + P))            | Stores orders and their price levels.                                                                                                            |
 
 ### 3. Concurrency Architecture
 
@@ -188,19 +192,18 @@ flowchart TD
 
 ## 🧰 Tech Stack
 
-\<table>
-\<tr>\<th>Layer\</th>\<th>Technologies\</th>\</tr>
-\<tr>\<td>Frontend\</td>\<td>React 19, Vite, JavaScript, Zustand, CSS\</td>\</tr>
-\<tr>\<td>Charts & UI\</td>\<td>TradingView Lightweight Charts, Lucide React\</td>\</tr>
-\<tr>\<td>Backend\</td>\<td>Node.js, Express 5, ES Modules\</td>\</tr>
-\<tr>\<td>Database & ORM\</td>\<td>PostgreSQL, Prisma ORM, SQL migrations\</td>\</tr>
-\<tr>\<td>Real-Time Communication\</td>\<td>Socket.IO / WebSockets\</td>\</tr>
-\<tr>\<td>Authentication & Validation\</td>\<td>JWT, bcryptjs, Zod\</td>\</tr>
-\<tr>\<td>Financial Precision\</td>\<td>Decimal.js, transactional ledger operations\</td>\</tr>
-\<tr>\<td>Performance & Coordination\</td>\<td>In-memory order books, matching strategies, Redis client integration\</td>\</tr>
-\<tr>\<td>Testing\</td>\<td>Jest, Supertest, Node.js test runner, k6\</td>\</tr>
-\<tr>\<td>Development Tools\</td>\<td>Git, GitHub, npm, Prisma CLI\</td>\</tr>
-\</table>
+| Layer | Technologies |
+|---|---|
+| **Frontend** | React 19, Vite, JavaScript, Zustand, CSS |
+| **Charts & UI** | TradingView Lightweight Charts, Lucide React |
+| **Backend** | Node.js, Express 5, ES Modules |
+| **Database & ORM** | PostgreSQL, Prisma ORM, SQL migrations |
+| **Real-Time Communication** | Socket.IO, WebSockets |
+| **Authentication & Validation** | JWT, bcryptjs, Zod |
+| **Financial Precision** | Decimal.js, transactional ledger operations |
+| **Performance & Coordination** | In-memory order books, matching strategies, Redis client integration |
+| **Testing** | Jest, Supertest, Node.js test runner, k6 |
+| **Development Tools** | Git, GitHub, npm, Prisma CLI |
 
 ## 📂 Project Structure
 
