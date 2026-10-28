@@ -208,6 +208,7 @@ export const ticketsApi = {
   getTicketById: (id) => apiRequest(`/api/v1/tickets/${id}`),
   getTicketOwnership: (id) => apiRequest(`/api/v1/tickets/${id}/ownership`),
   transferTicket: (ticketId, payload) => apiRequest(`/api/v1/tickets/${ticketId}/transfer`, { method: 'POST', body: payload }),
+  cancelListing: (ticketId) => apiRequest(`/api/v1/tickets/${ticketId}/cancel-listing`, { method: 'POST' }),
   getTransferStatus: (transferId) => apiRequest(`/api/v1/transfers/${transferId}`),
   getTransferById: (transferId) => apiRequest(`/api/v1/transfers/${transferId}`),
 };

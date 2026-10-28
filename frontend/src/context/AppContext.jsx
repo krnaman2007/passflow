@@ -899,15 +899,23 @@ export function AppProvider({ children }) {
     if (!ticket) return;
 
     try {
-      if (ticket.orderId) {
-        await api.orders.cancelOrder(ticket.orderId);
+      // 1. Call dedicated ticket cancel listing endpoint
+      try {
+        await api.tickets.cancelListing(ticketId);
+      } catch (directErr) {
+        // Fallback to order cancel if orderId exists
+        if (ticket.orderId) {
+          await api.orders.cancelOrder(ticket.orderId);
+        } else {
+          throw directErr;
+        }
       }
+
       setUserTickets((prev) =>
         prev.map((t) => (t.id === ticketId ? { ...t, status: 'OWNED', listedPrice: null, orderId: null } : t))
       );
       showToast(`Listing cancelled for ticket #${ticketId.slice(0, 8)}. Returned to Owned vault.`, 'info');
-      fetchLiveTickets();
-      fetchLiveOrders();
+      await Promise.all([fetchLiveTickets(), fetchLiveOrders()]);
     } catch (err) {
       console.error('Failed to cancel ticket listing:', err);
       const msg = err?.data?.error?.message || err?.message || 'Failed to cancel listing';

@@ -67,4 +67,18 @@ router.get(
   ticketController.getTransferById
 );
 
+// POST /tickets/:id/cancel-listing - Cancel listing and return ticket to owned vault
+router.post(
+  '/tickets/:id/cancel-listing',
+  authenticateUser,
+  ticketController.cancelListing
+);
+
+// DELETE /tickets/:id/listing - Alternative REST cancellation route
+router.delete(
+  '/tickets/:id/listing',
+  authenticateUser,
+  ticketController.cancelListing
+);
+
 export default router;

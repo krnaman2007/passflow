@@ -897,6 +897,43 @@ export class OrderService {
             releasedReservation = Number(unreleasedPaise);
           }
         }
+      } else if (order.side === 'ASK') {
+        const unreleasedTickets = await this.prisma.ticket.findMany({
+          where: {
+            OR: [
+              { orderId: order.id },
+              { ownerId: order.userId, categoryId: order.ticketCategoryId, status: 'LISTED' },
+            ],
+            status: 'LISTED',
+          },
+          take: order.remainingQuantity || order.quantity || 1,
+        });
+
+        if (unreleasedTickets.length > 0) {
+          const tIds = unreleasedTickets.map((t) => t.id);
+          await this.prisma.$transaction(async (tx) => {
+            await tx.ticket.updateMany({
+              where: { id: { in: tIds } },
+              data: {
+                status: 'OWNED',
+                orderId: null,
+              },
+            });
+            await tx.userTicketInventory.update({
+              where: {
+                userId_ticketCategoryId: {
+                  userId: order.userId,
+                  ticketCategoryId: order.ticketCategoryId,
+                },
+              },
+              data: {
+                availableQuantity: { increment: unreleasedTickets.length },
+                reservedQuantity: { decrement: unreleasedTickets.length },
+              },
+            }).catch(() => {});
+          });
+          releasedReservation = unreleasedTickets.length;
+        }
       }
 
       return {
@@ -968,7 +1005,7 @@ export class OrderService {
         await this.prisma.$transaction(async (tx) => {
           const reservedTickets = await tx.$queryRaw`
             SELECT id FROM "Ticket"
-            WHERE "orderId" = ${order.id}
+            WHERE ("orderId" = ${order.id} OR ("orderId" IS NULL AND "categoryId" = ${order.ticketCategoryId}))
               AND "ownerId" = ${userId}
               AND "status" = 'LISTED'
             ORDER BY "createdAt" ASC, "id" ASC

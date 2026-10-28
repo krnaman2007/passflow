@@ -113,6 +113,21 @@ export const ticketController = {
       next(err);
     }
   },
+
+  /**
+   * POST /tickets/:id/cancel-listing
+   * Cancel ticket listing and return to owned vault
+   */
+  async cancelListing(req, res, next) {
+    try {
+      const ticketId = req.params.id;
+      const userId = req.user.id;
+      const result = await ticketService.cancelListing(ticketId, userId);
+      res.status(200).json(successResponse(result));
+    } catch (err) {
+      next(err);
+    }
+  },
 };
 
 export default ticketController;

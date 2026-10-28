@@ -839,6 +839,91 @@ export const ticketService = {
 
     return transfer;
   },
+
+  /**
+   * Cancels a listed ticket and returns it to OWNED state.
+   * If there is an associated open order, cancels the order as well and updates user inventory.
+   *
+   * @param {string} ticketId - Ticket UUID.
+   * @param {string} userId - Authenticated user ID.
+   */
+  async cancelListing(ticketId, userId) {
+    const ticket = await prisma.ticket.findUnique({
+      where: { id: ticketId },
+      include: { order: true },
+    });
+
+    if (!ticket) {
+      throw new AppError('Ticket not found', 404, 'TICKET_NOT_FOUND');
+    }
+
+    if (ticket.ownerId !== userId) {
+      throw new AppError('Unauthorized: ticket does not belong to you', 403, 'UNAUTHORIZED');
+    }
+
+    if (ticket.status !== 'LISTED') {
+      return { success: true, message: 'Ticket is already owned', ticket };
+    }
+
+    // If an associated order exists and is OPEN or PARTIALLY_FILLED, cancel it
+    if (ticket.orderId) {
+      try {
+        const order = await prisma.order.findUnique({ where: { id: ticket.orderId } });
+        if (order && (order.status === 'OPEN' || order.status === 'PARTIALLY_FILLED')) {
+          await orderService.cancelLimitOrder({
+            userId,
+            orderId: ticket.orderId,
+            idempotencyKey: `cancel-listing-${ticket.id}-${Date.now()}`,
+          });
+        }
+      } catch (err) {
+        logger.warn(`Could not cancel order for listed ticket: ${err.message}`);
+      }
+    }
+
+    // Revert ticket to OWNED and restore userTicketInventory
+    const updated = await prisma.$transaction(async (tx) => {
+      const t = await tx.ticket.update({
+        where: { id: ticketId },
+        data: {
+          status: 'OWNED',
+          orderId: null,
+        },
+      });
+
+      const inv = await tx.userTicketInventory.findUnique({
+        where: {
+          userId_ticketCategoryId: {
+            userId,
+            ticketCategoryId: ticket.categoryId,
+          },
+        },
+      });
+
+      if (inv && inv.reservedQuantity > 0) {
+        await tx.userTicketInventory.update({
+          where: {
+            userId_ticketCategoryId: {
+              userId,
+              ticketCategoryId: ticket.categoryId,
+            },
+          },
+          data: {
+            availableQuantity: { increment: 1 },
+            reservedQuantity: { decrement: 1 },
+          },
+        });
+      }
+
+      return t;
+    });
+
+    return {
+      success: true,
+      message: 'Ticket listing cancelled and returned to your vault',
+      ticket: updated,
+    };
+  },
 };
 
 export default ticketService;
