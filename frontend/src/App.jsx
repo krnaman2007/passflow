@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import Navbar from './components/Navbar';
 import Toast from './components/Toast';
@@ -26,6 +26,16 @@ import './App.css';
 
 function MainRouter() {
   const { currentPath } = useApp();
+  const pageRef = useRef(null);
+  useEffect(() => {
+    const el = pageRef.current;
+    if (!el) return;
+    el.classList.remove('page-enter-active');
+    el.classList.add('page-enter');
+    requestAnimationFrame(() => {
+      el.classList.add('page-enter-active');
+    });
+  }, [currentPath]);
 
   const renderCurrentPage = () => {
     if (currentPath === '/' || currentPath === '/events') return <EventsPage />;
