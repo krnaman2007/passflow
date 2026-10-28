@@ -1042,7 +1042,7 @@ export default function MarketPage() {
                 ) : (
                   userOrders.map((ord) => (
                     <tr key={ord.id}>
-                      <td className="font-mono">{ord.id}</td>
+                      <td className="font-mono"></td>
                       <td>
                         <span
                           className={`badge ${ord.side === 'BUY' ? 'badge-green' : 'badge-red'}`}

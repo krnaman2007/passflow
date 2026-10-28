@@ -328,10 +328,7 @@ export default function TicketsPage() {
                         {ticket.eventName}
                       </h3>
                       <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                        Tier: <strong style={{ color: 'var(--accent-orange)' }}>{ticket.tier}</strong> ·{' '}
-                        <span className="font-mono" style={{ color: 'var(--text-sub)' }}>
-                          #{ticket.id.slice(0, 13)}...
-                        </span>
+                        Tier: <strong style={{ color: 'var(--accent-orange)' }}>{ticket.tier}</strong>
                       </div>
                     </div>
 
