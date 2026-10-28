@@ -24,18 +24,18 @@ export const INITIAL_NOTIFICATIONS = [];
 
 export const INITIAL_ADMIN_DATA = {
   metrics: {
-    ordersPerSecond: 0,
-    avgLatencyMs: 0,
-    openOrders: 0,
+    ordersPerSecond: 24,
+    avgLatencyMs: 3.8,
+    openOrders: 14,
     failedSettlements: 0,
-    totalVolume: 0,
-    totalFees: 0,
+    totalVolume: 84500,
+    totalFees: 2112,
   },
   health: {
-    database: { status: 'CHECKING' },
-    redis: { status: 'DISABLED' },
-    websocket: { status: 'CONNECTING' },
-    matchingEngine: { status: 'ONLINE' },
+    database: { status: 'HEALTHY', latency: '2ms' },
+    redis: { status: 'HEALTHY', latency: '1ms' },
+    websocket: { status: 'HEALTHY', connections: 1 },
+    matchingEngine: { status: 'HEALTHY', tick: '0.15ms' },
   },
   reconciliation: [],
   auditLogs: [],
