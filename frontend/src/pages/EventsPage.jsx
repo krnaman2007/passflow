@@ -228,14 +228,25 @@ export default function EventsPage() {
           }}
         >
           <Ticket size={40} color="var(--text-dim)" style={{ margin: '0 auto 16px' }} />
-          <h3 style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--text-main)', marginBottom: 8 }}>
+          <h3
+            style={{
+              fontSize: '1.1rem',
+              fontWeight: 600,
+              color: 'var(--text-main)',
+              marginBottom: !searchTerm && activeFilter === 'Sold out' ? 20 : 8,
+            }}
+          >
             No live events found
           </h3>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', maxWidth: 440, margin: '0 auto 20px' }}>
-            {searchTerm
-              ? `No backend events matched "${searchTerm}". Try a different search term or clear filters.`
-              : 'There are currently no events registered in the database. Organizers can publish events using the Organizer Console.'}
-          </p>
+          {searchTerm ? (
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', maxWidth: 440, margin: '0 auto 20px' }}>
+              {`No backend events matched "${searchTerm}". Try a different search term or clear filters.`}
+            </p>
+          ) : activeFilter !== 'Sold out' && backendEvents.length === 0 ? (
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', maxWidth: 440, margin: '0 auto 20px' }}>
+              There are currently no events registered in the database. Organizers can publish events using the Organizer Console.
+            </p>
+          ) : null}
           {searchTerm ? (
             <button className="btn-secondary" onClick={() => setSearchTerm('')}>
               Clear Search
