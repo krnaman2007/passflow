@@ -112,19 +112,23 @@ The matching engine follows **price-time priority**:
 - **Cancellation:** Eligible pending orders can be cancelled, with their remaining reserved funds or ticket quantities released through the appropriate lifecycle.
 - **Market isolation:** Orders are matched only within their corresponding event and ticket category.
 
-### 2. Matching Algorithm & Complexity
+### 2. Matching Algorithm Time Complexity
 
-For each incoming order, the engine validates the order, identifies the best opposing order, and repeatedly matches eligible orders until no further match is possible or the incoming quantity is filled.
+Let:
 
-| Operation                | Complexity                                                                  |
-| ------------------------ | --------------------------------------------------------------------------- |
-| Best-price lookup        | Depends on the underlying order-book data structure                         |
-| Insert order             | Depends on the underlying order-book data structure                         |
-| Match one resting order  | (O(1)) execution work, excluding data-structure updates and settlement      |
-| Match (k) resting orders | (O(k)) matching iterations, excluding data-structure updates and settlement |
-| Cancel order             | Depends on order indexing and queue implementation                          |
+- (P) = number of distinct price levels in the order book.
+- (N) = total number of orders in the book.
+- (k) = number of resting orders matched by an incoming order.
 
-**Complexity note:** Total complexity depends on the actual data structures used for price levels, FIFO queues, and order lookup. For example, a balanced-tree price index typically gives (O(\log P)) price-level updates, where (P) is the number of price levels. These are data-structure-based bounds, not benchmark measurements.
+| Operation                                  | Time Complexity       | Explanation                                                                                                                                      |
+| ------------------------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Best-price lookup                          | (O(1))                | If the best bid and ask are maintained at the top of the book.                                                                                   |
+| Insert order                               | (O(\log P))           | With a balanced-tree price index; inserting into a FIFO queue at an existing price level is (O(1)).                                              |
+| Match one resting order                    | (O(1))                | For comparing prices and updating quantities, excluding data-structure updates and settlement.                                                   |
+| Match (k) resting orders                   | (O(k))                | Each eligible resting order is processed once, excluding data-structure updates and settlement.                                                  |
+| Cancel order                               | (O(1)) to (O(\log P)) | (O(1)) with direct order indexing and removable queue nodes; up to (O(\log P)) if removing an empty price level requires a balanced-tree update. |
+| Process an incoming order with (k) matches | (O(\log P + k))       | Under the assumptions above, including insertion or price-level maintenance, excluding database settlement.                                      |
+| Space complexity                           | (O(N + P))            | Stores orders and their price levels.                                                                                                            |
 
 ### 3. Concurrency Architecture
 
@@ -188,8 +192,6 @@ flowchart TD
 
 ## 🧰 Tech Stack
 
-## 🧰 Tech Stack
-
 | Layer | Technologies |
 |---|---|
 | **Frontend** | React 19, Vite, JavaScript, Zustand, CSS |
@@ -202,8 +204,6 @@ flowchart TD
 | **Performance & Coordination** | In-memory order books, matching strategies, Redis client integration |
 | **Testing** | Jest, Supertest, Node.js test runner, k6 |
 | **Development Tools** | Git, GitHub, npm, Prisma CLI |
-
-## 📂 Project Structure
 
 ## 📂 Project Structure
 
