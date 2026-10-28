@@ -15,6 +15,7 @@ import {
   AlertCircle,
   X,
   ShieldCheck,
+  Inbox,
 } from 'lucide-react';
 
 export default function OrdersHistoryPage() {

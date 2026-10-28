@@ -222,7 +222,7 @@ export default function WalletPage() {
 
       {/* 3 Metric Cards */}
       <div className="grid-3" style={{ marginBottom: 24 }}>
-        <div className="card">
+        <div className="stat-card-glow card-accent-top">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <span style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Total Ledger Balance
@@ -237,7 +237,7 @@ export default function WalletPage() {
           </div>
         </div>
 
-        <div className="card">
+        <div className="stat-card-glow card-accent-top">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <span style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Held in Escrow (Open Bids)
@@ -252,7 +252,7 @@ export default function WalletPage() {
           </div>
         </div>
 
-        <div className="card" style={{ borderColor: 'var(--accent-emerald-border)', background: 'rgba(16, 185, 129, 0.04)' }}>
+        <div className="stat-card-glow card-accent-emerald" style={{ borderColor: 'var(--accent-emerald-border)', background: 'rgba(16, 185, 129, 0.08)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <span style={{ fontSize: 12, color: 'var(--accent-emerald)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
               Available to Trade / Withdraw
@@ -425,7 +425,7 @@ export default function WalletPage() {
         {/* Right: Add/Withdraw Widget and Funds on Hold list */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           {/* Add or Withdraw Form */}
-          <div className="card">
+          <div className="stat-card-glow card-accent-top">
             {/* Tab Switcher */}
             <div
               style={{
@@ -644,7 +644,7 @@ export default function WalletPage() {
           </div>
 
           {/* Funds on Hold Panel */}
-          <div className="card">
+          <div className="stat-card-glow card-accent-top">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <Lock size={15} color="var(--accent-orange)" />

@@ -740,8 +740,8 @@ export default function OrganizerDashboardPage() {
         }}
       >
         {/* Metric 1: Total Events */}
-        <div className="card" style={{ padding: 18 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, fontWeight: 500 }}>
+        <div className="stat-card-glow card-accent-top" style={{ padding: 20 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, fontWeight: 600, letterSpacing: '0.04em' }}>
             PRODUCED EVENTS
           </div>
           <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--text-main)', fontFamily: 'monospace' }}>
@@ -753,8 +753,8 @@ export default function OrganizerDashboardPage() {
         </div>
 
         {/* Metric 2: Live Marketplace Status */}
-        <div className="card" style={{ padding: 18 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, fontWeight: 500 }}>
+        <div className="stat-card-glow card-accent-top" style={{ padding: 20 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, fontWeight: 600, letterSpacing: '0.04em' }}>
             ACTIVE LIVE PRODUCTIONS
           </div>
           <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--accent-emerald)', fontFamily: 'monospace' }}>
@@ -766,8 +766,8 @@ export default function OrganizerDashboardPage() {
         </div>
 
         {/* Metric 3: Total Tickets Sold */}
-        <div className="card" style={{ padding: 18 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, fontWeight: 500 }}>
+        <div className="stat-card-glow card-accent-top" style={{ padding: 20 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, fontWeight: 600, letterSpacing: '0.04em' }}>
             TICKETS SOLD TO DATE
           </div>
           <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--accent-orange)', fontFamily: 'monospace' }}>
@@ -779,8 +779,8 @@ export default function OrganizerDashboardPage() {
         </div>
 
         {/* Metric 4: Total Box Office Revenue */}
-        <div className="card" style={{ padding: 18 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, fontWeight: 500 }}>
+        <div className="stat-card-glow card-accent-emerald" style={{ padding: 20 }}>
+          <div style={{ fontSize: 12, color: 'var(--accent-emerald)', marginBottom: 6, fontWeight: 600, letterSpacing: '0.04em' }}>
             TOTAL BOX OFFICE REVENUE
           </div>
           <div style={{ fontSize: 24, fontWeight: 700, color: '#38bdf8', fontFamily: 'monospace' }}>

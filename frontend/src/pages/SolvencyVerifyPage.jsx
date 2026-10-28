@@ -196,7 +196,9 @@ export default function SolvencyVerifyPage() {
           {/* Assets */}
           <div
             style={{
-              background: 'var(--bg-app)',
+              background: 'rgba(11, 15, 24, 0.85)',
+              backdropFilter: 'blur(12px)',
+              WebkitBackdropFilter: 'blur(12px)',
               border: '1px solid var(--border-subtle)',
               padding: 20,
               borderRadius: 'var(--radius-md)'
@@ -219,7 +221,9 @@ export default function SolvencyVerifyPage() {
           {/* Liabilities */}
           <div
             style={{
-              background: 'var(--bg-app)',
+              background: 'rgba(11, 15, 24, 0.85)',
+              backdropFilter: 'blur(12px)',
+              WebkitBackdropFilter: 'blur(12px)',
               border: '1px solid var(--border-subtle)',
               padding: 20,
               borderRadius: 'var(--radius-md)'
@@ -274,6 +278,33 @@ export default function SolvencyVerifyPage() {
           </div>
         </div>
 
+        {/* Visual Solvency Reserve Meter */}
+        <div style={{ marginBottom: 22 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, fontSize: 12 }}>
+            <span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>Segregated Reserve Coverage</span>
+            <span className="font-mono" style={{ color: 'var(--accent-emerald)', fontWeight: 700 }}>
+              {ratioPercent}% ({ratio.toFixed(2)}x Coverage)
+            </span>
+          </div>
+          <div style={{ height: 10, background: 'rgba(255, 255, 255, 0.05)', borderRadius: 999, overflow: 'hidden', border: '1px solid var(--border-subtle)', position: 'relative' }}>
+            <div
+              style={{
+                height: '100%',
+                width: `${Math.min(100, ratioPercent)}%`,
+                background: 'linear-gradient(90deg, #10b981 0%, #34d399 100%)',
+                boxShadow: '0 0 14px rgba(16, 185, 129, 0.45)',
+                borderRadius: 999,
+                transition: 'width 0.6s cubic-bezier(0.16, 1, 0.3, 1)'
+              }}
+            />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-dim)', marginTop: 6 }}>
+            <span>0% Fractional</span>
+            <span style={{ color: 'var(--accent-emerald)', fontWeight: 600 }}>100% Full Reserve (Zero Re-hypothecation)</span>
+            <span>100%+ Surplus</span>
+          </div>
+        </div>
+
         {/* Cryptographic Merkle Root Hash */}
         <div style={{ marginBottom: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
@@ -292,7 +323,9 @@ export default function SolvencyVerifyPage() {
 
           <div
             style={{
-              background: 'var(--bg-app)',
+              background: 'rgba(11, 15, 24, 0.85)',
+              backdropFilter: 'blur(12px)',
+              WebkitBackdropFilter: 'blur(12px)',
               border: '1px solid var(--border-subtle)',
               padding: 14,
               borderRadius: 'var(--radius-sm)',

@@ -241,6 +241,54 @@ export default function TicketsPage() {
         </div>
       </div>
 
+      {/* Vault Portfolio Metrics */}
+      <div className="grid-3" style={{ marginBottom: 24 }}>
+        <div className="stat-card-glow card-accent-top">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              Vault Holdings
+            </span>
+            <Ticket size={15} color="var(--accent-orange)" />
+          </div>
+          <div className="font-mono" style={{ fontSize: 26, fontWeight: 700, color: 'var(--text-main)' }}>
+            {userTickets.length} <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-dim)' }}>Passes</span>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>
+            {userTickets.filter((t) => t.status === 'OWNED').length} in active custody · {userTickets.filter((t) => t.status === 'LISTED').length} on order book
+          </div>
+        </div>
+
+        <div className="stat-card-glow">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              Listed for Resale
+            </span>
+            <Tag size={15} color="var(--accent-orange)" />
+          </div>
+          <div className="font-mono" style={{ fontSize: 26, fontWeight: 700, color: 'var(--accent-orange)' }}>
+            {userTickets.filter((t) => t.status === 'LISTED').length} <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-dim)' }}>Active Asks</span>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>
+            Listed with fair-price cap protection
+          </div>
+        </div>
+
+        <div className="stat-card-glow card-accent-emerald">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent-emerald)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              Vault Estimated Value
+            </span>
+            <ShieldCheck size={15} color="var(--accent-emerald)" />
+          </div>
+          <div className="font-mono" style={{ fontSize: 26, fontWeight: 700, color: 'var(--accent-emerald)' }}>
+            ₹{userTickets.reduce((sum, t) => sum + Number(t.currentPrice ?? t.purchasePrice ?? t.faceValue ?? 0), 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>
+            100% verified custody & non-fungible provenance
+          </div>
+        </div>
+      </div>
+
       {/* Filter Tabs */}
       <div className="scrollable-tabs-bar" style={{ marginBottom: 20 }}>
         {[
@@ -313,22 +361,37 @@ export default function TicketsPage() {
               return (
                 <div
                   key={ticket.id}
-                  className={`card ${isSelected ? 'selected-ticket-card' : ''}`}
+                  className={`ticket-pass-card ${isSelected ? 'selected-ticket-card' : ''}`}
                   style={{
                     cursor: 'pointer',
                     borderColor: isSelected ? 'var(--accent-orange)' : undefined,
-                    background: isSelected ? 'var(--bg-card)' : undefined,
-                    transition: 'border-color 0.15s ease, background 0.15s ease'
+                    boxShadow: isSelected ? '0 0 0 1px var(--accent-orange), 0 10px 28px rgba(249, 115, 22, 0.16)' : undefined,
+                    transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)'
                   }}
                   onClick={() => handleSelectTicket(ticket.id)}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
                     <div>
-                      <h3 style={{ fontSize: 17, fontWeight: 700, margin: '0 0 4px 0', color: 'var(--text-main)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                        <span className="font-mono" style={{ fontSize: 11, color: 'var(--text-dim)', background: 'var(--bg-card-subtle)', padding: '2px 6px', borderRadius: 4 }}>
+                          #{ticket.id.slice(0, 10).toUpperCase()}
+                        </span>
+                        <span className="badge badge-orange font-mono" style={{ fontSize: 10, padding: '2px 6px' }}>
+                          {ticket.tier}
+                        </span>
+                      </div>
+                      <h3 style={{ fontSize: 18, fontWeight: 700, margin: '0 0 6px 0', color: 'var(--text-main)', letterSpacing: '-0.01em' }}>
                         {ticket.eventName}
                       </h3>
-                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                        Tier: <strong style={{ color: 'var(--accent-orange)' }}>{ticket.tier}</strong>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12, color: 'var(--text-sub)' }}>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <Calendar size={13} color="var(--accent-orange)" />
+                          {ticket.eventDate || 'Upcoming'}
+                        </span>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <MapPin size={13} color="var(--text-dim)" />
+                          {ticket.venue || 'Live Venue'}
+                        </span>
                       </div>
                     </div>
 
@@ -350,34 +413,29 @@ export default function TicketsPage() {
                     </div>
                   </div>
 
-                  {/* Event Details snippet */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12, color: 'var(--text-sub)', marginBottom: 12 }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <Calendar size={13} color="var(--text-dim)" />
-                      {ticket.eventDate || 'Upcoming'}
-                    </span>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <MapPin size={13} color="var(--text-dim)" />
-                      {ticket.venue || 'Live Venue'}
-                    </span>
+                  {/* Perforated divider with circular notches */}
+                  <div className="ticket-divider-strip">
+                    <div className="ticket-notch-left" />
+                    <div className="ticket-notch-right" />
                   </div>
 
+                  {/* Ticket Stub Footer */}
                   <div
                     style={{
                       display: 'flex',
                       justifyContent: 'space-between',
                       alignItems: 'center',
-                      borderTop: '1px solid var(--border-subtle)',
-                      paddingTop: 12,
                       flexWrap: 'wrap',
-                      gap: 8
+                      gap: 10
                     }}
                   >
-                    <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-                      Purchase Price:{' '}
-                      <strong className="font-mono" style={{ color: 'var(--accent-emerald)', fontWeight: 700 }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                        Face / Purchase Price
+                      </div>
+                      <div className="font-mono" style={{ color: 'var(--accent-emerald)', fontSize: 15, fontWeight: 700 }}>
                         ₹{Number(ticket.currentPrice ?? ticket.purchasePrice ?? ticket.faceValue).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </strong>
+                      </div>
                     </div>
 
                     <div style={{ display: 'flex', gap: 8 }}>
@@ -385,19 +443,19 @@ export default function TicketsPage() {
                         <>
                           <button
                             className="btn-primary"
-                            style={{ padding: '5px 12px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}
+                            style={{ padding: '6px 12px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}
                             onClick={(e) => {
                               e.stopPropagation();
                               setActiveModal({ type: 'SELL_TICKET', data: ticket });
                             }}
                           >
                             <Tag size={13} />
-                            <span>Sell on Market</span>
+                            <span>List Resale</span>
                           </button>
 
                           <button
                             className="btn-secondary"
-                            style={{ padding: '5px 10px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}
+                            style={{ padding: '6px 10px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}
                             onClick={(e) => {
                               e.stopPropagation();
                               setActiveModal({ type: 'TRANSFER_TICKET', data: ticket });
@@ -412,7 +470,7 @@ export default function TicketsPage() {
                       {ticket.status === 'LISTED' && (
                         <button
                           className="btn-danger-outline"
-                          style={{ padding: '5px 10px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}
+                          style={{ padding: '6px 10px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}
                           onClick={(e) => {
                             e.stopPropagation();
                             cancelTicketListing(ticket.id);
@@ -425,14 +483,15 @@ export default function TicketsPage() {
 
                       <button
                         className="btn-secondary"
-                        style={{ padding: '5px 9px' }}
-                        title="Show Entry QR Pass"
+                        style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', gap: 4 }}
+                        title="Show Entry Pass and QR"
                         onClick={(e) => {
                           e.stopPropagation();
                           setActiveModal({ type: 'TICKET_DETAILS', data: ticket });
                         }}
                       >
                         <QrCode size={14} />
+                        <span style={{ fontSize: 12 }}>QR Pass</span>
                       </button>
                     </div>
                   </div>

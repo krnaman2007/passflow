@@ -520,7 +520,8 @@ export default function MarketPage() {
           style={{
             display: 'flex',
             gap: 6,
-            background: 'var(--bg-surface)',
+            background: 'var(--bg-glass-card)',
+            backdropFilter: 'var(--blur-glass)',
             padding: 4,
             borderRadius: 'var(--radius-sm)',
             border: '1px solid var(--border-subtle)',
@@ -898,6 +899,51 @@ export default function MarketPage() {
                     onChange={(e) => setQty(parseInt(e.target.value, 10) || 1)}
                     style={{ width: '100%', fontSize: 15, fontWeight: 600 }}
                   />
+                  {/* Quick Quantity Presets */}
+                  <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                    {[1, 2, 4, 8].map((q) => (
+                      <button
+                        key={q}
+                        type="button"
+                        onClick={() => setQty(q)}
+                        style={{
+                          flex: 1,
+                          padding: '4px 0',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          borderRadius: 'var(--radius-sm)',
+                          border: '1px solid var(--border-subtle)',
+                          background: qty === q ? 'rgba(249, 115, 22, 0.15)' : 'var(--bg-app)',
+                          color: qty === q ? 'var(--accent-orange)' : 'var(--text-muted)',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {q}x
+                      </button>
+                    ))}
+                    {side === 'BUY' && numPrice > 0 && Number(wallet?.available || 0) > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const maxAfford = Math.max(1, Math.min(20, Math.floor(Number(wallet.available) / numPrice)));
+                          setQty(maxAfford);
+                        }}
+                        style={{
+                          flex: 1.2,
+                          padding: '4px 0',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          borderRadius: 'var(--radius-sm)',
+                          border: '1px solid var(--accent-emerald-border)',
+                          background: 'rgba(16, 185, 129, 0.1)',
+                          color: 'var(--accent-emerald)',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        MAX
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Total and Cap Warning */}
@@ -1026,7 +1072,7 @@ export default function MarketPage() {
                 ) : (
                   userOrders.map((ord) => (
                     <tr key={ord.id}>
-                      <td className="font-mono"></td>
+                      <td className="font-mono" style={{ fontSize: 11, color: 'var(--text-dim)' }}>#{ord.id ? (ord.id.slice ? ord.id.slice(0, 8) : ord.id) : 'ORD'}</td>
                       <td>
                         <span
                           className={`badge ${ord.side === 'BUY' ? 'badge-green' : 'badge-red'}`}

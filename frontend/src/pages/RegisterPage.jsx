@@ -80,7 +80,7 @@ export default function RegisterPage() {
       <div style={{ textAlign: 'center', marginBottom: 28 }}>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 24, fontWeight: 700, marginBottom: 6 }}>
           <span className="brand-diamond" style={{ fontSize: 26 }}>◆</span>
-          <span>PassFlow Exchange</span>
+          <span className="text-gradient-white">PassFlow Exchange</span>
         </div>
         <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
           Fair-price secondary order book & primary event tickets
@@ -138,7 +138,7 @@ export default function RegisterPage() {
       </div>
 
       {/* Create Account Card */}
-      <div className="card">
+      <div className="card stat-card-glow card-accent-top" style={{ padding: 32 }}>
         <div style={{ marginBottom: 20 }}>
           <h2 style={{ fontSize: 20, marginBottom: 4 }}>Create Account</h2>
           <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>

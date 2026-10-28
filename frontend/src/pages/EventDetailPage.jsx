@@ -18,6 +18,10 @@ import {
   RefreshCw,
   AlertCircle,
   Gavel,
+  ShieldCheck,
+  Sparkles,
+  ArrowRight,
+  Wallet,
 } from 'lucide-react';
 
 export default function EventDetailPage() {
@@ -58,21 +62,22 @@ export default function EventDetailPage() {
   const [auctionPrices, setAuctionPrices] = useState({});
   const [purchasingAuctionId, setPurchasingAuctionId] = useState(null);
 
-  // Fetch real event details from backend
+  // Fetch full live event details from backend
   useEffect(() => {
     let isMounted = true;
 
     async function loadEvent() {
-      // First check if already formatted in context
       const fromContext = Array.isArray(events)
         ? events.find((e) => e.id === eventId)
         : null;
 
       if (fromContext && Array.isArray(fromContext.tiers) && fromContext.tiers.length > 0) {
         setLiveEvent(fromContext);
-      } else {
-        setLoading(true);
+        setLoading(false);
+        return;
       }
+
+      setLoading(true);
       setError(null);
 
       try {
@@ -93,7 +98,6 @@ export default function EventDetailPage() {
         }
       } catch (err) {
         console.error('Failed to load event details:', err);
-        // Fallback: search in context
         if (fromContext) {
           if (isMounted) setLiveEvent(fromContext);
         } else if (isMounted) {
@@ -159,44 +163,45 @@ export default function EventDetailPage() {
   const walletBalance = Number(wallet?.available || 0);
   const balanceAfter = walletBalance - totalCost;
 
-  // Handle Buy Click
+  // Purchase primary tickets handler
   const handleBuy = async () => {
     if (currentRole === 'PUBLIC') {
+      showToast('Please log in to purchase tickets', 'info');
       navigate('/login');
       return;
     }
 
     if (totalTickets === 0) {
-      showToast('Please choose at least 1 ticket to proceed.', 'warning');
+      showToast('Please select at least 1 ticket to purchase', 'warning');
       return;
     }
 
-    if (walletBalance < totalCost) {
-      showToast('Insufficient wallet balance. Please add funds.', 'error');
+    if (balanceAfter < 0) {
+      showToast(
+        `Insufficient wallet balance. You need ₹${totalCost.toLocaleString('en-IN', { minimumFractionDigits: 2 })} but have ₹${walletBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}. Please deposit funds.`,
+        'error'
+      );
       navigate('/wallet');
       return;
     }
 
     setIsProcessing(true);
     try {
-      for (const line of summaryLines) {
-        if (line.activeAuction) {
-          await api.auctions.purchaseAuction(line.activeAuction.id, line.qty);
-        } else {
-          await purchasePrimaryTickets(event.id, { [line.id]: line.qty });
-        }
-      }
+      const tierPurchases = Object.entries(quantities)
+        .filter(([_, qty]) => qty > 0)
+        .map(([tierId, quantity]) => ({ tierId, quantity }));
 
-      if (typeof syncLiveWallet === 'function') await syncLiveWallet();
-      if (typeof fetchLiveOrders === 'function') await fetchLiveOrders();
+      const res = await purchasePrimaryTickets(event.id, tierPurchases);
+      const data = res?.data || res;
 
       setPurchaseSuccess({
         totalTickets,
         totalCost,
         balanceBefore: walletBalance,
         balanceAfter,
-        summary: summaryLines,
+        purchasedTickets: data?.tickets || [],
       });
+
       setQuantities({});
       showToast(
         `Successfully purchased ${totalTickets} ticket(s) for ₹${totalCost.toLocaleString('en-IN', { minimumFractionDigits: 2 })}!`,
@@ -306,7 +311,7 @@ export default function EventDetailPage() {
       <div className="content-wrap" style={{ padding: '40px 20px' }}>
         <button
           className="btn-secondary"
-          style={{ marginBottom: 20, padding: '6px 12px', fontSize: 12 }}
+          style={{ marginBottom: 20, padding: '7px 14px', fontSize: 13 }}
           onClick={() => navigate('/events')}
         >
           <ArrowLeft size={14} />
@@ -315,22 +320,22 @@ export default function EventDetailPage() {
 
         <div
           style={{
-            padding: 32,
-            borderRadius: 'var(--radius-lg)',
+            padding: 36,
+            borderRadius: 'var(--radius-xl)',
             background: 'rgba(239, 68, 68, 0.08)',
             border: '1px solid rgba(239, 68, 68, 0.3)',
             color: '#fca5a5',
             textAlign: 'center',
-            maxWidth: 500,
-            margin: '20px auto',
+            maxWidth: 520,
+            margin: '24px auto',
           }}
         >
-          <AlertCircle size={32} color="#ef4444" style={{ margin: '0 auto 12px' }} />
-          <h3 style={{ fontSize: '1.1rem', fontWeight: 600, color: '#f87171', marginBottom: 6 }}>
+          <AlertCircle size={36} color="#ef4444" style={{ margin: '0 auto 14px' }} />
+          <h3 style={{ fontSize: '1.2rem', fontWeight: 700, color: '#f87171', marginBottom: 6 }}>
             Event Not Found
           </h3>
-          <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: 20 }}>
-            {error || 'The requested event does not exist in the database.'}
+          <p style={{ fontSize: '0.92rem', color: 'var(--text-muted)', marginBottom: 24, lineHeight: 1.5 }}>
+            {error || 'The requested event does not exist in the database or may have concluded.'}
           </p>
           <button className="btn-primary" onClick={() => navigate('/events')}>
             <span>Browse All Live Events</span>
@@ -342,17 +347,17 @@ export default function EventDetailPage() {
 
   return (
     <div className="content-wrap">
-      {/* Back button */}
+      {/* Return to Discovery */}
       <button
         className="btn-secondary"
-        style={{ marginBottom: 20, padding: '6px 12px', fontSize: 12 }}
+        style={{ marginBottom: 22, padding: '7px 14px', fontSize: 13 }}
         onClick={() => navigate('/events')}
       >
         <ArrowLeft size={14} />
-        <span>Back to Events</span>
+        <span>Return to Marketplace</span>
       </button>
 
-      {/* Header Banner */}
+      {/* Hero Header Banner */}
       <div className="event-detail-header">
         <div
           style={{
@@ -360,17 +365,24 @@ export default function EventDetailPage() {
             justifyContent: 'space-between',
             alignItems: 'flex-start',
             flexWrap: 'wrap',
-            gap: 12,
+            gap: 16,
+            marginBottom: 20,
           }}
         >
           <div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
-              <span className="badge badge-orange">{event.category}</span>
-              <span className="badge badge-green">VERIFIED ORGANIZER: {organizerName}</span>
-              {event.status === 'DRAFT' && <span className="badge badge-neutral">DRAFT</span>}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+              <span className="badge badge-orange font-mono">{event.category}</span>
+              <span className="badge badge-green" style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <ShieldCheck size={12} />
+                <span>VERIFIED ORGANIZER: {organizerName}</span>
+              </span>
+              {event.status === 'DRAFT' && <span className="badge badge-neutral">DRAFT MODE</span>}
             </div>
-            <h1 style={{ fontSize: 28, marginBottom: 8 }}>{event.title}</h1>
-            <p style={{ color: 'var(--text-sub)', fontSize: 14, marginBottom: 16 }}>
+
+            <h1 style={{ fontSize: 'clamp(1.7rem, 1.3rem + 1.6vw, 2.6rem)', fontWeight: 800, marginBottom: 8, letterSpacing: '-0.03em' }}>
+              {event.title}
+            </h1>
+            <p style={{ color: 'var(--text-sub)', fontSize: 15, maxWidth: 660, lineHeight: 1.5 }}>
               {event.tagline}
             </p>
           </div>
@@ -383,231 +395,266 @@ export default function EventDetailPage() {
                 categoryId: defaultCategoryId,
               })
             }
-            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '10px 18px' }}
           >
-            <TrendingUp size={15} color="#f97316" />
-            <span>Open Resale Market</span>
+            <TrendingUp size={15} color="var(--accent-orange)" />
+            <span>Open Resale Order Book</span>
           </button>
         </div>
 
+        {/* Event Key Meta Strip */}
         <div
           style={{
             display: 'flex',
             gap: 24,
             flexWrap: 'wrap',
             borderTop: '1px solid var(--border-subtle)',
-            paddingTop: 16,
+            paddingTop: 18,
             color: 'var(--text-sub)',
             fontSize: 13,
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
             <Calendar size={15} color="var(--accent-orange)" />
-            <span>{event.fullDate}</span>
+            <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>{event.fullDate}</span>
           </div>
           {event.time && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <Clock size={15} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+              <Clock size={15} color="var(--text-dim)" />
               <span>{event.time}</span>
             </div>
           )}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <MapPin size={15} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+            <MapPin size={15} color="var(--text-dim)" />
             <span>
               {event.venue}
               {event.city && event.city !== event.venue ? `, ${event.city}` : ''}
             </span>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <ShieldAlert size={15} color="#10b981" />
-            <span>Anti-Scalping Protected</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+            <ShieldAlert size={15} color="var(--accent-emerald)" />
+            <span style={{ color: 'var(--accent-emerald)', fontWeight: 600 }}>Anti-Scalping 2x Protected</span>
           </div>
         </div>
       </div>
 
-      {/* Main 2-column Grid */}
+      {/* Main 2-Column Grid */}
       <div className="detail-grid">
-        {/* Left: Tiers Selection & Resale Callout */}
+        {/* Left Column: Tiers Selection & Secondary Resale Callout */}
         <div>
-          {/* Success banner if just purchased */}
+          {/* Success Banner if purchased */}
           {purchaseSuccess && (
             <div
               className="card"
               style={{
-                marginBottom: 20,
+                marginBottom: 24,
                 border: '1px solid var(--accent-emerald-border)',
-                background: 'rgba(16, 185, 129, 0.08)',
+                background: 'rgba(16, 185, 129, 0.09)',
+                boxShadow: '0 0 24px -4px var(--accent-emerald-glow)',
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                <CheckCircle2 size={20} color="#10b981" />
-                <h4 style={{ fontSize: 16, color: '#10b981' }}>
-                  ✓ {purchaseSuccess.totalTickets} ticket(s) added to your vault!
+                <CheckCircle2 size={22} color="var(--accent-emerald)" />
+                <h4 style={{ fontSize: 17, fontWeight: 700, color: 'var(--accent-emerald)' }}>
+                  ✓ {purchaseSuccess.totalTickets} Ticket(s) Successfully Added to Your Vault!
                 </h4>
               </div>
-              <p style={{ fontSize: 13, color: 'var(--text-sub)', marginBottom: 12 }}>
+              <p style={{ fontSize: 13, color: 'var(--text-sub)', marginBottom: 14, lineHeight: 1.5 }}>
                 Wallet balance: ₹{purchaseSuccess.balanceBefore.toLocaleString('en-IN', { minimumFractionDigits: 2 })} →{' '}
                 <strong style={{ color: 'var(--accent-emerald)' }}>
                   ₹{(purchaseSuccess.balanceBefore - purchaseSuccess.totalCost).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                 </strong>
-                . Your tickets are issued directly by the backend and ready to hold or trade.
+                . Authenticated passes with cryptographic provenance custody are ready to hold, transfer, or list on the secondary exchange.
               </p>
               <div style={{ display: 'flex', gap: 10 }}>
                 <button className="btn-primary" onClick={() => navigate('/tickets')}>
-                  View my tickets
+                  <span>View in My Tickets Vault</span>
+                  <ArrowRight size={15} />
                 </button>
                 <button className="btn-secondary" onClick={() => setPurchaseSuccess(null)}>
-                  Keep browsing
+                  Keep Browsing Tiers
                 </button>
               </div>
             </div>
           )}
 
-          {/* Pick Tickets Card */}
-          <div className="card" style={{ marginBottom: 24 }}>
+          {/* Ticket Tier Selection Desk */}
+          <div className="card" style={{ marginBottom: 26 }}>
             <div
               style={{
-                padding: '0 0 16px',
+                paddingBottom: 16,
                 borderBottom: '1px solid var(--border-subtle)',
-                marginBottom: 8,
+                marginBottom: 16,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 10,
               }}
             >
-              <h3 style={{ fontSize: 16 }}>Pick Tickets (Direct Face-Value)</h3>
-              <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                Guaranteed authentic tickets issued directly by {organizerName}
-              </p>
+              <div>
+                <h3 style={{ fontSize: 17, fontWeight: 700, margin: 0 }}>Select Seating Tiers</h3>
+                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                  Guaranteed authentic passes issued directly by {organizerName}
+                </p>
+              </div>
+              <span className="badge badge-neutral font-mono">{tiers.length} TIER{tiers.length !== 1 ? 'S' : ''} AVAILABLE</span>
             </div>
 
             {tiers.length === 0 ? (
-              <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--text-muted)' }}>
+              <div style={{ padding: '36px 0', textAlign: 'center', color: 'var(--text-muted)' }}>
                 No active ticket tiers found for this event.
               </div>
             ) : (
               tiers.map((tier) => {
                 const qty = quantities[tier.id] || 0;
                 const isTierSoldOut = tier.left === 0 || tier.soldOut;
+                const percentLeft = tier.total > 0 ? Math.round((tier.left / tier.total) * 100) : 0;
 
                 return (
-                  <div key={tier.id} style={{ borderBottom: '1px solid var(--border-subtle)', paddingBottom: 14, marginBottom: 14 }}>
-                    <div className="tier-row" style={{ borderBottom: 'none', paddingBottom: 0, marginBottom: 0 }}>
-                      <div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                          <strong style={{ fontSize: 15 }}>{tier.name}</strong>
-                          {tier.activeAuction ? (
-                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                              <span
-                                className="badge font-mono"
-                                style={{
-                                  background: 'rgba(16, 185, 129, 0.15)',
-                                  color: 'var(--accent-emerald)',
-                                  border: '1px solid rgba(16, 185, 129, 0.35)',
-                                  fontSize: 13,
-                                  fontWeight: 700,
-                                  padding: '3px 8px',
-                                }}
-                              >
-                                ₹{auctionPrices[tier.activeAuction.id] ?? tier.activeAuction.currentPrice ?? tier.activeAuction.startPrice}
-                              </span>
-                              <span
-                                className="badge font-mono"
-                                style={{
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: 4,
-                                  background: 'rgba(236, 72, 153, 0.15)',
-                                  color: '#ec4899',
-                                  border: '1px solid rgba(236, 72, 153, 0.3)',
-                                  fontSize: 11,
-                                }}
-                              >
-                                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', display: 'inline-block', boxShadow: '0 0 6px #10b981' }} />
-                                <Gavel size={11} /> Live Decaying Price
-                              </span>
-                            </div>
-                          ) : (
-                            <span className="badge badge-neutral font-mono">₹{tier.price}</span>
-                          )}
-                        </div>
-                        <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4 }}>
-                          {isTierSoldOut ? (
-                            <span style={{ color: 'var(--accent-rose)' }}>
-                              Sold out from organizer
-                            </span>
-                          ) : (
-                            <span>
-                              {tier.left} remaining of {tier.total}
-                            </span>
-                          )}
-                          {tier.description && <span> • {tier.description}</span>}
-                        </div>
-                      </div>
+                  <div
+                    key={tier.id}
+                    className={`tier-row ${qty > 0 ? 'selected' : ''}`}
+                    style={{ opacity: isTierSoldOut ? 0.7 : 1 }}
+                  >
+                    <div style={{ flex: 1, minWidth: 200 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                        <strong style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-main)' }}>{tier.name}</strong>
 
-                      <div>
-                        {isTierSoldOut ? (
-                          <button
-                            className="btn-secondary"
-                            style={{ fontSize: 12, color: 'var(--accent-orange)' }}
-                            onClick={() =>
-                              navigate(`/market/${event.id}/${tier.id}`, {
-                                id: event.id,
-                                categoryId: tier.id,
-                              })
-                            }
-                          >
-                            <span>See resale book</span>
-                            <Zap size={13} />
-                          </button>
-                        ) : (
-                          <div className="qty-stepper">
-                            <button
-                              className="qty-btn"
-                              disabled={qty <= 0}
-                              onClick={() => updateQty(tier.id, -1, tier.left)}
+                        {tier.activeAuction ? (
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                            <span
+                              className="badge font-mono"
+                              style={{
+                                background: 'rgba(16, 185, 129, 0.15)',
+                                color: 'var(--accent-emerald)',
+                                border: '1px solid rgba(16, 185, 129, 0.35)',
+                                fontSize: 13,
+                                fontWeight: 700,
+                                padding: '3px 8px',
+                              }}
                             >
-                              −
-                            </button>
-                            <span className="qty-val font-mono">{qty}</span>
-                            <button
-                              className="qty-btn"
-                              disabled={qty >= tier.left}
-                              onClick={() => updateQty(tier.id, 1, tier.left)}
+                              ₹{auctionPrices[tier.activeAuction.id] ?? tier.activeAuction.currentPrice ?? tier.activeAuction.startPrice}
+                            </span>
+                            <span
+                              className="badge font-mono"
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4,
+                                background: 'rgba(236, 72, 153, 0.15)',
+                                color: '#ec4899',
+                                border: '1px solid rgba(236, 72, 153, 0.3)',
+                                fontSize: 11,
+                              }}
                             >
-                              +
-                            </button>
+                              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', display: 'inline-block', boxShadow: '0 0 6px #10b981' }} />
+                              <Gavel size={11} /> Dutch Decaying Price
+                            </span>
                           </div>
+                        ) : (
+                          <span className="font-mono" style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-main)' }}>
+                            ₹{Number(tier.price).toLocaleString('en-IN')}
+                          </span>
                         )}
                       </div>
+
+                      <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 6 }}>
+                        {isTierSoldOut ? (
+                          <span style={{ color: 'var(--accent-rose)', fontWeight: 600 }}>
+                            Sold out from primary organizer · Secondary trading active
+                          </span>
+                        ) : (
+                          <span>
+                            {tier.left} of {tier.total} tickets remaining ({percentLeft}% available)
+                          </span>
+                        )}
+                        {tier.description && <span> • {tier.description}</span>}
+                      </div>
+
+                      {/* Capacity progress bar */}
+                      {!isTierSoldOut && tier.total > 0 && (
+                        <div style={{ width: '100%', maxWidth: 260, height: 4, background: 'rgba(255, 255, 255, 0.08)', borderRadius: 'var(--radius-full)', marginTop: 8, overflow: 'hidden' }}>
+                          <div
+                            style={{
+                              width: `${Math.max(5, 100 - percentLeft)}%`,
+                              height: '100%',
+                              background: percentLeft < 20 ? 'var(--accent-rose)' : 'var(--accent-orange)',
+                              borderRadius: 'var(--radius-full)',
+                            }}
+                          />
+                        </div>
+                      )}
                     </div>
 
-                    {/* Live Dutch Auction Buy Card */}
+                    <div>
+                      {isTierSoldOut ? (
+                        <button
+                          className="btn-secondary"
+                          style={{ fontSize: 12, color: 'var(--accent-orange)' }}
+                          onClick={() =>
+                            navigate(`/market/${event.id}/${tier.id}`, {
+                              id: event.id,
+                              categoryId: tier.id,
+                            })
+                          }
+                        >
+                          <span>See Resale Book</span>
+                          <Zap size={13} />
+                        </button>
+                      ) : (
+                        <div className="qty-stepper">
+                          <button
+                            className="qty-btn"
+                            disabled={qty <= 0}
+                            onClick={() => updateQty(tier.id, -1, tier.left)}
+                            aria-label="Decrease quantity"
+                          >
+                            −
+                          </button>
+                          <span className="qty-val font-mono">{qty}</span>
+                          <button
+                            className="qty-btn"
+                            disabled={qty >= tier.left}
+                            onClick={() => updateQty(tier.id, 1, tier.left)}
+                            aria-label="Increase quantity"
+                          >
+                            +
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Live Dutch Auction Buy Callout inside Tier */}
                     {tier.activeAuction && (
                       <div
                         style={{
-                          marginTop: 10,
-                          padding: '10px 14px',
-                          borderRadius: 'var(--radius-md, 8px)',
-                          background: 'linear-gradient(135deg, rgba(236, 72, 153, 0.08), rgba(24, 28, 42, 0.8))',
-                          border: '1px solid rgba(236, 72, 153, 0.25)',
+                          width: '100%',
+                          marginTop: 12,
+                          padding: '12px 16px',
+                          borderRadius: 'var(--radius-md)',
+                          background: 'linear-gradient(135deg, rgba(236, 72, 153, 0.08), rgba(24, 28, 42, 0.85))',
+                          border: '1px solid rgba(236, 72, 153, 0.28)',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'space-between',
                           flexWrap: 'wrap',
-                          gap: 10,
+                          gap: 12,
                         }}
                       >
                         <div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                             <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', display: 'inline-block', boxShadow: '0 0 8px #10b981' }} />
                             <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-main)', letterSpacing: '0.04em' }}>
-                              LIVE DUTCH AUCTION
+                              LIVE DUTCH AUCTION DECAY
                             </span>
                             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                              (Drops from ₹{tier.activeAuction.startPrice} → reserve ₹{tier.activeAuction.minPrice})
+                              (Price falls from ₹{tier.activeAuction.startPrice} → reserve floor ₹{tier.activeAuction.minPrice})
                             </span>
                           </div>
                           <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginTop: 4 }}>
-                            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Current decaying price:</span>
-                            <strong style={{ fontSize: 16, color: 'var(--accent-emerald)', fontFamily: 'monospace' }}>
+                            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Current real-time quote:</span>
+                            <strong style={{ fontSize: 17, color: 'var(--accent-emerald)', fontFamily: 'var(--font-mono)' }}>
                               ₹{auctionPrices[tier.activeAuction.id] ?? tier.activeAuction.currentPrice ?? tier.activeAuction.startPrice}
                             </strong>
                           </div>
@@ -619,7 +666,7 @@ export default function EventDetailPage() {
                             background: 'linear-gradient(135deg, #ec4899, #db2777)',
                             borderColor: '#db2777',
                             fontSize: 12,
-                            padding: '7px 14px',
+                            padding: '8px 16px',
                             display: 'inline-flex',
                             alignItems: 'center',
                             gap: 6,
@@ -630,12 +677,12 @@ export default function EventDetailPage() {
                           {purchasingAuctionId === tier.activeAuction.id ? (
                             <>
                               <RefreshCw size={13} className="spin" />
-                              <span>Locking price...</span>
+                              <span>Locking Price...</span>
                             </>
                           ) : (
                             <>
                               <Zap size={13} />
-                              <span>Buy at ₹{auctionPrices[tier.activeAuction.id] ?? tier.activeAuction.currentPrice ?? tier.activeAuction.startPrice}</span>
+                              <span>Lock Bid at ₹{auctionPrices[tier.activeAuction.id] ?? tier.activeAuction.currentPrice ?? tier.activeAuction.startPrice}</span>
                             </>
                           )}
                         </button>
@@ -647,29 +694,29 @@ export default function EventDetailPage() {
             )}
           </div>
 
-          {/* Resale Market Callout Card */}
+          {/* Secondary Resale Market Callout */}
           <div
             className="card"
             style={{
-              background: 'linear-gradient(135deg, rgba(23, 27, 38, 0.9), rgba(18, 21, 29, 0.9))',
-              border: '1px solid var(--border-medium)',
+              background: 'linear-gradient(135deg, rgba(22, 29, 46, 0.9), rgba(14, 18, 30, 0.95))',
+              border: '1px solid var(--border-glass-bright)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
-              gap: 16,
+              gap: 18,
               flexWrap: 'wrap',
             }}
           >
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                <span className="badge badge-orange">LIVE RESALE ORDER BOOK</span>
-                <span className="badge badge-green">ANTI-SCALPING PROTECTED</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6 }}>
+                <span className="badge badge-orange font-mono">LIVE RESALE ORDER BOOK</span>
+                <span className="badge badge-green font-mono">ANTI-SCALPING CAPPED</span>
               </div>
-              <p style={{ fontSize: 13, color: 'var(--text-main)', fontWeight: 500 }}>
+              <p style={{ fontSize: 14, color: 'var(--text-main)', fontWeight: 600, margin: 0 }}>
                 Looking to trade or buy tickets from peer holders?
               </p>
-              <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                Trades settle instantly on-chain and in database within anti-scalping price caps.
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2, margin: '2px 0 0 0' }}>
+                All secondary market tickets are verified, guaranteed valid, and capped at 2.0x face value.
               </p>
             </div>
 
@@ -681,78 +728,99 @@ export default function EventDetailPage() {
                   categoryId: defaultCategoryId,
                 })
               }
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}
             >
-              <span>Open market</span>
+              <span>Open Resale Desk</span>
               <TrendingUp size={14} />
             </button>
           </div>
         </div>
 
-        {/* Right: Order Summary Sticky Card */}
+        {/* Right Column: Order Summary Terminal Card */}
         <div>
           <div className="order-summary-card">
             <h3
               style={{
-                fontSize: 16,
-                marginBottom: 16,
+                fontSize: 17,
+                fontWeight: 700,
+                marginBottom: 18,
                 display: 'flex',
                 alignItems: 'center',
-                gap: 8,
+                gap: 9,
               }}
             >
-              <ShoppingBag size={17} color="var(--accent-orange)" />
-              <span>Order Summary</span>
+              <ShoppingBag size={18} color="var(--accent-orange)" />
+              <span>Checkout Summary</span>
             </h3>
 
             {summaryLines.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-dim)' }}>
-                Select tickets on the left to review your total.
+              <div style={{ textAlign: 'center', padding: '36px 0', color: 'var(--text-dim)' }}>
+                <div style={{ width: 44, height: 44, borderRadius: '50%', background: 'rgba(255, 255, 255, 0.04)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
+                  <ShoppingBag size={20} color="var(--text-dim)" />
+                </div>
+                <p style={{ fontSize: 13, color: 'var(--text-sub)', margin: 0 }}>Select tickets on the left to review your cart.</p>
               </div>
             ) : (
               <div>
                 {summaryLines.map((line) => (
                   <div key={line.id} className="summary-line">
-                    <span>
-                      {line.qty} x {line.name}
+                    <span style={{ color: 'var(--text-main)', fontWeight: 500 }}>
+                      {line.qty} × {line.name}
                     </span>
-                    <span className="font-mono">₹{line.cost.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                    <span className="font-mono" style={{ fontWeight: 600 }}>
+                      ₹{line.cost.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    </span>
                   </div>
                 ))}
 
                 <div className="summary-line total">
-                  <span>Total</span>
-                  <span className="font-mono">₹{totalCost.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                  <span>Total Amount</span>
+                  <span className="font-mono" style={{ color: 'var(--text-main)', fontSize: 22 }}>
+                    ₹{totalCost.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </span>
                 </div>
 
                 {currentRole !== 'PUBLIC' && (
                   <div className="wallet-debit-note">
-                    <div
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        marginBottom: 4,
-                      }}
-                    >
-                      <span>Wallet Balance:</span>
-                      <span className="font-mono">₹{walletBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
-                    </div>
-                    <div
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        fontWeight: 600,
-                      }}
-                    >
-                      <span>Balance After:</span>
-                      <span
-                        className="font-mono"
+                    <Wallet size={16} color="var(--accent-orange)" style={{ flexShrink: 0, marginTop: 2 }} />
+                    <div style={{ flex: 1 }}>
+                      <div
                         style={{
-                          color:
-                            balanceAfter >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          marginBottom: 4,
+                          fontSize: 12,
                         }}
                       >
-                        ₹{balanceAfter.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                      </span>
+                        <span style={{ color: 'var(--text-muted)' }}>Wallet Balance:</span>
+                        <span className="font-mono" style={{ fontWeight: 600 }}>
+                          ₹{walletBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          fontWeight: 600,
+                          fontSize: 12,
+                        }}
+                      >
+                        <span style={{ color: 'var(--text-sub)' }}>Balance After Purchase:</span>
+                        <span
+                          className="font-mono"
+                          style={{
+                            color: balanceAfter >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                            fontSize: 13,
+                          }}
+                        >
+                          ₹{balanceAfter.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                      {balanceAfter < 0 && (
+                        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--accent-rose)' }}>
+                          Insufficient balance. Add funds via Escrow Wallet before continuing.
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -764,18 +832,18 @@ export default function EventDetailPage() {
               <div>
                 <button
                   className="btn-primary"
-                  style={{ width: '100%', padding: '12px', fontSize: 14 }}
+                  style={{ width: '100%', padding: '13px', fontSize: 14 }}
                   onClick={() => navigate('/login')}
                 >
                   <Lock size={15} />
-                  <span>Log in to buy</span>
+                  <span>Log in to Complete Purchase</span>
                 </button>
                 <p
                   style={{
                     textAlign: 'center',
                     fontSize: 12,
                     color: 'var(--text-dim)',
-                    marginTop: 10,
+                    marginTop: 12,
                   }}
                 >
                   Don't have an account?{' '}
@@ -783,7 +851,7 @@ export default function EventDetailPage() {
                     style={{
                       color: 'var(--accent-orange)',
                       cursor: 'pointer',
-                      textDecoration: 'underline',
+                      fontWeight: 600,
                     }}
                     onClick={() => navigate('/register')}
                   >
@@ -792,18 +860,31 @@ export default function EventDetailPage() {
                 </p>
               </div>
             ) : (
-              <button
-                className="btn-primary"
-                style={{ width: '100%', padding: '12px', fontSize: 14 }}
-                disabled={totalTickets === 0 || isProcessing || balanceAfter < 0}
-                onClick={handleBuy}
-              >
-                {isProcessing ? (
-                  <span>Reserving inventory...</span>
-                ) : (
-                  <span>Buy {totalTickets > 0 ? `${totalTickets} ticket(s)` : 'tickets'}</span>
+              <div>
+                <button
+                  className="btn-primary"
+                  style={{ width: '100%', padding: '13px', fontSize: 14 }}
+                  disabled={totalTickets === 0 || isProcessing || balanceAfter < 0}
+                  onClick={handleBuy}
+                >
+                  {isProcessing ? (
+                    <span>Reserving Inventory & Minting Passes...</span>
+                  ) : (
+                    <span>Complete Purchase ({totalTickets > 0 ? `${totalTickets} Ticket${totalTickets > 1 ? 's' : ''}` : '0 Tickets'})</span>
+                  )}
+                </button>
+
+                {balanceAfter < 0 && (
+                  <button
+                    className="btn-secondary"
+                    style={{ width: '100%', marginTop: 10, fontSize: 12, padding: '8px' }}
+                    onClick={() => navigate('/wallet')}
+                  >
+                    <Wallet size={14} color="var(--accent-emerald)" />
+                    <span>Deposit Funds to Wallet</span>
+                  </button>
                 )}
-              </button>
+              </div>
             )}
           </div>
         </div>

@@ -418,7 +418,7 @@ export default function AdminConsolePage() {
         <>
           {/* Top 4 Performance Metric Tiles */}
           <div className="grid-4" style={{ marginBottom: 20 }}>
-            <div className="card">
+            <div className="stat-card-glow card-accent-top">
               <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 Orders Per Second
               </span>
@@ -428,8 +428,8 @@ export default function AdminConsolePage() {
               <span style={{ fontSize: 11, color: 'var(--accent-emerald)' }}>Live matching engine tick</span>
             </div>
 
-            <div className="card">
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            <div className="stat-card-glow card-accent-emerald">
+              <span style={{ fontSize: 11, color: 'var(--accent-emerald)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
                 Engine Avg Latency
               </span>
               <div className="font-mono" style={{ fontSize: 26, fontWeight: 700, color: 'var(--accent-emerald)', marginTop: 4 }}>
@@ -438,7 +438,7 @@ export default function AdminConsolePage() {
               <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>In-memory tick optimal</span>
             </div>
 
-            <div className="card">
+            <div className="stat-card-glow card-accent-top">
               <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 Active Open Orders
               </span>
