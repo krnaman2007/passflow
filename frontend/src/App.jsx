@@ -71,49 +71,34 @@ function MainRouter() {
 
       <MobileBottomNav />
 
-      {/* Production Footer */}
-      <footer
-        style={{
-          borderTop: '1px solid var(--border-subtle)',
-          padding: '24px 20px',
-          textAlign: 'center',
-          color: 'var(--text-dim)',
-          fontSize: 12,
-          background: 'rgba(8, 10, 16, 0.92)',
-          backdropFilter: 'var(--blur-strong)',
-          WebkitBackdropFilter: 'var(--blur-strong)',
-        }}
-      >
-        <div style={{ maxWidth: 1200, margin: '0 auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span className="brand-diamond" style={{ fontSize: 18 }}>◆</span>
-              <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, color: 'var(--text-main)' }}>
-                PassFlow Exchange
-              </span>
+      {/* Production Responsive Footer */}
+      <footer className="site-footer">
+        <div className="site-footer-container">
+          <div className="site-footer-top">
+            <div className="site-footer-brand">
+              <span className="brand-diamond">◆</span>
+              <span className="brand-name">PassFlow Exchange</span>
               <span className="brand-exchange-tag">MAINNET v2.4</span>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
-              <button onClick={() => navigate('/events')} style={{ color: 'var(--text-sub)' }}>Events</button>
-              <span style={{ color: 'var(--border-strong)' }}>·</span>
-              <button onClick={() => navigate('/market')} style={{ color: 'var(--text-sub)' }}>Secondary Market</button>
-              <span style={{ color: 'var(--border-strong)' }}>·</span>
-              <button onClick={() => navigate('/solvency/verify')} style={{ color: 'var(--text-sub)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <nav className="site-footer-links" aria-label="Footer Navigation">
+              <button type="button" onClick={() => navigate('/events')}>Events</button>
+              <button type="button" onClick={() => navigate('/market')}>Secondary Market</button>
+              <button type="button" onClick={() => navigate('/solvency/verify')} className="solvency-link">
                 <ShieldCheck size={14} color="var(--accent-emerald)" />
                 <span>Proof of Solvency</span>
               </button>
-              <span style={{ color: 'var(--border-strong)' }}>·</span>
-              <button onClick={() => navigate('/organizer/apply')} style={{ color: 'var(--text-sub)' }}>Organizers</button>
-            </div>
+              <button type="button" onClick={() => navigate('/organizer/apply')}>Organizers</button>
+            </nav>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-subtle)', fontSize: 12, color: 'var(--text-dim)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span className="pulse-radar-dot" style={{ width: 5, height: 5 }} />
-              <span style={{ color: 'var(--accent-emerald)', fontWeight: 500 }}>All Core Systems Operational</span>
-              <span>·</span>
-              <span>Sub-millisecond L3 matching engine</span>
+
+          <div className="site-footer-bottom">
+            <div className="site-footer-status">
+              <span className="pulse-radar-dot" />
+              <span className="status-live">All Core Systems Operational</span>
+              <span className="status-divider">·</span>
+              <span className="status-sub">Sub-millisecond L3 matching engine</span>
             </div>
-            <div>
+            <div className="site-footer-copy">
               <span>&copy; {new Date().getFullYear()} PassFlow Exchange. Provably solvent fair-price event ticketing.</span>
             </div>
           </div>
