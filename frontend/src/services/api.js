@@ -415,6 +415,7 @@ export const adminApi = {
   getAntiBotConfig: () => apiRequest('/api/v1/admin/rules/anti-bot'),
   updateAntiBotConfig: (payload) => apiRequest('/api/v1/admin/rules/anti-bot', { method: 'PUT', body: payload }),
   retrySettlement: (id) => apiRequest(`/api/v1/settlements/${id}/retry`, { method: 'POST' }),
+  runLoadTest: (testType, options = {}) => apiRequest('/api/v1/admin/tests/run', { method: 'POST', body: { testType, options } }),
 };
 
 // Export consolidated API
