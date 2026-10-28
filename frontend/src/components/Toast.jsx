@@ -20,7 +20,17 @@ export default function Toast() {
           </div>
           <button
             onClick={() => removeToast(toast.id)}
-            style={{ color: 'var(--text-dim)', padding: 4 }}
+            className="btn-pill"
+            aria-label="Dismiss notification"
+            style={{
+              color: 'var(--text-muted)',
+              padding: 6,
+              borderRadius: 'var(--radius-sm)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'rgba(255, 255, 255, 0.04)',
+            }}
           >
             <X size={14} />
           </button>

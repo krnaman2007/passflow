@@ -69,6 +69,11 @@ export default function Navbar() {
           <div className="brand-badge" onClick={() => navigate('/events')}>
             <span className="brand-diamond">◆</span>
             <span>PassFlow</span>
+            <span className="brand-exchange-tag">EXCHANGE</span>
+          </div>
+          <div className="exchange-status-pill" title="PassFlow Matching Engine is live and responsive">
+            <span className="pulse-radar-dot"></span>
+            <span>LIVE ENGINE</span>
           </div>
 
 
@@ -126,7 +131,7 @@ export default function Navbar() {
               >
                 <Wallet size={15} color="#10b981" />
                 <span>
-                  Wallet <span className="amount font-mono">${wallet.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  Wallet <span className="amount font-mono">₹{Number(wallet.balance || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 </span>
                 <ChevronDown size={13} color="var(--text-dim)" />
               </button>
@@ -139,16 +144,16 @@ export default function Navbar() {
                   </div>
                   <div className="wallet-stat-row">
                     <span style={{ color: 'var(--text-muted)' }}>Total Balance:</span>
-                    <span className="val font-mono">${wallet.balance.toFixed(2)}</span>
+                    <span className="val font-mono">₹{Number(wallet.balance || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                   <div className="wallet-stat-row">
                     <span style={{ color: 'var(--text-muted)' }}>Held in open orders:</span>
-                    <span className="val font-mono" style={{ color: 'var(--accent-orange)' }}>${wallet.held.toFixed(2)}</span>
+                    <span className="val font-mono" style={{ color: 'var(--accent-orange)' }}>₹{Number(wallet.held || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                   <div className="wallet-stat-row" style={{ paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
                     <span style={{ color: 'var(--text-sub)', fontWeight: 600 }}>Available to spend:</span>
                     <span className="val font-mono" style={{ color: 'var(--accent-emerald)', fontSize: 14 }}>
-                      ${wallet.available.toFixed(2)}
+                      ₹{Number(wallet.available || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
                   <button

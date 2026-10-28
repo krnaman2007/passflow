@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { ShieldCheck, Activity, Layers } from 'lucide-react';
 import { AppProvider, useApp } from './context/AppContext';
 import Navbar from './components/Navbar';
 import Toast from './components/Toast';
@@ -25,7 +26,7 @@ import SolvencyVerifyPage from './pages/SolvencyVerifyPage';
 import './App.css';
 
 function MainRouter() {
-  const { currentPath } = useApp();
+  const { currentPath, navigate } = useApp();
   const pageRef = useRef(null);
   useEffect(() => {
     const el = pageRef.current;
@@ -78,11 +79,44 @@ function MainRouter() {
           textAlign: 'center',
           color: 'var(--text-dim)',
           fontSize: 12,
-          background: 'rgba(13, 15, 20, 0.95)'
+          background: 'rgba(8, 10, 16, 0.92)',
+          backdropFilter: 'var(--blur-strong)',
+          WebkitBackdropFilter: 'var(--blur-strong)',
         }}
       >
         <div style={{ maxWidth: 1200, margin: '0 auto' }}>
-          <span>Powered by PassFlow Exchange</span>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span className="brand-diamond" style={{ fontSize: 18 }}>◆</span>
+              <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, color: 'var(--text-main)' }}>
+                PassFlow Exchange
+              </span>
+              <span className="brand-exchange-tag">MAINNET v2.4</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
+              <button onClick={() => navigate('/events')} style={{ color: 'var(--text-sub)' }}>Events</button>
+              <span style={{ color: 'var(--border-strong)' }}>·</span>
+              <button onClick={() => navigate('/market')} style={{ color: 'var(--text-sub)' }}>Secondary Market</button>
+              <span style={{ color: 'var(--border-strong)' }}>·</span>
+              <button onClick={() => navigate('/solvency/verify')} style={{ color: 'var(--text-sub)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <ShieldCheck size={14} color="var(--accent-emerald)" />
+                <span>Proof of Solvency</span>
+              </button>
+              <span style={{ color: 'var(--border-strong)' }}>·</span>
+              <button onClick={() => navigate('/organizer/apply')} style={{ color: 'var(--text-sub)' }}>Organizers</button>
+            </div>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-subtle)', fontSize: 12, color: 'var(--text-dim)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span className="pulse-radar-dot" style={{ width: 5, height: 5 }} />
+              <span style={{ color: 'var(--accent-emerald)', fontWeight: 500 }}>All Core Systems Operational</span>
+              <span>·</span>
+              <span>Sub-millisecond L3 matching engine</span>
+            </div>
+            <div>
+              <span>&copy; {new Date().getFullYear()} PassFlow Exchange. Provably solvent fair-price event ticketing.</span>
+            </div>
+          </div>
         </div>
       </footer>
     </div>

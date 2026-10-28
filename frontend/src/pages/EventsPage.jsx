@@ -12,6 +12,7 @@ import {
   Sparkles,
   Ticket,
   PlusCircle,
+  ShieldCheck,
 } from 'lucide-react';
 
 import { formatBackendEvent } from '../utils/eventAdapter';
@@ -118,10 +119,12 @@ export default function EventsPage() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 16 }}>
           <div>
             <h1 className="hero-title">
-              Live Exchange Events.<br />
+              Fair-Price Live Event Exchange
 
             </h1>
-            <p className="hero-sub">Explore live events and ticket options.</p>
+            <p className="hero-sub">
+              Access authenticated primary ticket sales and real-time secondary order books with anti-scalping price caps and provable solvency.
+            </p>
           </div>
 
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -147,6 +150,43 @@ export default function EventsPage() {
               </button>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Institutional Exchange Guarantees Strip */}
+      <div
+        style={{
+          display: 'flex',
+          gap: 16,
+          flexWrap: 'wrap',
+          marginBottom: 24,
+          padding: '11px 18px',
+          background: 'var(--bg-glass-card)',
+          backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
+          borderRadius: 'var(--radius-md)',
+          border: '1px solid var(--border-glass)',
+          boxShadow: 'var(--inner-highlight-subtle)',
+          alignItems: 'center',
+          fontSize: 12,
+        }}
+      >
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 7, color: 'var(--text-sub)' }}>
+          <ShieldCheck size={15} color="var(--accent-emerald)" />
+          <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>100% Provably Solvent:</span>
+          <span>Cryptographic Merkle tree reserves audit</span>
+        </div>
+        <span style={{ color: 'var(--border-strong)' }}>·</span>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 7, color: 'var(--text-sub)' }}>
+          <Zap size={15} color="var(--accent-orange)" />
+          <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Anti-Scalping Protection:</span>
+          <span>Hard-capped resale pricing eliminates bot gouging</span>
+        </div>
+        <span style={{ color: 'var(--border-strong)' }}>·</span>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 7, color: 'var(--text-sub)' }}>
+          <Sparkles size={15} color="var(--accent-cyan)" />
+          <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Secondary Liquidity:</span>
+          <span>Continuous bid/ask limit order books</span>
         </div>
       </div>
 

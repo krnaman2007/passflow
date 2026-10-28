@@ -42,15 +42,26 @@ export default function Modals() {
         {/* Modal Close Button */}
         <button
           onClick={handleClose}
+          className="btn-pill"
+          aria-label="Close modal"
           style={{
             position: 'absolute',
-            top: 20,
-            right: 20,
-            color: 'var(--text-dim)',
-            padding: 4
+            top: 18,
+            right: 18,
+            width: 32,
+            height: 32,
+            borderRadius: '50%',
+            background: 'rgba(255, 255, 255, 0.05)',
+            border: '1px solid var(--border-subtle)',
+            color: 'var(--text-muted)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            zIndex: 10
           }}
         >
-          <X size={18} />
+          <X size={16} />
         </button>
 
         {/* 1. SELL TICKET MODAL */}
